@@ -1,7 +1,10 @@
-use std::env;
+use std::{env, path::Path};
 
 use futures::future::LocalBoxFuture;
-use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion, Tool, ToolSpec, WebSearchTool};
+use naaf_llm::{
+    GlobPathsTool, HumanAnswer, HumanIO, HumanQuestion, ReadFileTool, SearchFilesTool, Tool,
+    ToolSpec, WebSearchTool,
+};
 use naaf_tui::{EventSender, TuiEvent};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -12,11 +15,12 @@ use crate::error::AppError;
 #[derive(Clone, Debug)]
 pub(crate) struct AppRuntime {
     tui: EventSender,
+    project_root: std::path::PathBuf,
 }
 
 impl AppRuntime {
-    pub(crate) fn new(tui: EventSender) -> Self {
-        Self { tui }
+    pub(crate) fn new(tui: EventSender, project_root: std::path::PathBuf) -> Self {
+        Self { tui, project_root }
     }
 
     fn send_event(&self, event: TuiEvent) -> Result<(), AppError> {
@@ -41,6 +45,10 @@ impl AppRuntime {
 
     pub(crate) fn log_error(&self, message: impl Into<String>) -> Result<(), AppError> {
         self.log(Level::ERROR, message)
+    }
+
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.project_root
     }
 }
 
@@ -116,6 +124,108 @@ impl Tool for AppWebSearchTool {
                 .call(runtime, arguments)
                 .await
                 .map_err(AppError::from)
+        })
+    }
+}
+
+pub(crate) struct AppReadFileTool {
+    inner: ReadFileTool<AppRuntime>,
+}
+
+impl AppReadFileTool {
+    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            inner: ReadFileTool::new(root),
+        }
+    }
+}
+
+impl Tool for AppReadFileTool {
+    type Runtime = AppRuntime;
+    type Error = AppError;
+
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+
+    fn call<'a>(
+        &'a self,
+        runtime: &'a Self::Runtime,
+        arguments: Value,
+    ) -> LocalBoxFuture<'a, Result<Value, Self::Error>> {
+        Box::pin(async move {
+            self.inner
+                .call(runtime, arguments)
+                .await
+                .map_err(|never| match never {})
+        })
+    }
+}
+
+pub(crate) struct AppGlobPathsTool {
+    inner: GlobPathsTool<AppRuntime>,
+}
+
+impl AppGlobPathsTool {
+    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            inner: GlobPathsTool::new(root),
+        }
+    }
+}
+
+impl Tool for AppGlobPathsTool {
+    type Runtime = AppRuntime;
+    type Error = AppError;
+
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+
+    fn call<'a>(
+        &'a self,
+        runtime: &'a Self::Runtime,
+        arguments: Value,
+    ) -> LocalBoxFuture<'a, Result<Value, Self::Error>> {
+        Box::pin(async move {
+            self.inner
+                .call(runtime, arguments)
+                .await
+                .map_err(|never| match never {})
+        })
+    }
+}
+
+pub(crate) struct AppSearchFilesTool {
+    inner: SearchFilesTool<AppRuntime>,
+}
+
+impl AppSearchFilesTool {
+    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            inner: SearchFilesTool::new(root),
+        }
+    }
+}
+
+impl Tool for AppSearchFilesTool {
+    type Runtime = AppRuntime;
+    type Error = AppError;
+
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+
+    fn call<'a>(
+        &'a self,
+        runtime: &'a Self::Runtime,
+        arguments: Value,
+    ) -> LocalBoxFuture<'a, Result<Value, Self::Error>> {
+        Box::pin(async move {
+            self.inner
+                .call(runtime, arguments)
+                .await
+                .map_err(|never| match never {})
         })
     }
 }

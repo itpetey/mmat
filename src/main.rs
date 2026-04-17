@@ -1,3 +1,5 @@
+use std::env;
+
 mod error;
 mod models;
 mod parsing;
@@ -19,7 +21,9 @@ async fn main() -> Result<(), AppError> {
         .spawn_with_input()
         .map_err(|error| AppError::Config(format!("failed to start TUI: {error}")))?;
 
-    let runtime = AppRuntime::new(sender);
+    let project_root = env::current_dir()
+        .map_err(|error| AppError::Config(format!("failed to read current directory: {error}")))?;
+    let runtime = AppRuntime::new(sender, project_root);
     runtime.log_info("MMAT is ready. Enter a project prompt to begin.")?;
 
     let result = async {
@@ -30,10 +34,10 @@ async fn main() -> Result<(), AppError> {
     .await;
 
     match result {
-        Ok(approval) => {
+        Ok(outcome) => {
             runtime.log_info(format!(
-                "Final decision: {}. {}",
-                approval.decision, approval.next_step
+                "Workflow status: {}. {}",
+                outcome.status, outcome.next_step
             ))?;
         }
         Err(error) => {
