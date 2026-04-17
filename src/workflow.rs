@@ -5,14 +5,15 @@ use std::{
 };
 
 use naaf_core::{
-    Attempt, CheckExt, MaterialiserExt, NeverFinding, RepairPlannerExt, RetryPolicy, Step,
-    StepError, Task, TaskExt, check_fn, materialiser_fn, repair_fn, task_fn,
+    Attempt, CheckExt, EdgeSpec, GraphPatch, MaterialiserExt, NeverFinding, NodeId, NodeInput,
+    NodeSpec, RepairPlannerExt, RetryPolicy, Step, StepNode, Task, TaskExt, Workflow, check_fn,
+    materialiser_fn, repair_fn, task_fn,
 };
 use naaf_llm::{
     CompletionRequest, Executor, ExecutorConfig, LlmAgent, Message, OpenAiClient, OpenAiError,
     QuestionTool, RegisterToolError, Tool, ToolRegistry,
 };
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 
 use crate::{
@@ -57,6 +58,42 @@ enum FinalReviewDisposition {
     Halt,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhaseReviewAction {
+    Complete,
+    Remediate,
+    Halt,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ManagedPhase {
+    request: ImplementationManagementRequest,
+    worklist: ImplementationWorklist,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PhaseExecutionInput {
+    phase: ManagedPhase,
+    drafts: Vec<ImplementationDraft>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PhaseReviewResult {
+    phase: ManagedPhase,
+    completed_items: Vec<ImplementationItemResult>,
+    review: FinalReview,
+}
+
+#[derive(Clone)]
+struct ExecutionGraphSteps {
+    managed_phase:
+        Step<AppRuntime, ImplementationManagementRequest, ManagedPhase, NeverFinding, AppError>,
+    implementation:
+        Step<AppRuntime, ImplementationTaskInput, ImplementationDraft, StageFinding, AppError>,
+    phase_review: Step<AppRuntime, PhaseExecutionInput, PhaseReviewResult, NeverFinding, AppError>,
+    outcome: Step<AppRuntime, WorkflowOutcome, WorkflowOutcome, NeverFinding, AppError>,
+}
+
 pub(crate) async fn run_mmat(
     runtime: &AppRuntime,
     prompt: String,
@@ -74,7 +111,7 @@ pub(crate) async fn run_mmat(
         )?;
     }
 
-    let llm = build_agent(runtime.project_root(), web_search)?;
+    let llm = build_agent(runtime.project_root(), web_search.clone())?;
     let discovery_step = Step::builder(build_discovery_task(&llm, &model, search_enabled))
         .with_findings::<NeverFinding>()
         .build();
@@ -178,17 +215,22 @@ pub(crate) async fn run_mmat(
     let architect_review_step = Step::builder(build_architect_review_task(&llm, &model))
         .with_findings::<NeverFinding>()
         .build();
-    let management_step = Step::builder(build_implementation_management_task(
-        &llm,
-        &model,
-        search_enabled,
-    ))
-    .with_findings::<NeverFinding>()
-    .build();
-    let final_review_step = Step::builder(build_final_review_task(&llm, &model, search_enabled))
-        .with_findings::<NeverFinding>()
-        .build();
-    let implementation_step = build_implementation_step(runtime.project_root(), &model)?;
+    let execution_steps = ExecutionGraphSteps {
+        implementation: build_implementation_step(runtime.project_root(), &model)?,
+        managed_phase: build_managed_phase_step(
+            runtime.project_root(),
+            &model,
+            search_enabled,
+            web_search.clone(),
+        )?,
+        phase_review: build_phase_review_step(
+            runtime.project_root(),
+            &model,
+            search_enabled,
+            web_search.clone(),
+        )?,
+        outcome: build_outcome_step(),
+    };
 
     let plan = planning_step
         .run(runtime, approved.clone())
@@ -202,109 +244,8 @@ pub(crate) async fn run_mmat(
         .map_err(|error| AppError::Workflow(format!("architect review failed: {error}")))?;
     log_stage_review(runtime, "Architect review", &architect_review)?;
 
-    let mut completed_items = Vec::new();
-    let mut remediation_items = Vec::new();
-    let mut last_review: Option<FinalReview> = None;
-
-    for pass in 0..MAX_FINAL_REVIEW_PASSES {
-        let phase = if pass == 0 {
-            "initial_implementation".to_string()
-        } else {
-            format!("remediation_pass_{}", pass)
-        };
-
-        let management_request = ImplementationManagementRequest {
-            phase,
-            approved: approved.clone(),
-            plan: plan.clone(),
-            architect_review: architect_review.clone(),
-            completed_items: completed_items.clone(),
-            remediation_items: remediation_items.clone(),
-        };
-
-        let worklist = management_step
-            .run(runtime, management_request)
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!("implementation management failed: {error}"))
-            })?;
-        log_worklist_summary(runtime, &worklist)?;
-
-        for item in worklist.items {
-            runtime.log_info(format!("Implementing item `{}`.", item.title))?;
-            let draft = implementation_step
-                .run(
-                    runtime,
-                    ImplementationTaskInput {
-                        approved: approved.clone(),
-                        plan: plan.clone(),
-                        work_item: item.clone(),
-                        completed_items: completed_items.clone(),
-                        prior_feedback: Vec::new(),
-                    },
-                )
-                .await
-                .map_err(|error| map_step_error("implementation subtask", error))?;
-            let result = item_result_from_draft(&item, &draft);
-            log_implementation_result(runtime, &result)?;
-            completed_items.push(result);
-        }
-
-        let review = final_review_step
-            .run(
-                runtime,
-                FinalReviewInput {
-                    approved: approved.clone(),
-                    plan: plan.clone(),
-                    completed_items: completed_items.clone(),
-                },
-            )
-            .await
-            .map_err(|error| AppError::Workflow(format!("final review failed: {error}")))?;
-        log_final_review_summary(runtime, &review)?;
-        last_review = Some(review.clone());
-
-        match final_review_disposition(&review) {
-            FinalReviewDisposition::Complete => {
-                return Ok(WorkflowOutcome {
-                    status: "completed".to_string(),
-                    approval,
-                    plan: Some(plan),
-                    architect_review: Some(architect_review),
-                    completed_items,
-                    final_review: Some(review.clone()),
-                    next_step: review.next_step,
-                });
-            }
-            FinalReviewDisposition::Remediate => {
-                remediation_items = review.remediation_items.clone();
-                runtime.log_warn(
-                    "Final review requested remediation. Starting another implementation management pass.",
-                )?;
-            }
-            FinalReviewDisposition::Halt => {
-                runtime.log_warn(
-                    "Final review is not yet ready but did not provide remediation items. Stopping the workflow.",
-                )?;
-                break;
-            }
-        }
-    }
-
-    let next_step = last_review
-        .as_ref()
-        .map(|review| review.next_step.clone())
-        .unwrap_or_else(|| approval.next_step.clone());
-
-    Ok(WorkflowOutcome {
-        status: "needs_more_work".to_string(),
-        approval,
-        plan: Some(plan),
-        architect_review: Some(architect_review),
-        completed_items,
-        final_review: last_review,
-        next_step,
-    })
+    run_dynamic_implementation_workflow(runtime, approved, plan, architect_review, execution_steps)
+        .await
 }
 
 fn build_agent(
@@ -527,62 +468,6 @@ fn build_architect_review_task(
     .observed_as("architect_review")
 }
 
-fn build_implementation_management_task(
-    llm: &AppAgent,
-    model: &str,
-    web_search_enabled: bool,
-) -> impl Task<
-    Runtime = AppRuntime,
-    Input = ImplementationManagementRequest,
-    Output = ImplementationWorklist,
-    Error = LlmStageError,
-> + use<> {
-    let model = model.to_string();
-    let system_prompt = implementation_management_system_prompt(web_search_enabled);
-
-    llm.task(
-        move |_runtime: &AppRuntime, request: ImplementationManagementRequest| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(implementation_management_user_prompt(&request)?),
-                ],
-            ))
-        },
-        decode_json_output::<ImplementationWorklist>,
-    )
-    .observed_as("implementation_management")
-}
-
-fn build_final_review_task(
-    llm: &AppAgent,
-    model: &str,
-    web_search_enabled: bool,
-) -> impl Task<
-    Runtime = AppRuntime,
-    Input = FinalReviewInput,
-    Output = FinalReview,
-    Error = LlmStageError,
-> + use<> {
-    let model = model.to_string();
-    let system_prompt = final_review_system_prompt(web_search_enabled);
-
-    llm.task(
-        move |_runtime: &AppRuntime, input: FinalReviewInput| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(final_review_user_prompt(&input)?),
-                ],
-            ))
-        },
-        decode_json_output::<FinalReview>,
-    )
-    .observed_as("final_review")
-}
-
 fn build_implementation_step(
     project_root: &Path,
     model: &str,
@@ -730,6 +615,402 @@ where
         .await
         .map_err(|error| AppError::Workflow(format!("{stage} execution failed: {error}")))?;
     decode_json_output(outcome).map_err(AppError::from)
+}
+
+async fn run_dynamic_implementation_workflow(
+    runtime: &AppRuntime,
+    approved: ApprovedProposal,
+    plan: ImplementationPlan,
+    architect_review: StageReview,
+    execution_steps: ExecutionGraphSteps,
+) -> Result<WorkflowOutcome, AppError> {
+    let initial_request = initial_management_request(approved, plan, architect_review);
+    let root = root_management_node_spec(initial_request, execution_steps)?;
+
+    let report = Workflow::new()
+        .with_max_concurrency(1)
+        .with_patch(GraphPatch::new().with_node(root))
+        .map_err(|error| AppError::Workflow(format!("failed to build execution graph: {error}")))?
+        .run(runtime)
+        .await
+        .map_err(|error| {
+            AppError::Workflow(format!("dynamic execution workflow failed: {error}"))
+        })?;
+
+    let outcome = report
+        .nodes()
+        .values()
+        .filter(|node| node.name().starts_with("workflow_outcome"))
+        .max_by_key(|node| node.name())
+        .ok_or_else(|| {
+            AppError::Workflow("workflow completed without a terminal outcome node".to_string())
+        })?;
+
+    let outcome: WorkflowOutcome = serde_json::from_value(outcome.output().clone())?;
+    Ok(outcome)
+}
+
+fn build_managed_phase_step(
+    project_root: &Path,
+    model: &str,
+    web_search_enabled: bool,
+    web_search: Option<WebSearchConfig>,
+) -> Result<
+    Step<AppRuntime, ImplementationManagementRequest, ManagedPhase, NeverFinding, AppError>,
+    AppError,
+> {
+    let llm = Rc::new(build_agent(project_root, web_search)?);
+    let model = model.to_string();
+    let system_prompt = implementation_management_system_prompt(web_search_enabled);
+    let task = task_fn(
+        move |runtime: &AppRuntime, request: ImplementationManagementRequest| {
+            let llm = llm.clone();
+            let model = model.clone();
+            let system_prompt = system_prompt.clone();
+            Box::pin(async move {
+                let worklist = execute_json_stage::<ImplementationWorklist>(
+                    llm.as_ref(),
+                    runtime,
+                    CompletionRequest::new(
+                        model,
+                        vec![
+                            Message::system(system_prompt),
+                            Message::user(implementation_management_user_prompt(&request)?),
+                        ],
+                    ),
+                    "implementation management",
+                )
+                .await?;
+                log_worklist_summary(runtime, &worklist)?;
+                Ok::<_, AppError>(ManagedPhase { request, worklist })
+            })
+        },
+    )
+    .observed_as("implementation_management");
+
+    Ok(Step::builder(task).with_findings::<NeverFinding>().build())
+}
+
+fn build_phase_review_step(
+    project_root: &Path,
+    model: &str,
+    web_search_enabled: bool,
+    web_search: Option<WebSearchConfig>,
+) -> Result<
+    Step<AppRuntime, PhaseExecutionInput, PhaseReviewResult, NeverFinding, AppError>,
+    AppError,
+> {
+    let llm = Rc::new(build_agent(project_root, web_search)?);
+    let model = model.to_string();
+    let system_prompt = final_review_system_prompt(web_search_enabled);
+    let task = task_fn(move |runtime: &AppRuntime, input: PhaseExecutionInput| {
+        let llm = llm.clone();
+        let model = model.clone();
+        let system_prompt = system_prompt.clone();
+        Box::pin(async move {
+            let mut completed_items = input.phase.request.completed_items.clone();
+            let current_results = input
+                .drafts
+                .iter()
+                .map(|draft| item_result_from_draft(&draft.input.work_item, draft))
+                .collect::<Vec<_>>();
+            for result in &current_results {
+                log_implementation_result(runtime, result)?;
+            }
+            completed_items.extend(current_results);
+
+            let review = execute_json_stage::<FinalReview>(
+                llm.as_ref(),
+                runtime,
+                CompletionRequest::new(
+                    model,
+                    vec![
+                        Message::system(system_prompt),
+                        Message::user(final_review_user_prompt(&FinalReviewInput {
+                            approved: input.phase.request.approved.clone(),
+                            plan: input.phase.request.plan.clone(),
+                            completed_items: completed_items.clone(),
+                        })?),
+                    ],
+                ),
+                "final review",
+            )
+            .await?;
+            log_final_review_summary(runtime, &review)?;
+            match phase_review_action(input.phase.request.pass_index, &review) {
+                PhaseReviewAction::Remediate => runtime.log_warn(
+                    "Final review requested remediation. Spawning another implementation management phase.",
+                )?,
+                PhaseReviewAction::Halt if review.remediation_items.is_empty() => runtime.log_warn(
+                    "Final review is not yet ready but did not provide remediation items. Stopping the workflow.",
+                )?,
+                PhaseReviewAction::Halt => runtime.log_warn(
+                    "Maximum remediation passes reached. Stopping the workflow.",
+                )?,
+                PhaseReviewAction::Complete => {}
+            }
+            Ok::<_, AppError>(PhaseReviewResult {
+                phase: input.phase,
+                completed_items,
+                review,
+            })
+        })
+    })
+    .observed_as("phase_review");
+
+    Ok(Step::builder(task).with_findings::<NeverFinding>().build())
+}
+
+fn build_outcome_step() -> Step<AppRuntime, WorkflowOutcome, WorkflowOutcome, NeverFinding, AppError>
+{
+    Step::builder(
+        task_fn(|_runtime: &AppRuntime, outcome: WorkflowOutcome| {
+            Box::pin(async move { Ok::<_, AppError>(outcome) })
+        })
+        .observed_as("workflow_outcome"),
+    )
+    .with_findings::<NeverFinding>()
+    .build()
+}
+
+fn build_phase_patch(
+    manager_id: NodeId,
+    phase: &ManagedPhase,
+    execution_steps: ExecutionGraphSteps,
+) -> GraphPatch<AppRuntime, AppError> {
+    let implementation_step = execution_steps.implementation.clone();
+    let phase_review_step = execution_steps.phase_review.clone();
+    let mut patch = GraphPatch::new();
+    let mut item_ids = Vec::new();
+
+    for item in &phase.worklist.items {
+        let item_id = NodeId::new();
+        item_ids.push((item_id, item.clone()));
+        patch = patch
+            .with_node(
+                NodeSpec::new(
+                    implementation_node_name(phase.request.pass_index, &item.id),
+                    StepNode::new(implementation_step.clone(), {
+                        let item = item.clone();
+                        move |input: &NodeInput| {
+                            let phase = input.output_as::<ManagedPhase>(manager_id)?;
+                            Ok(ImplementationTaskInput {
+                                approved: phase.request.approved.clone(),
+                                plan: phase.request.plan.clone(),
+                                work_item: item.clone(),
+                                completed_items: phase.request.completed_items.clone(),
+                                prior_feedback: Vec::new(),
+                            })
+                        }
+                    }),
+                )
+                .with_id(item_id)
+                .with_parent(manager_id),
+            )
+            .with_edge(EdgeSpec::new(manager_id, item_id));
+    }
+
+    let review_id = NodeId::new();
+    let review_dependencies = item_ids.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    patch = patch
+        .with_node(
+            NodeSpec::new(
+                review_node_name(phase.request.pass_index),
+                StepNode::without_findings(phase_review_step.clone(), {
+                    let review_dependencies = review_dependencies.clone();
+                    move |input: &NodeInput| {
+                        let phase = input.output_as::<ManagedPhase>(manager_id)?;
+                        let drafts = review_dependencies
+                            .iter()
+                            .map(|item_id| input.output_as::<ImplementationDraft>(*item_id))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(PhaseExecutionInput { phase, drafts })
+                    }
+                })
+                .spawn_with({
+                    let execution_steps = execution_steps.clone();
+                    move |context, result| {
+                        build_review_patch(context.node_id(), result, execution_steps.clone())
+                    }
+                }),
+            )
+            .with_id(review_id)
+            .with_parent(manager_id),
+        )
+        .with_edge(EdgeSpec::new(manager_id, review_id));
+
+    for (item_id, _) in item_ids {
+        patch = patch.with_edge(EdgeSpec::new(item_id, review_id));
+    }
+
+    patch
+}
+
+fn build_review_patch(
+    review_id: NodeId,
+    result: &PhaseReviewResult,
+    execution_steps: ExecutionGraphSteps,
+) -> GraphPatch<AppRuntime, AppError> {
+    match phase_review_action(result.phase.request.pass_index, &result.review) {
+        PhaseReviewAction::Remediate => {
+            let node = remediation_management_node_spec(review_id, execution_steps);
+            let node_id = node.id();
+            GraphPatch::new()
+                .with_node(node)
+                .with_edge(EdgeSpec::new(review_id, node_id))
+        }
+        PhaseReviewAction::Complete | PhaseReviewAction::Halt => {
+            build_outcome_patch(review_id, execution_steps.outcome)
+        }
+    }
+}
+
+fn build_outcome_patch(
+    parent_id: NodeId,
+    outcome_step: Step<AppRuntime, WorkflowOutcome, WorkflowOutcome, NeverFinding, AppError>,
+) -> GraphPatch<AppRuntime, AppError> {
+    let node_id = NodeId::new();
+    GraphPatch::new()
+        .with_node(
+            NodeSpec::new(
+                outcome_node_name(),
+                StepNode::without_findings(outcome_step, move |input: &NodeInput| {
+                    let result = input.output_as::<PhaseReviewResult>(parent_id)?;
+                    Ok(workflow_outcome_from_phase_result(&result))
+                }),
+            )
+            .with_id(node_id)
+            .with_parent(parent_id),
+        )
+        .with_edge(EdgeSpec::new(parent_id, node_id))
+}
+
+fn root_management_node_spec(
+    request: ImplementationManagementRequest,
+    execution_steps: ExecutionGraphSteps,
+) -> Result<NodeSpec<AppRuntime, AppError>, AppError> {
+    NodeSpec::new(
+        management_node_name(request.pass_index),
+        StepNode::without_findings(
+            execution_steps.managed_phase.clone(),
+            |input: &NodeInput| input.seed_as::<ImplementationManagementRequest>(),
+        )
+        .spawn_with({
+            let execution_steps = execution_steps.clone();
+            move |context, phase| {
+                build_phase_patch(context.node_id(), phase, execution_steps.clone())
+            }
+        }),
+    )
+    .with_seed(request)
+    .map_err(AppError::from)
+}
+
+fn remediation_management_node_spec(
+    review_id: NodeId,
+    execution_steps: ExecutionGraphSteps,
+) -> NodeSpec<AppRuntime, AppError> {
+    NodeSpec::new(
+        remediation_management_node_name(),
+        StepNode::without_findings(
+            execution_steps.managed_phase.clone(),
+            move |input: &NodeInput| {
+                let result = input.output_as::<PhaseReviewResult>(review_id)?;
+                Ok(next_management_request(&result))
+            },
+        )
+        .spawn_with({
+            let execution_steps = execution_steps.clone();
+            move |context, phase| {
+                build_phase_patch(context.node_id(), phase, execution_steps.clone())
+            }
+        }),
+    )
+    .with_parent(review_id)
+}
+
+fn initial_management_request(
+    approved: ApprovedProposal,
+    plan: ImplementationPlan,
+    architect_review: StageReview,
+) -> ImplementationManagementRequest {
+    ImplementationManagementRequest {
+        pass_index: 0,
+        phase: phase_label(0),
+        approved,
+        plan,
+        architect_review,
+        completed_items: Vec::new(),
+        remediation_items: Vec::new(),
+    }
+}
+
+fn next_management_request(result: &PhaseReviewResult) -> ImplementationManagementRequest {
+    let next_pass = result.phase.request.pass_index + 1;
+    ImplementationManagementRequest {
+        pass_index: next_pass,
+        phase: phase_label(next_pass),
+        approved: result.phase.request.approved.clone(),
+        plan: result.phase.request.plan.clone(),
+        architect_review: result.phase.request.architect_review.clone(),
+        completed_items: result.completed_items.clone(),
+        remediation_items: result.review.remediation_items.clone(),
+    }
+}
+
+fn workflow_outcome_from_phase_result(result: &PhaseReviewResult) -> WorkflowOutcome {
+    WorkflowOutcome {
+        status: if result.review.ready {
+            "completed".to_string()
+        } else {
+            "needs_more_work".to_string()
+        },
+        approval: result.phase.request.approved.approval.clone(),
+        plan: Some(result.phase.request.plan.clone()),
+        architect_review: Some(result.phase.request.architect_review.clone()),
+        completed_items: result.completed_items.clone(),
+        final_review: Some(result.review.clone()),
+        next_step: result.review.next_step.clone(),
+    }
+}
+
+fn phase_review_action(pass_index: usize, review: &FinalReview) -> PhaseReviewAction {
+    match final_review_disposition(review) {
+        FinalReviewDisposition::Complete => PhaseReviewAction::Complete,
+        FinalReviewDisposition::Halt => PhaseReviewAction::Halt,
+        FinalReviewDisposition::Remediate if pass_index + 1 < MAX_FINAL_REVIEW_PASSES => {
+            PhaseReviewAction::Remediate
+        }
+        FinalReviewDisposition::Remediate => PhaseReviewAction::Halt,
+    }
+}
+
+fn phase_label(pass_index: usize) -> String {
+    if pass_index == 0 {
+        "initial_implementation".to_string()
+    } else {
+        format!("remediation_pass_{pass_index}")
+    }
+}
+
+fn management_node_name(pass_index: usize) -> String {
+    format!("implementation_management_{pass_index}")
+}
+
+fn remediation_management_node_name() -> String {
+    "implementation_management_remediation".to_string()
+}
+
+fn implementation_node_name(pass_index: usize, item_id: &str) -> String {
+    format!("implement_item_{pass_index}_{item_id}")
+}
+
+fn review_node_name(pass_index: usize) -> String {
+    format!("phase_review_{pass_index}")
+}
+
+fn outcome_node_name() -> String {
+    "workflow_outcome".to_string()
 }
 
 fn collect_solution_pair_task(
@@ -943,18 +1224,6 @@ fn item_result_from_draft(
     }
 }
 
-fn map_step_error(stage_name: &str, error: StepError<StageFinding, AppError>) -> AppError {
-    match error {
-        StepError::System { stage, error } => {
-            AppError::Workflow(format!("{stage_name} {stage} failed: {error}"))
-        }
-        StepError::Rejected(report) => AppError::Workflow(format!(
-            "{stage_name} was rejected after {} attempt(s)",
-            report.attempt_count()
-        )),
-    }
-}
-
 fn log_discovery_summary(runtime: &AppRuntime, discovery: &DiscoveryBrief) -> Result<(), AppError> {
     runtime.log_info("Discovery complete.")?;
     runtime.log_info(format!("Recommended path: {}", discovery.recommended_path))?;
@@ -1097,12 +1366,161 @@ impl From<ValidationFinding> for StageFinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        FinalReviewDisposition, approval_granted, final_review_disposition, item_result_from_draft,
+        ExecutionGraphSteps, FinalReviewDisposition, ManagedPhase, PhaseExecutionInput,
+        PhaseReviewAction, PhaseReviewResult, approval_granted, build_outcome_patch,
+        build_outcome_step, build_phase_patch, build_review_patch, final_review_disposition,
+        item_result_from_draft, next_management_request, phase_label, phase_review_action,
     };
     use crate::models::{
-        ApprovalOutcome, FileDelta, FinalReview, ImplementationDelta, ImplementationDraft,
-        ImplementationTaskInput, ManagedItem,
+        ApprovalOutcome, ApprovedProposal, FileDelta, FinalReview, ImplementationDelta,
+        ImplementationDraft, ImplementationManagementRequest, ImplementationPlan,
+        ImplementationTaskInput, ManagedItem, PlanMilestone, ReconciledProposal, RemediationItem,
+        StageReview,
     };
+    use crate::{error::AppError, runtime::AppRuntime};
+    use naaf_core::{NeverFinding, NodeId, Step, task_fn};
+
+    fn dummy_management_step()
+    -> Step<AppRuntime, ImplementationManagementRequest, ManagedPhase, NeverFinding, AppError> {
+        Step::builder(task_fn(
+            |_runtime: &AppRuntime, request: ImplementationManagementRequest| {
+                Box::pin(async move {
+                    Ok::<_, AppError>(ManagedPhase {
+                        worklist: crate::models::ImplementationWorklist {
+                            summary: "dummy".to_string(),
+                            items: Vec::new(),
+                        },
+                        request,
+                    })
+                })
+            },
+        ))
+        .with_findings::<NeverFinding>()
+        .build()
+    }
+
+    fn dummy_implementation_step() -> Step<
+        AppRuntime,
+        ImplementationTaskInput,
+        ImplementationDraft,
+        crate::models::StageFinding,
+        AppError,
+    > {
+        Step::builder(task_fn(
+            |_runtime: &AppRuntime, input: ImplementationTaskInput| {
+                Box::pin(async move {
+                    Ok::<_, AppError>(ImplementationDraft {
+                        input,
+                        delta: ImplementationDelta {
+                            summary: "dummy".to_string(),
+                            rationale: Vec::new(),
+                            changes: Vec::new(),
+                        },
+                    })
+                })
+            },
+        ))
+        .with_findings::<crate::models::StageFinding>()
+        .build()
+    }
+
+    fn dummy_phase_review_step()
+    -> Step<AppRuntime, PhaseExecutionInput, PhaseReviewResult, NeverFinding, AppError> {
+        Step::builder(task_fn(
+            |_runtime: &AppRuntime, input: PhaseExecutionInput| {
+                Box::pin(async move {
+                    Ok::<_, AppError>(PhaseReviewResult {
+                        phase: input.phase,
+                        completed_items: Vec::new(),
+                        review: FinalReview {
+                            summary: "dummy".to_string(),
+                            ready: true,
+                            strengths: Vec::new(),
+                            findings: Vec::new(),
+                            remediation_items: Vec::new(),
+                            next_step: "done".to_string(),
+                        },
+                    })
+                })
+            },
+        ))
+        .with_findings::<NeverFinding>()
+        .build()
+    }
+
+    fn sample_management_request(pass_index: usize) -> ImplementationManagementRequest {
+        ImplementationManagementRequest {
+            pass_index,
+            phase: phase_label(pass_index),
+            approved: ApprovedProposal {
+                proposal: ReconciledProposal {
+                    title: "Proposal".to_string(),
+                    executive_summary: "summary".to_string(),
+                    recommended_direction: "direction".to_string(),
+                    why_this_plan: "why".to_string(),
+                    adopted_ideas: Vec::new(),
+                    deferred_ideas: Vec::new(),
+                    scope: "scope".to_string(),
+                    architecture: Vec::new(),
+                    delivery_plan: Vec::new(),
+                    technologies: Vec::new(),
+                    major_risks: Vec::new(),
+                    open_questions: Vec::new(),
+                },
+                approval: ApprovalOutcome {
+                    decision: "approve".to_string(),
+                    summary: "approved".to_string(),
+                    final_details: Vec::new(),
+                    next_step: "implement".to_string(),
+                },
+            },
+            plan: ImplementationPlan {
+                summary: "plan".to_string(),
+                milestones: vec![PlanMilestone {
+                    id: "m1".to_string(),
+                    title: "Milestone".to_string(),
+                    objective: "Ship it".to_string(),
+                    items: Vec::new(),
+                }],
+                risks: Vec::new(),
+            },
+            architect_review: StageReview {
+                summary: "looks fine".to_string(),
+                findings: Vec::new(),
+            },
+            completed_items: Vec::new(),
+            remediation_items: Vec::new(),
+        }
+    }
+
+    fn sample_phase(pass_index: usize, item_count: usize) -> ManagedPhase {
+        ManagedPhase {
+            request: sample_management_request(pass_index),
+            worklist: crate::models::ImplementationWorklist {
+                summary: "worklist".to_string(),
+                items: (0..item_count)
+                    .map(|index| ManagedItem {
+                        id: format!("item-{index}"),
+                        source: "plan".to_string(),
+                        milestone_id: Some("m1".to_string()),
+                        title: format!("Item {index}"),
+                        objective: "Do the thing".to_string(),
+                        acceptance_criteria: vec!["done".to_string()],
+                        dependencies: Vec::new(),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn dummy_execution_steps() -> ExecutionGraphSteps {
+        ExecutionGraphSteps {
+            managed_phase: dummy_management_step(),
+            implementation: dummy_implementation_step(),
+            phase_review: dummy_phase_review_step(),
+            outcome: build_outcome_step(),
+        }
+    }
 
     #[test]
     fn approval_granted_accepts_expected_decisions() {
@@ -1189,6 +1607,127 @@ mod tests {
             final_review_disposition(&review),
             FinalReviewDisposition::Halt
         );
+    }
+
+    #[test]
+    fn phase_review_action_halts_when_pass_limit_is_reached() {
+        let review = FinalReview {
+            summary: "still needs fixes".to_string(),
+            ready: false,
+            strengths: Vec::new(),
+            findings: Vec::new(),
+            remediation_items: vec![RemediationItem {
+                id: "r1".to_string(),
+                title: "Fix it".to_string(),
+                description: "one more issue".to_string(),
+                acceptance_criteria: vec!["pass".to_string()],
+                related_item_ids: vec!["item-1".to_string()],
+            }],
+            next_step: "repair".to_string(),
+        };
+
+        assert_eq!(
+            phase_review_action(super::MAX_FINAL_REVIEW_PASSES - 1, &review),
+            PhaseReviewAction::Halt
+        );
+    }
+
+    #[test]
+    fn build_phase_patch_spawns_item_nodes_and_one_review_node() {
+        let phase = sample_phase(0, 2);
+        let patch = build_phase_patch(NodeId::new(), &phase, dummy_execution_steps());
+
+        assert_eq!(patch.nodes().len(), 3);
+        assert_eq!(patch.edges().len(), 5);
+        assert_eq!(
+            patch
+                .nodes()
+                .iter()
+                .filter(|node| node.name().starts_with("implement_item_"))
+                .count(),
+            2
+        );
+        assert!(
+            patch
+                .nodes()
+                .iter()
+                .any(|node| node.name().starts_with("phase_review_"))
+        );
+    }
+
+    #[test]
+    fn build_review_patch_spawns_next_management_phase_when_remediation_is_needed() {
+        let result = PhaseReviewResult {
+            phase: sample_phase(0, 1),
+            completed_items: Vec::new(),
+            review: FinalReview {
+                summary: "needs follow-up".to_string(),
+                ready: false,
+                strengths: Vec::new(),
+                findings: Vec::new(),
+                remediation_items: vec![RemediationItem {
+                    id: "r1".to_string(),
+                    title: "Fix issue".to_string(),
+                    description: "patch it".to_string(),
+                    acceptance_criteria: vec!["fixed".to_string()],
+                    related_item_ids: vec!["item-0".to_string()],
+                }],
+                next_step: "repair".to_string(),
+            },
+        };
+
+        let patch = build_review_patch(NodeId::new(), &result, dummy_execution_steps());
+
+        assert_eq!(patch.nodes().len(), 1);
+        assert_eq!(patch.edges().len(), 1);
+        assert_eq!(
+            patch.nodes()[0].name(),
+            "implementation_management_remediation"
+        );
+    }
+
+    #[test]
+    fn build_outcome_patch_spawns_terminal_outcome_node() {
+        let patch = build_outcome_patch(NodeId::new(), build_outcome_step());
+
+        assert_eq!(patch.nodes().len(), 1);
+        assert_eq!(patch.edges().len(), 1);
+        assert_eq!(patch.nodes()[0].name(), "workflow_outcome");
+    }
+
+    #[test]
+    fn next_management_request_increments_pass_and_carries_completed_items() {
+        let result = PhaseReviewResult {
+            phase: sample_phase(0, 0),
+            completed_items: vec![crate::models::ImplementationItemResult {
+                item_id: "item-1".to_string(),
+                title: "done".to_string(),
+                summary: "implemented".to_string(),
+                changed_files: vec!["src/workflow.rs".to_string()],
+                rationale: vec!["minimal".to_string()],
+            }],
+            review: FinalReview {
+                summary: "needs follow-up".to_string(),
+                ready: false,
+                strengths: Vec::new(),
+                findings: Vec::new(),
+                remediation_items: vec![RemediationItem {
+                    id: "r1".to_string(),
+                    title: "Fix issue".to_string(),
+                    description: "patch it".to_string(),
+                    acceptance_criteria: vec!["fixed".to_string()],
+                    related_item_ids: vec!["item-1".to_string()],
+                }],
+                next_step: "repair".to_string(),
+            },
+        };
+
+        let next = next_management_request(&result);
+
+        assert_eq!(next.pass_index, 1);
+        assert_eq!(next.phase, "remediation_pass_1");
+        assert_eq!(next.completed_items.len(), 1);
+        assert_eq!(next.remediation_items.len(), 1);
     }
 
     #[test]

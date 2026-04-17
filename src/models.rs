@@ -127,6 +127,7 @@ pub(crate) struct PlanItem {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ImplementationManagementRequest {
+    pub(crate) pass_index: usize,
     pub(crate) phase: String,
     pub(crate) approved: ApprovedProposal,
     pub(crate) plan: ImplementationPlan,
