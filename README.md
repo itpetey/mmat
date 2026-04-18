@@ -69,6 +69,12 @@ During development, the simplest way to launch it is:
 cargo run
 ```
 
+To capture TUI debug logging, pass a log path after the Cargo separator:
+
+```bash
+cargo run -- --debug-log target/tui-debug.log
+```
+
 The TUI will open with the prompt:
 
 ```text
@@ -95,7 +101,7 @@ From there MMAT will:
 - MMAT creates temporary worktrees in `.mmat-worktrees` while it is implementing tasks.
 - It copies the current workspace state into those worktrees, so uncommitted local changes are part of the working context.
 - The implementation pipeline assumes Cargo is available and that `cargo fmt`, `cargo check`, `cargo test`, and `cargo clippy` are meaningful for the target repository.
-- The interface is currently TUI-only. There are no CLI flags yet for passing the prompt or selecting a target directory.
+- The interface is currently TUI-only. The only CLI flag today is `--debug-log <PATH>` for low-level TUI event logging; there are still no flags for passing the prompt or selecting a target directory.
 
 ## Development Checks
 

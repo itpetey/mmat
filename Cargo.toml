@@ -6,6 +6,7 @@ repository = "https://github.com/itpetey/mmat"
 license = "MPL-2.0"
 
 [dependencies]
+clap = { version = "4.5", default-features = false, features = ["derive", "help", "std", "usage"] }
 futures = { version = "0.3", default-features = false, features = ["alloc", "std"] }
 naaf-core = { path = "../naaf/main/crates/core" }
 naaf-llm = { path = "../naaf/main/crates/llm", features = [

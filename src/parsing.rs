@@ -1,5 +1,6 @@
 use naaf_llm::ExecutionOutcome;
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
 
 use crate::error::AppError;
 
@@ -37,21 +38,56 @@ where
     T: DeserializeOwned,
 {
     let trimmed = content.trim();
-    if let Ok(parsed) = serde_json::from_str(trimmed) {
+    if let Ok(parsed) = parse_json_candidate(trimmed) {
         return Ok(parsed);
     }
 
     if let Some(fenced) = strip_code_fence(trimmed)
-        && let Ok(parsed) = serde_json::from_str(fenced)
+        && let Ok(parsed) = parse_json_candidate(fenced)
     {
         return Ok(parsed);
     }
 
     if let Some(fragment) = extract_json_fragment(trimmed) {
-        return serde_json::from_str(fragment);
+        return parse_json_candidate(fragment);
     }
 
-    serde_json::from_str(trimmed)
+    parse_json_candidate(trimmed)
+}
+
+fn parse_json_candidate<T>(content: &str) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str(content).map_err(|error| augment_json_error(content, error))
+}
+
+fn augment_json_error(content: &str, error: serde_json::Error) -> serde_json::Error {
+    match describe_text_encoded_tool_call(content) {
+        Some(message) => serde_json::Error::io(std::io::Error::other(message)),
+        None => error,
+    }
+}
+
+fn describe_text_encoded_tool_call(content: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(content).ok()?;
+    let object = payload.as_object()?;
+    let name = object.get("name")?.as_str()?;
+    let arguments = object.get("arguments")?;
+
+    let mut message = format!(
+        "model returned a text-encoded tool call for `{name}` instead of a structured `tool_calls` response"
+    );
+
+    if name == "ask_user"
+        && let Some(question) = arguments.get("question").and_then(Value::as_str)
+    {
+        message.push_str("; blocked question: ");
+        message.push_str(question);
+    }
+
+    message.push_str(". This model/backend is not exposing OpenAI-compatible tool calls for MMAT.");
+    Some(message)
 }
 
 pub(crate) fn strip_code_fence(content: &str) -> Option<&str> {
@@ -78,7 +114,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_json_fragment, parse_json_payload, strip_code_fence};
+    use super::{
+        describe_text_encoded_tool_call, extract_json_fragment, parse_json_payload,
+        strip_code_fence,
+    };
     use crate::models::ApprovalOutcome;
 
     #[test]
@@ -104,5 +143,31 @@ mod tests {
         let parsed: ApprovalOutcome =
             parse_json_payload(content).expect("payload should parse successfully");
         assert_eq!(parsed.decision, "approve");
+    }
+
+    #[test]
+    fn detects_text_encoded_tool_call_output() {
+        let content = r#"{"name":"ask_user","arguments":{"question":"What are we building?"}}"#;
+
+        let message =
+            describe_text_encoded_tool_call(content).expect("tool call should be detected");
+
+        assert!(message.contains("text-encoded tool call"));
+        assert!(message.contains("ask_user"));
+        assert!(message.contains("What are we building?"));
+    }
+
+    #[test]
+    fn reports_clear_error_for_text_encoded_tool_call_output() {
+        let content = r#"{"name":"ask_user","arguments":{"question":"What are we building?"}}"#;
+
+        let error = parse_json_payload::<ApprovalOutcome>(content)
+            .expect_err("pseudo tool call should not decode as approval output");
+
+        assert!(
+            error
+                .to_string()
+                .contains("model returned a text-encoded tool call")
+        );
     }
 }

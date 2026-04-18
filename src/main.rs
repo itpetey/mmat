@@ -1,5 +1,6 @@
-use std::env;
+use std::{env, path::PathBuf};
 
+use clap::Parser;
 use error::AppError;
 use naaf_tui::TuiAppBuilder;
 use runtime::AppRuntime;
@@ -12,12 +13,28 @@ mod prompts;
 mod runtime;
 mod workflow;
 
+#[derive(Debug, Parser)]
+#[command(name = "mmat", about = "Make Me A Thing")]
+struct Cli {
+    /// Write TUI debug events and state snapshots to this log file
+    #[arg(long, value_name = "PATH")]
+    debug_log: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    let (sender, handle, instruction_rx) = TuiAppBuilder::default()
+    let cli = Cli::parse();
+
+    let mut builder = TuiAppBuilder::default()
         .title("MMAT")
         .with_input_screen("What are we building?")
-        .install_tracing_layer()
+        .install_tracing_layer();
+
+    if let Some(path) = cli.debug_log {
+        builder = builder.debug_log_path(path);
+    }
+
+    let (sender, handle, instruction_rx) = builder
         .spawn_with_input()
         .map_err(|error| AppError::Config(format!("failed to start TUI: {error}")))?;
 
@@ -51,4 +68,26 @@ async fn main() -> Result<(), AppError> {
         .await
         .map_err(|error| AppError::Config(format!("failed to shut down TUI: {error}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::Cli;
+
+    #[test]
+    fn parses_debug_log_flag() {
+        let cli = Cli::try_parse_from(["mmat", "--debug-log", "target/tui-debug.log"])
+            .expect("debug log flag should parse");
+
+        assert_eq!(cli.debug_log, Some("target/tui-debug.log".into()));
+    }
+
+    #[test]
+    fn help_lists_debug_log_flag() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("--debug-log <PATH>"));
+    }
 }
