@@ -1,5 +1,10 @@
 use std::env;
 
+use error::AppError;
+use naaf_tui::TuiAppBuilder;
+use runtime::AppRuntime;
+use workflow::run_mmat;
+
 mod error;
 mod models;
 mod parsing;
@@ -7,16 +12,11 @@ mod prompts;
 mod runtime;
 mod workflow;
 
-use error::AppError;
-use naaf_tui::TuiAppBuilder;
-use runtime::AppRuntime;
-use workflow::run_mmat;
-
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
     let (sender, handle, instruction_rx) = TuiAppBuilder::default()
         .title("MMAT")
-        .with_input_screen("Describe the work you want planned")
+        .with_input_screen("What are we building?")
         .install_tracing_layer()
         .spawn_with_input()
         .map_err(|error| AppError::Config(format!("failed to start TUI: {error}")))?;

@@ -3,13 +3,6 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::error::AppError;
 
-pub(crate) fn to_pretty_json<T>(value: &T) -> Result<String, AppError>
-where
-    T: Serialize + ?Sized,
-{
-    Ok(serde_json::to_string_pretty(value)?)
-}
-
 pub(crate) fn decode_json_output<T>(outcome: ExecutionOutcome) -> Result<T, serde_json::Error>
 where
     T: DeserializeOwned,
@@ -21,6 +14,22 @@ where
         .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing model output")))?;
 
     parse_json_payload(content)
+}
+
+pub(crate) fn extract_json_fragment(content: &str) -> Option<&str> {
+    let object_start = content.find('{');
+    let array_start = content.find('[');
+
+    let (start, end_char) = match (object_start, array_start) {
+        (Some(object), Some(array)) if object < array => (object, '}'),
+        (Some(_object), Some(array)) => (array, ']'),
+        (Some(object), None) => (object, '}'),
+        (None, Some(array)) => (array, ']'),
+        (None, None) => return None,
+    };
+
+    let end = content.rfind(end_char)?;
+    (end > start).then_some(&content[start..=end])
 }
 
 pub(crate) fn parse_json_payload<T>(content: &str) -> Result<T, serde_json::Error>
@@ -60,20 +69,11 @@ pub(crate) fn strip_code_fence(content: &str) -> Option<&str> {
     body.strip_suffix("```").map(str::trim)
 }
 
-pub(crate) fn extract_json_fragment(content: &str) -> Option<&str> {
-    let object_start = content.find('{');
-    let array_start = content.find('[');
-
-    let (start, end_char) = match (object_start, array_start) {
-        (Some(object), Some(array)) if object < array => (object, '}'),
-        (Some(_object), Some(array)) => (array, ']'),
-        (Some(object), None) => (object, '}'),
-        (None, Some(array)) => (array, ']'),
-        (None, None) => return None,
-    };
-
-    let end = content.rfind(end_char)?;
-    (end > start).then_some(&content[start..=end])
+pub(crate) fn to_pretty_json<T>(value: &T) -> Result<String, AppError>
+where
+    T: Serialize + ?Sized,
+{
+    Ok(serde_json::to_string_pretty(value)?)
 }
 
 #[cfg(test)]

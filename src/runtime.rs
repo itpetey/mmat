@@ -9,10 +9,66 @@ use tracing::Level;
 
 use crate::error::AppError;
 
+pub(crate) struct AppWebSearchTool {
+    inner: WebSearchTool<AppRuntime>,
+}
+
+pub(crate) struct AppReadFileTool {
+    inner: repository::ReadFileTool<AppRuntime>,
+}
+
+pub(crate) struct AppGlobPathsTool {
+    inner: repository::GlobPathsTool<AppRuntime>,
+}
+
+pub(crate) struct AppSearchFilesTool {
+    inner: repository::SearchFilesTool<AppRuntime>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AppRuntime {
     tui: EventSender,
     project_root: std::path::PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WebSearchConfig {
+    pub(crate) url: String,
+    pub(crate) api_key: Option<String>,
+}
+
+impl AppWebSearchTool {
+    pub(crate) fn new(config: &WebSearchConfig) -> Self {
+        let mut inner = WebSearchTool::new(config.url.clone());
+        if let Some(api_key) = &config.api_key {
+            inner = inner.with_api_key(api_key.clone());
+        }
+        Self { inner }
+    }
+}
+
+impl AppReadFileTool {
+    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            inner: repository::ReadFileTool::new(root),
+        }
+    }
+}
+
+impl AppGlobPathsTool {
+    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            inner: repository::GlobPathsTool::new(root),
+        }
+    }
+}
+
+impl AppSearchFilesTool {
+    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            inner: repository::SearchFilesTool::new(root),
+        }
+    }
 }
 
 impl AppRuntime {
@@ -70,12 +126,6 @@ impl HumanIO for AppRuntime {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct WebSearchConfig {
-    pub(crate) url: String,
-    pub(crate) api_key: Option<String>,
-}
-
 impl WebSearchConfig {
     pub(crate) fn from_env() -> Option<Self> {
         let url = env::var("MMAT_WEB_SEARCH_URL")
@@ -86,20 +136,6 @@ impl WebSearchConfig {
             .or_else(|| env::var("WEB_SEARCH_API_KEY").ok());
 
         Some(Self { url, api_key })
-    }
-}
-
-pub(crate) struct AppWebSearchTool {
-    inner: WebSearchTool<AppRuntime>,
-}
-
-impl AppWebSearchTool {
-    pub(crate) fn new(config: &WebSearchConfig) -> Self {
-        let mut inner = WebSearchTool::new(config.url.clone());
-        if let Some(api_key) = &config.api_key {
-            inner = inner.with_api_key(api_key.clone());
-        }
-        Self { inner }
     }
 }
 
@@ -125,18 +161,6 @@ impl Tool for AppWebSearchTool {
     }
 }
 
-pub(crate) struct AppReadFileTool {
-    inner: repository::ReadFileTool<AppRuntime>,
-}
-
-impl AppReadFileTool {
-    pub(crate) fn new(root: std::path::PathBuf) -> Self {
-        Self {
-            inner: repository::ReadFileTool::new(root),
-        }
-    }
-}
-
 impl Tool for AppReadFileTool {
     type Runtime = AppRuntime;
     type Error = AppError;
@@ -158,18 +182,6 @@ impl Tool for AppReadFileTool {
     }
 }
 
-pub(crate) struct AppGlobPathsTool {
-    inner: repository::GlobPathsTool<AppRuntime>,
-}
-
-impl AppGlobPathsTool {
-    pub(crate) fn new(root: std::path::PathBuf) -> Self {
-        Self {
-            inner: repository::GlobPathsTool::new(root),
-        }
-    }
-}
-
 impl Tool for AppGlobPathsTool {
     type Runtime = AppRuntime;
     type Error = AppError;
@@ -188,18 +200,6 @@ impl Tool for AppGlobPathsTool {
                 self.inner.call(runtime, arguments).await;
             result.map_err(|never| match never {})
         })
-    }
-}
-
-pub(crate) struct AppSearchFilesTool {
-    inner: repository::SearchFilesTool<AppRuntime>,
-}
-
-impl AppSearchFilesTool {
-    pub(crate) fn new(root: std::path::PathBuf) -> Self {
-        Self {
-            inner: repository::SearchFilesTool::new(root),
-        }
     }
 }
 

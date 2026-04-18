@@ -1,6 +1,130 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ImplementationManagementRequest {
+    pub(crate) pass_index: usize,
+    pub(crate) phase: String,
+    pub(crate) approved: ApprovedProposal,
+    pub(crate) plan: ImplementationPlan,
+    pub(crate) architect_review: StageReview,
+    pub(crate) completed_items: Vec<ImplementationItemResult>,
+    pub(crate) remediation_items: Vec<RemediationItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ImplementationTaskInput {
+    pub(crate) approved: ApprovedProposal,
+    pub(crate) plan: ImplementationPlan,
+    pub(crate) work_item: ManagedItem,
+    pub(crate) completed_items: Vec<ImplementationItemResult>,
+    pub(crate) prior_feedback: Vec<StageFinding>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WorkflowOutcome {
+    pub(crate) status: String,
+    pub(crate) approval: ApprovalOutcome,
+    pub(crate) plan: Option<ImplementationPlan>,
+    pub(crate) architect_review: Option<StageReview>,
+    pub(crate) completed_items: Vec<ImplementationItemResult>,
+    pub(crate) final_review: Option<FinalReview>,
+    pub(crate) next_step: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct FinalReviewInput {
+    pub(crate) approved: ApprovedProposal,
+    pub(crate) plan: ImplementationPlan,
+    pub(crate) completed_items: Vec<ImplementationItemResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ValidatedSolution {
+    pub(crate) branch: String,
+    pub(crate) proposal: SolutionProposal,
+    pub(crate) assessment_summary: String,
+    pub(crate) feasibility: String,
+    pub(crate) correctness: String,
+    pub(crate) delivery_risk: String,
+    pub(crate) recommendation: String,
+    pub(crate) findings: Vec<ValidationFinding>,
+    pub(crate) open_questions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ApprovedProposal {
+    pub(crate) proposal: ReconciledProposal,
+    pub(crate) approval: ApprovalOutcome,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ImplementationDraft {
+    pub(crate) input: ImplementationTaskInput,
+    pub(crate) worktree_name: String,
+    pub(crate) delta: ImplementationDelta,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct FinalReview {
+    pub(crate) summary: String,
+    pub(crate) ready: bool,
+    pub(crate) strengths: Vec<String>,
+    pub(crate) findings: Vec<StageFinding>,
+    pub(crate) remediation_items: Vec<RemediationItem>,
+    pub(crate) next_step: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ReconciledProposal {
+    pub(crate) title: String,
+    pub(crate) executive_summary: String,
+    pub(crate) recommended_direction: String,
+    pub(crate) why_this_plan: String,
+    pub(crate) adopted_ideas: Vec<ReconciledIdea>,
+    pub(crate) deferred_ideas: Vec<ReconciledIdea>,
+    pub(crate) scope: String,
+    pub(crate) architecture: Vec<String>,
+    pub(crate) delivery_plan: Vec<String>,
+    pub(crate) technologies: Vec<String>,
+    pub(crate) major_risks: Vec<String>,
+    pub(crate) open_questions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct StageReview {
+    pub(crate) summary: String,
+    pub(crate) findings: Vec<StageFinding>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ImplementationPlan {
+    pub(crate) summary: String,
+    pub(crate) milestones: Vec<PlanMilestone>,
+    pub(crate) risks: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PlanMilestone {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) objective: String,
+    pub(crate) items: Vec<PlanItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ImplementationWorklist {
+    pub(crate) summary: String,
+    pub(crate) items: Vec<ManagedItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ImplementationDelta {
+    pub(crate) summary: String,
+    pub(crate) rationale: Vec<String>,
+    pub(crate) changes: Vec<FileDelta>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ProjectPrompt {
     pub(crate) raw: String,
 }
@@ -39,39 +163,10 @@ pub(crate) struct ValidationFinding {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ValidatedSolution {
-    pub(crate) branch: String,
-    pub(crate) proposal: SolutionProposal,
-    pub(crate) assessment_summary: String,
-    pub(crate) feasibility: String,
-    pub(crate) correctness: String,
-    pub(crate) delivery_risk: String,
-    pub(crate) recommendation: String,
-    pub(crate) findings: Vec<ValidationFinding>,
-    pub(crate) open_questions: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ReconciledIdea {
     pub(crate) source_branch: String,
     pub(crate) idea: String,
     pub(crate) reason: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ReconciledProposal {
-    pub(crate) title: String,
-    pub(crate) executive_summary: String,
-    pub(crate) recommended_direction: String,
-    pub(crate) why_this_plan: String,
-    pub(crate) adopted_ideas: Vec<ReconciledIdea>,
-    pub(crate) deferred_ideas: Vec<ReconciledIdea>,
-    pub(crate) scope: String,
-    pub(crate) architecture: Vec<String>,
-    pub(crate) delivery_plan: Vec<String>,
-    pub(crate) technologies: Vec<String>,
-    pub(crate) major_risks: Vec<String>,
-    pub(crate) open_questions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,37 +178,10 @@ pub(crate) struct ApprovalOutcome {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ApprovedProposal {
-    pub(crate) proposal: ReconciledProposal,
-    pub(crate) approval: ApprovalOutcome,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StageFinding {
     pub(crate) severity: String,
     pub(crate) category: String,
     pub(crate) message: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct StageReview {
-    pub(crate) summary: String,
-    pub(crate) findings: Vec<StageFinding>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationPlan {
-    pub(crate) summary: String,
-    pub(crate) milestones: Vec<PlanMilestone>,
-    pub(crate) risks: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PlanMilestone {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) objective: String,
-    pub(crate) items: Vec<PlanItem>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -123,23 +191,6 @@ pub(crate) struct PlanItem {
     pub(crate) description: String,
     pub(crate) acceptance_criteria: Vec<String>,
     pub(crate) dependencies: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationManagementRequest {
-    pub(crate) pass_index: usize,
-    pub(crate) phase: String,
-    pub(crate) approved: ApprovedProposal,
-    pub(crate) plan: ImplementationPlan,
-    pub(crate) architect_review: StageReview,
-    pub(crate) completed_items: Vec<ImplementationItemResult>,
-    pub(crate) remediation_items: Vec<RemediationItem>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationWorklist {
-    pub(crate) summary: String,
-    pub(crate) items: Vec<ManagedItem>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,28 +214,6 @@ pub(crate) struct RemediationItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationTaskInput {
-    pub(crate) approved: ApprovedProposal,
-    pub(crate) plan: ImplementationPlan,
-    pub(crate) work_item: ManagedItem,
-    pub(crate) completed_items: Vec<ImplementationItemResult>,
-    pub(crate) prior_feedback: Vec<StageFinding>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationDelta {
-    pub(crate) summary: String,
-    pub(crate) rationale: Vec<String>,
-    pub(crate) changes: Vec<FileDelta>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationDraft {
-    pub(crate) input: ImplementationTaskInput,
-    pub(crate) delta: ImplementationDelta,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FileDelta {
     pub(crate) path: String,
     pub(crate) action: String,
@@ -198,34 +227,6 @@ pub(crate) struct ImplementationItemResult {
     pub(crate) summary: String,
     pub(crate) changed_files: Vec<String>,
     pub(crate) rationale: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct FinalReview {
-    pub(crate) summary: String,
-    pub(crate) ready: bool,
-    pub(crate) strengths: Vec<String>,
-    pub(crate) findings: Vec<StageFinding>,
-    pub(crate) remediation_items: Vec<RemediationItem>,
-    pub(crate) next_step: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct FinalReviewInput {
-    pub(crate) approved: ApprovedProposal,
-    pub(crate) plan: ImplementationPlan,
-    pub(crate) completed_items: Vec<ImplementationItemResult>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct WorkflowOutcome {
-    pub(crate) status: String,
-    pub(crate) approval: ApprovalOutcome,
-    pub(crate) plan: Option<ImplementationPlan>,
-    pub(crate) architect_review: Option<StageReview>,
-    pub(crate) completed_items: Vec<ImplementationItemResult>,
-    pub(crate) final_review: Option<FinalReview>,
-    pub(crate) next_step: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -413,6 +414,7 @@ mod tests {
                     "message": "add a remediation-loop test"
                 }]
             },
+            "worktree_name": "initial-implementation-item-1",
             "delta": {
                 "summary": "implemented validators",
                 "rationale": ["reused the existing command helpers"],
@@ -430,6 +432,7 @@ mod tests {
             serde_json::from_value(encoded).expect("draft should round-trip");
 
         assert_eq!(reparsed.input.work_item.id, "item-1");
+        assert_eq!(reparsed.worktree_name, "initial-implementation-item-1");
         assert_eq!(reparsed.input.prior_feedback[0].category, "testing");
         assert_eq!(reparsed.delta.changes[0].path, "src/workflow.rs");
     }
