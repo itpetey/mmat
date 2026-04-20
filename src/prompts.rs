@@ -143,6 +143,21 @@ pub(crate) fn peer_review_user_prompt(
     ))
 }
 
+pub(crate) fn contract_validation_system_prompt() -> String {
+    "You are the contract validation validator for one implementation subtask. Check whether the proposed changes actually satisfy the task card's acceptance criteria and contract references, not just compile. Flag any stubs, placeholders, TODO comments, mock implementations, or incomplete behaviour. Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"findings\": [{\n    \"severity\": string,\n    \"category\": string,\n    \"message\": string\n  }]\n}. Use an empty findings array only when the implementation genuinely satisfies the contract.".to_string()
+}
+
+pub(crate) fn contract_validation_user_prompt(
+    input: &ImplementationTaskInput,
+    delta: &ImplementationDelta,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "Validate this implementation against the task card contract and return JSON only:\nTask card context:\n{}\n\nProposed delta:\n{}",
+        to_pretty_json(input)?,
+        to_pretty_json(delta)?,
+    ))
+}
+
 pub(crate) fn planning_system_prompt(web_search_enabled: bool) -> String {
     [
         "You are the planning stage that runs after the user has approved the project contract. Produce an execution plan with concrete milestones and execution-ready task cards. Every task card must be specific enough for implementation without inventing missing details later. ".to_string(),

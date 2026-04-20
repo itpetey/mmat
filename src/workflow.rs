@@ -33,6 +33,7 @@ use crate::{
         approval_system_prompt, approval_user_prompt, architect_review_system_prompt,
         architect_review_user_prompt, contract_approval_system_prompt,
         contract_approval_user_prompt, contract_system_prompt, contract_user_prompt,
+        contract_validation_system_prompt, contract_validation_user_prompt,
         discovery_system_prompt, discovery_user_prompt, final_review_system_prompt,
         final_review_user_prompt, implementation_management_system_prompt,
         implementation_management_user_prompt, implementation_task_system_prompt,
@@ -642,7 +643,9 @@ fn build_implementation_step(
     AppError,
 > {
     let model_for_task = model.to_string();
+    let model_for_review = model.to_string();
     let task_web_search = web_search.clone();
+    let review_web_search = web_search.clone();
     let task = task_fn(
         move |runtime: &AppRuntime, input: ImplementationExecutionInput| {
             let model = model_for_task.clone();
@@ -735,8 +738,6 @@ fn build_implementation_step(
     })
     .observed_as("cargo_clippy");
 
-    let model_for_review = model.to_string();
-    let review_web_search = web_search.clone();
     let peer_review = check_fn(move |runtime: &AppRuntime, draft: ImplementationDraft| {
         let model = model_for_review.clone();
         let web_search = review_web_search.clone();
@@ -758,6 +759,31 @@ fn build_implementation_step(
         })
     })
     .observed_as("peer_review");
+
+    let contract_validation_model = model.to_string();
+    let contract_validation_web_search = web_search;
+    let contract_validation = check_fn(move |runtime: &AppRuntime, draft: ImplementationDraft| {
+        let model = contract_validation_model.clone();
+        let web_search = contract_validation_web_search.clone();
+        Box::pin(async move {
+            let llm = build_agent(
+                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                web_search,
+            )?;
+            let request = CompletionRequest::new(
+                model,
+                vec![
+                    Message::system(contract_validation_system_prompt()),
+                    Message::user(contract_validation_user_prompt(&draft.input, &draft.delta)?),
+                ],
+            );
+            let review =
+                execute_json_stage::<StageReview>(&llm, runtime, request, "contract validation")
+                    .await?;
+            Ok::<_, AppError>(review.findings)
+        })
+    })
+    .observed_as("contract_validation");
 
     let revise = repair_fn(
         |_runtime: &AppRuntime,
@@ -791,6 +817,7 @@ fn build_implementation_step(
         .validate(cargo_test)
         .validate(cargo_clippy)
         .validate(peer_review)
+        .validate(contract_validation)
         .repair_with(revise)
         .retry_policy(RetryPolicy::new(IMPLEMENTATION_RETRY_LIMIT))
         .build())
