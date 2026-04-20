@@ -3,7 +3,8 @@ use crate::{
     models::{
         ApprovalRequest, ApprovedContract, ContractApprovalRequest, ContractDraftInput,
         ExecutionPlan, FinalReviewInput, ImplementationDelta, ImplementationManagementRequest,
-        ImplementationTaskInput, IntentBrief, SolutionBranch, SolutionProposal, ValidatedSolution,
+        ImplementationTaskInput, IntentBrief, ReleaseAssessmentInput, SolutionBranch,
+        SolutionProposal, ValidatedSolution,
     },
     parsing::to_pretty_json,
 };
@@ -90,6 +91,19 @@ pub(crate) fn final_review_system_prompt(web_search_enabled: bool) -> String {
 pub(crate) fn final_review_user_prompt(input: &FinalReviewInput) -> Result<String, AppError> {
     Ok(format!(
         "Final review context:\n{}\n\nReview the finished solution now and return JSON only.",
+        to_pretty_json(input)?,
+    ))
+}
+
+pub(crate) fn release_assessment_system_prompt() -> String {
+    "You are the adversarial release judge. Your job is to break the illusion of done. Compare the completed work against the frozen project contract and the evidence log. Identify what was claimed but not proven, what remains incomplete, and whether the result is actually releasable. Be adversarial, not agreeable. Return raw JSON only with this shape: {\n  \"contract_items_satisfied\": string[],\n  \"contract_items_incomplete\": string[],\n  \"claimed_but_not_proven\": string[],\n  \"known_gaps\": string[],\n  \"residual_risks\": string[],\n  \"releasable\": boolean,\n  \"summary\": string\n}".to_string()
+}
+
+pub(crate) fn release_assessment_user_prompt(
+    input: &ReleaseAssessmentInput,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "Release judgment context:\n{}\n\nRender your verdict now. Return JSON only.",
         to_pretty_json(input)?,
     ))
 }

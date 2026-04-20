@@ -36,6 +36,7 @@ pub(crate) struct WorkflowOutcome {
     pub(crate) architect_review: Option<StageReview>,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
     pub(crate) final_review: Option<FinalReview>,
+    pub(crate) release_assessment: Option<ReleaseAssessment>,
     pub(crate) next_step: String,
 }
 
@@ -133,6 +134,25 @@ pub(crate) struct FinalReview {
     pub(crate) findings: Vec<StageFinding>,
     pub(crate) remediation_items: Vec<RemediationItem>,
     pub(crate) next_step: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ReleaseAssessmentInput {
+    pub(crate) contract: ProjectContract,
+    pub(crate) plan: ExecutionPlan,
+    pub(crate) task_results: Vec<ImplementationItemResult>,
+    pub(crate) evidence_log: EvidenceLog,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ReleaseAssessment {
+    pub(crate) contract_items_satisfied: Vec<String>,
+    pub(crate) contract_items_incomplete: Vec<String>,
+    pub(crate) claimed_but_not_proven: Vec<String>,
+    pub(crate) known_gaps: Vec<String>,
+    pub(crate) residual_risks: Vec<String>,
+    pub(crate) releasable: bool,
+    pub(crate) summary: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

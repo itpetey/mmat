@@ -10,6 +10,7 @@ pub(crate) enum RunArtifact {
     EvidenceLog,
     ArchitectReview,
     FinalReview,
+    ReleaseAssessment,
     WorkflowOutcome,
 }
 
@@ -26,6 +27,7 @@ impl RunArtifact {
             Self::EvidenceLog => "evidence-log.json",
             Self::ArchitectReview => "architect-review.json",
             Self::FinalReview => "final-review.json",
+            Self::ReleaseAssessment => "release-assessment.json",
             Self::WorkflowOutcome => "workflow-outcome.json",
         }
     }
@@ -65,6 +67,10 @@ mod tests {
             "architect-review.json"
         );
         assert_eq!(RunArtifact::FinalReview.file_name(), "final-review.json");
+        assert_eq!(
+            RunArtifact::ReleaseAssessment.file_name(),
+            "release-assessment.json"
+        );
         assert_eq!(
             RunArtifact::WorkflowOutcome.file_name(),
             "workflow-outcome.json"

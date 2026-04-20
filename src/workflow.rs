@@ -25,8 +25,9 @@ use crate::{
         ContractApprovalRequest, ContractDraftInput, EvidenceLog, ExecutionPlan, FinalReview,
         FinalReviewInput, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationTaskInput, ImplementationWorklist,
-        IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal, RunSummary, StageFinding,
-        StageReview, TaskCard, ValidatedSolution, ValidationFinding, WorkflowOutcome,
+        IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal, ReleaseAssessment,
+        ReleaseAssessmentInput, RunSummary, StageFinding, StageReview, TaskCard, ValidatedSolution,
+        ValidationFinding, WorkflowOutcome,
     },
     parsing::decode_json_output,
     prompts::{
@@ -39,7 +40,8 @@ use crate::{
         implementation_management_user_prompt, implementation_task_system_prompt,
         implementation_task_user_prompt, peer_review_system_prompt, peer_review_user_prompt,
         planning_system_prompt, planning_user_prompt, reconcile_system_prompt,
-        reconcile_user_prompt, solution_generation_system_prompt, solution_generation_user_prompt,
+        reconcile_user_prompt, release_assessment_system_prompt, release_assessment_user_prompt,
+        solution_generation_system_prompt, solution_generation_user_prompt,
         solution_validation_system_prompt, solution_validation_user_prompt,
     },
     runtime::{
@@ -389,16 +391,24 @@ pub(crate) async fn run_mmat(
         if let Some(final_review) = &outcome.final_review {
             runtime.persist_artifact(RunArtifact::FinalReview, final_review)?;
         }
-        runtime.persist_artifact(RunArtifact::WorkflowOutcome, &outcome)?;
+
+        let release_assessment =
+            run_release_assessment(runtime, &model, &outcome, web_search.clone()).await?;
+        runtime.persist_artifact(RunArtifact::ReleaseAssessment, &release_assessment)?;
+        log_release_assessment_summary(runtime, &release_assessment)?;
+
+        let mut final_outcome = outcome;
+        final_outcome.release_assessment = Some(release_assessment);
+        runtime.persist_artifact(RunArtifact::WorkflowOutcome, &final_outcome)?;
         write_run_summary(
             runtime,
             &prompt_context,
-            &outcome.status,
+            &final_outcome.status,
             "completed",
-            Some(&outcome.next_step),
+            Some(&final_outcome.next_step),
         )?;
 
-        return Ok(outcome);
+        return Ok(final_outcome);
     }
 }
 
@@ -2065,6 +2075,76 @@ async fn run_dynamic_implementation_workflow(
     Ok(outcome)
 }
 
+async fn run_release_assessment(
+    runtime: &AppRuntime,
+    model: &str,
+    outcome: &WorkflowOutcome,
+    web_search: Option<WebSearchConfig>,
+) -> Result<ReleaseAssessment, AppError> {
+    let Some(contract) = &outcome.contract else {
+        return Err(AppError::Workflow(
+            "cannot run release assessment without a project contract".to_string(),
+        ));
+    };
+
+    let evidence_log = EvidenceLog {
+        task_results: outcome.completed_items.clone(),
+    };
+
+    let llm = build_agent(runtime.project_root(), web_search)?;
+    let request = CompletionRequest::new(
+        model.to_string(),
+        vec![
+            Message::system(release_assessment_system_prompt()),
+            Message::user(release_assessment_user_prompt(&ReleaseAssessmentInput {
+                contract: contract.clone(),
+                plan: outcome.plan.clone().unwrap_or_else(|| ExecutionPlan {
+                    summary: String::new(),
+                    milestones: Vec::new(),
+                    task_cards: Vec::new(),
+                    risks: Vec::new(),
+                }),
+                task_results: outcome.completed_items.clone(),
+                evidence_log,
+            })?),
+        ],
+    );
+
+    let assessment =
+        execute_json_stage::<ReleaseAssessment>(&llm, runtime, request, "release assessment")
+            .await?;
+
+    Ok(assessment)
+}
+
+fn log_release_assessment_summary(
+    runtime: &AppRuntime,
+    assessment: &ReleaseAssessment,
+) -> Result<(), AppError> {
+    runtime.log_info("Release assessment complete.")?;
+    runtime.log_info(format!("Releasable: {}", assessment.releasable))?;
+    runtime.log_info(format!("Summary: {}", assessment.summary))?;
+    if !assessment.contract_items_incomplete.is_empty() {
+        runtime.log_warn(format!(
+            "Incomplete contract items: {}",
+            assessment.contract_items_incomplete.join(" | ")
+        ))?;
+    }
+    if !assessment.claimed_but_not_proven.is_empty() {
+        runtime.log_warn(format!(
+            "Claimed but not proven: {}",
+            assessment.claimed_but_not_proven.join(" | ")
+        ))?;
+    }
+    if !assessment.residual_risks.is_empty() {
+        runtime.log_warn(format!(
+            "Residual risks: {}",
+            assessment.residual_risks.join(" | ")
+        ))?;
+    }
+    Ok(())
+}
+
 async fn run_git_command(project_root: &Path, args: &[&str], label: &str) -> Result<(), AppError> {
     let output = Command::new("git")
         .args(args)
@@ -2145,6 +2225,7 @@ fn workflow_outcome_from_phase_result(result: &PhaseReviewResult) -> WorkflowOut
         architect_review: Some(result.phase.request.architect_review.clone()),
         completed_items: result.completed_items.clone(),
         final_review: Some(result.review.clone()),
+        release_assessment: None,
         next_step: result.review.next_step.clone(),
     }
 }
