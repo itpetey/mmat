@@ -7,6 +7,7 @@ pub(crate) enum RunArtifact {
     ProjectContract,
     ContractApprovalOutcome,
     ExecutionPlan,
+    EvidenceLog,
     ArchitectReview,
     FinalReview,
     WorkflowOutcome,
@@ -22,6 +23,7 @@ impl RunArtifact {
             Self::ProjectContract => "project-contract.json",
             Self::ContractApprovalOutcome => "contract-approval-outcome.json",
             Self::ExecutionPlan => "execution-plan.json",
+            Self::EvidenceLog => "evidence-log.json",
             Self::ArchitectReview => "architect-review.json",
             Self::FinalReview => "final-review.json",
             Self::WorkflowOutcome => "workflow-outcome.json",
@@ -57,6 +59,7 @@ mod tests {
             RunArtifact::ExecutionPlan.file_name(),
             "execution-plan.json"
         );
+        assert_eq!(RunArtifact::EvidenceLog.file_name(), "evidence-log.json");
         assert_eq!(
             RunArtifact::ArchitectReview.file_name(),
             "architect-review.json"

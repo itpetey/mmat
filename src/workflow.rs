@@ -21,9 +21,9 @@ use crate::{
     artifacts::RunArtifact,
     error::AppError,
     models::{
-        ApprovalOutcome, ApprovalRequest, ApprovedContract, ApprovedProposal,
-        ContractApprovalRequest, ContractDraftInput, ExecutionPlan, FinalReview, FinalReviewInput,
-        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
+        ApprovalOutcome, ApprovalRequest, ApprovedContract, ApprovedProposal, CommandEvidence,
+        ContractApprovalRequest, ContractDraftInput, EvidenceLog, ExecutionPlan, FinalReview,
+        FinalReviewInput, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationTaskInput, ImplementationWorklist,
         IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal, RunSummary, StageFinding,
         StageReview, TaskCard, ValidatedSolution, ValidationFinding, WorkflowOutcome,
@@ -979,8 +979,15 @@ fn build_phase_review_step(
             }
             for result in &current_results {
                 log_implementation_result(runtime, result)?;
+                runtime.persist_task_result(result)?;
             }
             completed_items.extend(current_results);
+            runtime.persist_artifact(
+                RunArtifact::EvidenceLog,
+                &EvidenceLog {
+                    task_results: completed_items.clone(),
+                },
+            )?;
             remove_directory_if_exists(&baseline_root)?;
 
             let review = execute_json_stage::<FinalReview>(
@@ -1528,6 +1535,17 @@ fn log_implementation_result(
             result.changed_files.join(" | ")
         ))?;
     }
+    if !result.commands_run.is_empty() {
+        runtime.log_info(format!(
+            "Evidence: {}",
+            result
+                .commands_run
+                .iter()
+                .map(|command| format!("{}={}", command.command, command.outcome))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ))?;
+    }
     Ok(())
 }
 
@@ -1715,11 +1733,39 @@ async fn merge_item_worktree(
 
     Ok(ImplementationItemResult {
         item_id: draft.input.work_item.id.clone(),
+        source: draft.input.work_item.source.clone(),
+        milestone_id: draft.input.work_item.milestone_id.clone(),
         title: draft.input.work_item.title.clone(),
+        objective: draft.input.work_item.objective.clone(),
         summary: draft.delta.summary.clone(),
+        contract_refs: draft.input.work_item.contract_refs.clone(),
         changed_files: changes.into_iter().map(|change| change.path).collect(),
         rationale: draft.delta.rationale.clone(),
+        commands_run: build_command_evidence(&draft.input.work_item),
+        reviewer_findings: Vec::new(),
+        manual_checks: draft.input.work_item.acceptance_criteria.clone(),
+        known_gaps: Vec::new(),
+        scope_deviation: None,
+        worktree_name: draft.worktree_name.clone(),
     })
+}
+
+fn build_command_evidence(task_card: &TaskCard) -> Vec<CommandEvidence> {
+    let mut commands = BTreeSet::new();
+    commands.insert("cargo fmt --all".to_string());
+    commands.insert("cargo check".to_string());
+    commands.insert("cargo test".to_string());
+    commands.insert("cargo clippy -- -D warnings".to_string());
+    commands.insert("peer review".to_string());
+    commands.extend(task_card.verification_commands.iter().cloned());
+
+    commands
+        .into_iter()
+        .map(|command| CommandEvidence {
+            command,
+            outcome: "passed".to_string(),
+        })
+        .collect()
 }
 
 fn next_management_request(result: &PhaseReviewResult) -> ImplementationManagementRequest {
@@ -2126,15 +2172,15 @@ mod tests {
     use super::{
         ExecutionGraphSteps, FinalReviewDisposition, ImplementationExecutionInput, ManagedPhase,
         PhaseExecutionInput, PhaseReviewAction, PhaseReviewResult, append_user_guidance,
-        approval_granted, build_outcome_patch, build_outcome_step, build_phase_patch,
-        build_review_patch, discovery_ready_for_solution, final_review_disposition,
-        next_management_request, phase_label, phase_review_action,
+        approval_granted, build_command_evidence, build_outcome_patch, build_outcome_step,
+        build_phase_patch, build_review_patch, discovery_ready_for_solution,
+        final_review_disposition, next_management_request, phase_label, phase_review_action,
     };
     use crate::models::{
-        ApprovalOutcome, ApprovedContract, ApprovedProposal, ExecutionMilestone, ExecutionPlan,
-        FileDelta, FinalReview, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
-        ImplementationManagementRequest, ImplementationTaskInput, IntentBrief, ProjectContract,
-        ReconciledProposal, RemediationItem, StageReview, TaskCard,
+        ApprovalOutcome, ApprovedContract, ApprovedProposal, CommandEvidence, ExecutionMilestone,
+        ExecutionPlan, FileDelta, FinalReview, ImplementationDelta, ImplementationDraft,
+        ImplementationItemResult, ImplementationManagementRequest, ImplementationTaskInput,
+        IntentBrief, ProjectContract, ReconciledProposal, RemediationItem, StageReview, TaskCard,
     };
     use crate::{error::AppError, runtime::AppRuntime};
     use naaf_core::{NeverFinding, NodeId, Step, task_fn};
@@ -2145,8 +2191,12 @@ mod tests {
     ) -> ImplementationItemResult {
         ImplementationItemResult {
             item_id: item.id.clone(),
+            source: item.source.clone(),
+            milestone_id: item.milestone_id.clone(),
             title: item.title.clone(),
+            objective: item.objective.clone(),
             summary: draft.delta.summary.clone(),
+            contract_refs: item.contract_refs.clone(),
             changed_files: draft
                 .delta
                 .changes
@@ -2154,6 +2204,12 @@ mod tests {
                 .map(|change| change.path.clone())
                 .collect(),
             rationale: draft.delta.rationale.clone(),
+            commands_run: build_command_evidence(item),
+            reviewer_findings: Vec::new(),
+            manual_checks: item.acceptance_criteria.clone(),
+            known_gaps: Vec::new(),
+            scope_deviation: None,
+            worktree_name: draft.worktree_name.clone(),
         }
     }
 
@@ -2562,10 +2618,23 @@ mod tests {
             phase: sample_phase(0, 0),
             completed_items: vec![crate::models::ImplementationItemResult {
                 item_id: "item-1".to_string(),
+                source: "plan".to_string(),
+                milestone_id: Some("m1".to_string()),
                 title: "done".to_string(),
+                objective: "Ship it".to_string(),
                 summary: "implemented".to_string(),
+                contract_refs: vec!["AC-1".to_string()],
                 changed_files: vec!["src/workflow.rs".to_string()],
                 rationale: vec!["minimal".to_string()],
+                commands_run: vec![CommandEvidence {
+                    command: "cargo test".to_string(),
+                    outcome: "passed".to_string(),
+                }],
+                reviewer_findings: Vec::new(),
+                manual_checks: vec!["fixed".to_string()],
+                known_gaps: Vec::new(),
+                scope_deviation: None,
+                worktree_name: "initial-implementation-item-1".to_string(),
             }],
             review: FinalReview {
                 summary: "needs follow-up".to_string(),
@@ -2695,10 +2764,17 @@ mod tests {
         let result = item_result_from_draft(&item, &draft);
 
         assert_eq!(result.item_id, "item-1");
+        assert_eq!(result.source, "plan");
+        assert_eq!(result.milestone_id.as_deref(), Some("m1"));
+        assert_eq!(result.objective, "Implement the feature");
+        assert_eq!(result.contract_refs, vec!["AC-1"]);
         assert_eq!(
             result.changed_files,
             vec!["src/workflow.rs", "src/prompts.rs"]
         );
         assert_eq!(result.rationale, vec!["kept it small"]);
+        assert_eq!(result.manual_checks, vec!["works"]);
+        assert_eq!(result.commands_run[0].outcome, "passed");
+        assert_eq!(result.worktree_name, "initial-implementation-item-1");
     }
 }

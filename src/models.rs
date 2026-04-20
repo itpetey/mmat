@@ -288,10 +288,31 @@ pub(crate) struct FileDelta {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ImplementationItemResult {
     pub(crate) item_id: String,
+    pub(crate) source: String,
+    pub(crate) milestone_id: Option<String>,
     pub(crate) title: String,
+    pub(crate) objective: String,
     pub(crate) summary: String,
+    pub(crate) contract_refs: Vec<String>,
     pub(crate) changed_files: Vec<String>,
     pub(crate) rationale: Vec<String>,
+    pub(crate) commands_run: Vec<CommandEvidence>,
+    pub(crate) reviewer_findings: Vec<StageFinding>,
+    pub(crate) manual_checks: Vec<String>,
+    pub(crate) known_gaps: Vec<String>,
+    pub(crate) scope_deviation: Option<String>,
+    pub(crate) worktree_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct CommandEvidence {
+    pub(crate) command: String,
+    pub(crate) outcome: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct EvidenceLog {
+    pub(crate) task_results: Vec<ImplementationItemResult>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -441,10 +462,23 @@ mod tests {
             },
             "completed_items": [{
                 "item_id": "item-1",
+                "source": "plan",
+                "milestone_id": "m1",
                 "title": "Add planning stage",
+                "objective": "Create the planning stage outputs",
                 "summary": "implemented stage models",
+                "contract_refs": ["AC-1"],
                 "changed_files": ["src/models.rs"],
-                "rationale": ["keep ids stable"]
+                "rationale": ["keep ids stable"],
+                "commands_run": [{
+                    "command": "cargo test",
+                    "outcome": "passed"
+                }],
+                "reviewer_findings": [],
+                "manual_checks": ["returns milestones"],
+                "known_gaps": [],
+                "scope_deviation": null,
+                "worktree_name": "initial-implementation-item-1"
             }],
             "final_review": {
                 "summary": "ready to ship",
@@ -563,10 +597,23 @@ mod tests {
                 },
                 "completed_items": [{
                     "item_id": "item-0",
+                    "source": "plan",
+                    "milestone_id": "m0",
                     "title": "Scaffold stage",
+                    "objective": "Prepare the workflow",
                     "summary": "done",
+                    "contract_refs": ["AC-0"],
                     "changed_files": ["src/workflow.rs"],
-                    "rationale": ["needed for the next item"]
+                    "rationale": ["needed for the next item"],
+                    "commands_run": [{
+                        "command": "cargo check",
+                        "outcome": "passed"
+                    }],
+                    "reviewer_findings": [],
+                    "manual_checks": ["workflow exists"],
+                    "known_gaps": [],
+                    "scope_deviation": null,
+                    "worktree_name": "initial-implementation-item-0"
                 }],
                 "prior_feedback": [{
                     "severity": "high",

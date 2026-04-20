@@ -11,7 +11,7 @@ use tracing::Level;
 use crate::{
     artifacts::RunArtifact,
     error::AppError,
-    models::{RunSummary, TaskCard},
+    models::{ImplementationItemResult, RunSummary, TaskCard},
     run_store::RunStore,
 };
 
@@ -144,6 +144,14 @@ impl AppRuntime {
 
     pub(crate) fn persist_task_card(&self, task_card: &TaskCard) -> Result<(), AppError> {
         self.run_store.write_task_card(&task_card.id, task_card)
+    }
+
+    pub(crate) fn persist_task_result(
+        &self,
+        task_result: &ImplementationItemResult,
+    ) -> Result<(), AppError> {
+        self.run_store
+            .write_task_result(&task_result.item_id, task_result)
     }
 }
 

@@ -11,6 +11,7 @@ use crate::{artifacts::RunArtifact, error::AppError, parsing::to_pretty_json};
 
 const RUNS_DIR: &str = ".mmat/runs";
 const TASK_CARDS_DIR: &str = "task-cards";
+const TASK_RESULTS_DIR: &str = "task-results";
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunStore {
@@ -58,6 +59,15 @@ impl RunStore {
     {
         let file_name = format!("{}.json", sanitise_file_stem(task_id));
         let path = self.run_root.join(TASK_CARDS_DIR).join(file_name);
+        self.write_json_to_path(&path, value)
+    }
+
+    pub(crate) fn write_task_result<T>(&self, task_id: &str, value: &T) -> Result<(), AppError>
+    where
+        T: Serialize + ?Sized,
+    {
+        let file_name = format!("{}.json", sanitise_file_stem(task_id));
+        let path = self.run_root.join(TASK_RESULTS_DIR).join(file_name);
         self.write_json_to_path(&path, value)
     }
 
@@ -182,6 +192,22 @@ mod tests {
 
         let card_path = store.run_root().join("task-cards/task_1.json");
         assert!(card_path.exists());
+
+        fs::remove_dir_all(root).expect("temp root should be removed");
+    }
+
+    #[test]
+    fn writes_task_results_to_dedicated_directory() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("temp root should be created");
+
+        let store = RunStore::create(&root).expect("run store should be created");
+        store
+            .write_task_result("task:1", &json!({"summary": "done"}))
+            .expect("task result should be written");
+
+        let result_path = store.run_root().join("task-results/task_1.json");
+        assert!(result_path.exists());
 
         fs::remove_dir_all(root).expect("temp root should be removed");
     }
