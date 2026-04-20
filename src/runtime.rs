@@ -2,7 +2,6 @@ use std::{env, io::BufRead, path::Path};
 
 use futures::future::LocalBoxFuture;
 use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion, Tool, ToolSpec, WebSearchTool, repository};
-use naaf_tui::{EventSender, TuiEvent};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -13,6 +12,7 @@ use crate::{
     error::AppError,
     models::{ImplementationItemResult, RunSummary, TaskCard},
     run_store::RunStore,
+    ws::{EventSender, FrontendEvent},
 };
 
 pub(crate) struct AppWebSearchTool {
@@ -33,7 +33,7 @@ pub(crate) struct AppSearchFilesTool {
 
 #[derive(Clone, Debug)]
 pub(crate) enum RuntimeMode {
-    Tui(EventSender),
+    Interactive(EventSender),
     NonInteractive,
 }
 
@@ -86,12 +86,12 @@ impl AppSearchFilesTool {
 
 impl AppRuntime {
     pub(crate) fn new(
-        tui: EventSender,
+        event_sender: EventSender,
         project_root: std::path::PathBuf,
     ) -> Result<Self, AppError> {
         let run_store = RunStore::create(&project_root)?;
         Ok(Self {
-            mode: RuntimeMode::Tui(tui),
+            mode: RuntimeMode::Interactive(event_sender),
             project_root,
             run_store,
         })
@@ -106,11 +106,11 @@ impl AppRuntime {
         })
     }
 
-    fn send_event(&self, event: TuiEvent) -> Result<(), AppError> {
+    fn send_event(&self, event: FrontendEvent) -> Result<(), AppError> {
         match &self.mode {
-            RuntimeMode::Tui(sender) => sender.send(event).map_err(|_| AppError::TuiClosed),
+            RuntimeMode::Interactive(sender) => sender.send(event).map_err(|_| AppError::WsClosed),
             RuntimeMode::NonInteractive => {
-                if let TuiEvent::Log {
+                if let FrontendEvent::Log {
                     level,
                     target,
                     message,
@@ -130,7 +130,7 @@ impl AppRuntime {
     }
 
     fn log(&self, level: Level, message: impl Into<String>) -> Result<(), AppError> {
-        self.send_event(TuiEvent::Log {
+        self.send_event(FrontendEvent::Log {
             level,
             target: "mmat".to_string(),
             message: message.into(),
@@ -198,15 +198,15 @@ impl HumanIO for AppRuntime {
     ) -> LocalBoxFuture<'a, Result<HumanAnswer, Self::Error>> {
         Box::pin(async move {
             match &self.mode {
-                RuntimeMode::Tui(sender) => {
+                RuntimeMode::Interactive(sender) => {
                     let (reply_tx, reply_rx) = oneshot::channel();
                     sender
-                        .send(TuiEvent::HumanPrompt {
+                        .send(FrontendEvent::HumanPrompt {
                             question: question.question,
                             choices: question.choices.unwrap_or_default(),
                             reply: reply_tx,
                         })
-                        .map_err(|_| AppError::TuiClosed)?;
+                        .map_err(|_| AppError::WsClosed)?;
 
                     let answer = reply_rx.await.map_err(|_| AppError::PromptClosed)?;
                     Ok(HumanAnswer { content: answer })

@@ -1,10 +1,10 @@
-use std::{env, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use error::AppError;
-use naaf_tui::TuiAppBuilder;
 use runtime::AppRuntime;
 use workflow::run_mmat;
+use ws::{WsAppBuilder, WsLayer};
 
 mod artifacts;
 mod error;
@@ -14,15 +14,16 @@ mod prompts;
 mod run_store;
 mod runtime;
 mod workflow;
+mod ws;
 
 #[derive(Debug, Parser)]
 #[command(name = "mmat", about = "Make Me A Thing")]
 struct Cli {
-    /// Write TUI debug events and state snapshots to this log file
+    /// Write WS debug events and state snapshots to this log file
     #[arg(long, value_name = "PATH")]
     debug_log: Option<PathBuf>,
 
-    /// Project prompt to start immediately (bypasses the TUI input screen)
+    /// Project prompt to start immediately (bypasses the WS input screen)
     #[arg(long, value_name = "PROMPT")]
     prompt: Option<String>,
 
@@ -37,6 +38,10 @@ struct Cli {
     /// Print run artifact paths to stdout and exit after the workflow
     #[arg(long)]
     export_artifacts: bool,
+
+    /// Address for the WebSocket server
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    ws_addr: SocketAddr,
 }
 
 #[tokio::main]
@@ -58,7 +63,7 @@ async fn main() -> Result<(), AppError> {
 
 async fn run_non_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
     let prompt = cli.prompt.clone().ok_or_else(|| {
-        AppError::Config("--prompt is required when not running in TUI mode".to_string())
+        AppError::Config("--prompt is required when not running in interactive mode".to_string())
     })?;
 
     let runtime = AppRuntime::new_non_interactive(project_root)?;
@@ -101,18 +106,17 @@ async fn run_non_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), App
 }
 
 async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
-    let mut builder = TuiAppBuilder::default()
-        .title("MMAT")
-        .with_input_screen("What are we building?")
-        .install_tracing_layer();
-
-    if let Some(path) = &cli.debug_log {
-        builder = builder.debug_log_path(path.clone());
-    }
+    let builder = WsAppBuilder::default()
+        .addr(cli.ws_addr)
+        .with_input_screen("What are we building?");
 
     let (sender, handle, instruction_rx) = builder
         .spawn_with_input()
-        .map_err(|error| AppError::Config(format!("failed to start TUI: {error}")))?;
+        .map_err(|error| AppError::Config(format!("failed to start WS server: {error}")))?;
+
+    let layer = WsLayer::new(sender.clone());
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry().with(layer).init();
 
     let runtime = AppRuntime::new(sender, project_root)?;
     runtime.log_info(format!(
@@ -123,7 +127,7 @@ async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppErro
     runtime.log_info("MMAT is ready. Enter a project prompt to begin.")?;
 
     let result = async {
-        let instruction = instruction_rx.await.map_err(|_| AppError::TuiClosed)?;
+        let instruction = instruction_rx.await.map_err(|_| AppError::PromptClosed)?;
         runtime.log_info("Prompt received. Starting discovery.")?;
         run_mmat(&runtime, instruction).await
     }
@@ -137,7 +141,7 @@ async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppErro
             ))?;
             true
         }
-        Err(AppError::TuiClosed | AppError::PromptClosed) => false,
+        Err(AppError::PromptClosed) => false,
         Err(error) => {
             runtime.log_error(format!("Workflow failed: {error}"))?;
             true
@@ -145,12 +149,13 @@ async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppErro
     };
 
     if show_completion_hint {
-        runtime.log_info("Workflow complete. Press q to exit.")?;
+        runtime.log_info("Workflow complete. The WS server will remain active.")?;
     }
+
     handle
         .shutdown()
         .await
-        .map_err(|error| AppError::Config(format!("failed to shut down TUI: {error}")))?;
+        .map_err(|error| AppError::Config(format!("failed to shut down WS server: {error}")))?;
     Ok(())
 }
 
@@ -162,10 +167,10 @@ mod tests {
 
     #[test]
     fn parses_debug_log_flag() {
-        let cli = Cli::try_parse_from(["mmat", "--debug-log", "target/tui-debug.log"])
+        let cli = Cli::try_parse_from(["mmat", "--debug-log", "target/ws-debug.log"])
             .expect("debug log flag should parse");
 
-        assert_eq!(cli.debug_log, Some("target/tui-debug.log".into()));
+        assert_eq!(cli.debug_log, Some("target/ws-debug.log".into()));
     }
 
     #[test]
@@ -210,6 +215,17 @@ mod tests {
         assert_eq!(
             cli.resume,
             Some(std::path::PathBuf::from(".mmat/runs/run-1"))
+        );
+    }
+
+    #[test]
+    fn parses_ws_addr_flag() {
+        let cli = Cli::try_parse_from(["mmat", "--ws-addr", "0.0.0.0:9090"])
+            .expect("ws addr flag should parse");
+
+        assert_eq!(
+            cli.ws_addr,
+            std::net::SocketAddr::from(([0, 0, 0, 0], 9090))
         );
     }
 }

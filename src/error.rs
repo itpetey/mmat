@@ -5,8 +5,8 @@ use thiserror::Error;
 pub(crate) enum AppError {
     #[error("configuration error: {0}")]
     Config(String),
-    #[error("the TUI channel closed")]
-    TuiClosed,
+    #[error("the WS channel closed")]
+    WsClosed,
     #[error("the active prompt closed before an answer was received")]
     PromptClosed,
     #[error(transparent)]
@@ -17,4 +17,6 @@ pub(crate) enum AppError {
     WebSearch(#[from] WebSearchError),
     #[error("workflow error: {0}")]
     Workflow(String),
+    #[error("workspace error: {0}")]
+    Workspace(String),
 }

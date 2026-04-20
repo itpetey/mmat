@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
-    env, fs,
-    path::{Component, Path, PathBuf},
+    env,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -15,6 +15,17 @@ use naaf_llm::{
     OpenAiClient, OpenAiConfig, OpenAiError, QuestionTool, RegisterToolError, Tool, ToolRegistry,
 };
 use naaf_persistence_fs::FsCheckpointer;
+use naaf_workspace::{
+    FileDelta as NaafFileDelta, FileDeltaSet as NaafFileDeltaSet,
+    apply_file_deltas as naaf_apply_file_deltas,
+    build_workspace_delta as naaf_build_workspace_delta,
+    command_failure_summary as naaf_command_failure_summary,
+    create_baseline_snapshot as naaf_create_baseline_snapshot,
+    merge_change_into_workspace as naaf_merge_change_into_workspace,
+    prepare_worktree as naaf_prepare_worktree,
+    remove_directory_if_exists as naaf_remove_directory_if_exists,
+    remove_worktree as naaf_remove_worktree,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 
@@ -438,56 +449,21 @@ pub(crate) async fn run_mmat(
 }
 
 fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), AppError> {
-    for change in &delta.changes {
-        let path = resolve_project_path(root, &change.path)?;
-        match change.action.as_str() {
-            "write" => {
-                let Some(content) = &change.content else {
-                    return Err(AppError::Workflow(format!(
-                        "file delta for `{}` is missing content",
-                        change.path
-                    )));
-                };
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|error| {
-                        AppError::Workflow(format!("failed to create directory: {error}"))
-                    })?;
-                }
-                fs::write(&path, content).map_err(|error| {
-                    AppError::Workflow(format!("failed to write `{}`: {error}", change.path))
-                })?;
-            }
-            "delete" => {
-                if path.exists() {
-                    fs::remove_file(&path).map_err(|error| {
-                        AppError::Workflow(format!("failed to delete `{}`: {error}", change.path))
-                    })?;
-                }
-            }
-            other => {
-                return Err(AppError::Workflow(format!(
-                    "unsupported file delta action `{other}` for `{}`",
-                    change.path
-                )));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn apply_single_change(
-    project_root: &Path,
-    change: &crate::models::FileDelta,
-) -> Result<(), AppError> {
-    apply_file_deltas(
-        project_root,
-        &ImplementationDelta {
-            summary: "apply merged worktree change".to_string(),
-            rationale: Vec::new(),
-            changes: vec![change.clone()],
-        },
-    )
+    let naaf_delta = NaafFileDeltaSet {
+        summary: delta.summary.clone(),
+        rationale: delta.rationale.clone(),
+        changes: delta
+            .changes
+            .iter()
+            .map(|c| NaafFileDelta {
+                path: c.path.clone(),
+                action: c.action.clone(),
+                content: c.content.clone(),
+            })
+            .collect(),
+    };
+    naaf_apply_file_deltas(root, &naaf_delta)
+        .map_err(|error| AppError::Workspace(error.to_string()))
 }
 
 fn approval_granted(approval: &ApprovalOutcome) -> bool {
@@ -546,22 +522,13 @@ fn build_approval_task(
     Output = ApprovalOutcome,
     Error = LlmStageError,
 > + use<> {
-    let model = model.to_string();
-    let system_prompt = approval_system_prompt();
-
-    llm.task(
-        move |_runtime: &AppRuntime, request: ApprovalRequest| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(approval_user_prompt(&request)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        approval_system_prompt(),
+        |request: ApprovalRequest| approval_user_prompt(&request),
         decode_json_output::<ApprovalOutcome>,
+        "approval".to_string(),
     )
-    .observed_as("approval")
 }
 
 fn build_architect_review_task(
@@ -569,22 +536,13 @@ fn build_architect_review_task(
     model: &str,
 ) -> impl Task<Runtime = AppRuntime, Input = ExecutionPlan, Output = StageReview, Error = LlmStageError>
 + use<> {
-    let model = model.to_string();
-    let system_prompt = architect_review_system_prompt();
-
-    llm.task(
-        move |_runtime: &AppRuntime, plan: ExecutionPlan| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(architect_review_user_prompt(&plan)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        architect_review_system_prompt(),
+        |plan: ExecutionPlan| architect_review_user_prompt(&plan),
         decode_json_output::<StageReview>,
+        "architect_review".to_string(),
     )
-    .observed_as("architect_review")
 }
 
 fn build_contract_approval_task(
@@ -596,22 +554,13 @@ fn build_contract_approval_task(
     Output = ApprovalOutcome,
     Error = LlmStageError,
 > + use<> {
-    let model = model.to_string();
-    let system_prompt = contract_approval_system_prompt();
-
-    llm.task(
-        move |_runtime: &AppRuntime, request: ContractApprovalRequest| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(contract_approval_user_prompt(&request)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        contract_approval_system_prompt(),
+        |request: ContractApprovalRequest| contract_approval_user_prompt(&request),
         decode_json_output::<ApprovalOutcome>,
+        "contract_approval".to_string(),
     )
-    .observed_as("contract_approval")
 }
 
 fn build_contract_task(
@@ -624,22 +573,14 @@ fn build_contract_task(
     Output = ProjectContract,
     Error = LlmStageError,
 > + use<> {
-    let model = model.to_string();
     let system_prompt = contract_system_prompt(web_search_enabled);
-
-    llm.task(
-        move |_runtime: &AppRuntime, input: ContractDraftInput| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(contract_user_prompt(&input)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        system_prompt,
+        |input: ContractDraftInput| contract_user_prompt(&input),
         decode_json_output::<ProjectContract>,
+        "project_contract".to_string(),
     )
-    .observed_as("project_contract")
 }
 
 fn build_discovery_task(
@@ -648,26 +589,20 @@ fn build_discovery_task(
     web_search_enabled: bool,
 ) -> impl Task<Runtime = AppRuntime, Input = ProjectPrompt, Output = IntentBrief, Error = LlmStageError>
 + use<> {
-    let model = model.to_string();
     let system_prompt = discovery_system_prompt(web_search_enabled);
-
-    llm.task(
-        move |_runtime: &AppRuntime, input: ProjectPrompt| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(discovery_user_prompt(
-                        &input.raw,
-                        input.clarification_attempt,
-                        input.clarification_limit,
-                    )),
-                ],
+    llm.json_task(
+        model.to_string(),
+        system_prompt,
+        |input: ProjectPrompt| {
+            Ok(discovery_user_prompt(
+                &input.raw,
+                input.clarification_attempt,
+                input.clarification_limit,
             ))
         },
         decode_json_output::<IntentBrief>,
+        "discovery".to_string(),
     )
-    .observed_as("discovery")
 }
 
 fn build_implementation_step(
@@ -716,7 +651,7 @@ fn build_implementation_step(
     let apply_deltas = materialiser_fn(|runtime: &AppRuntime, draft: ImplementationDraft| {
         Box::pin(async move {
             apply_file_deltas(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 &draft.delta,
             )?;
             Ok::<_, AppError>(draft)
@@ -727,7 +662,7 @@ fn build_implementation_step(
     let cargo_fmt = materialiser_fn(|runtime: &AppRuntime, draft: ImplementationDraft| {
         Box::pin(async move {
             run_command(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 "cargo fmt --all",
                 &["fmt", "--all"],
             )
@@ -740,7 +675,7 @@ fn build_implementation_step(
     let cargo_check = check_fn(|runtime: &AppRuntime, draft: ImplementationDraft| {
         Box::pin(async move {
             run_validator(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 "cargo check",
                 &["check"],
             )
@@ -752,7 +687,7 @@ fn build_implementation_step(
     let cargo_test = check_fn(|runtime: &AppRuntime, draft: ImplementationDraft| {
         Box::pin(async move {
             run_validator(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 "cargo test",
                 &["test"],
             )
@@ -764,7 +699,7 @@ fn build_implementation_step(
     let cargo_clippy = check_fn(|runtime: &AppRuntime, draft: ImplementationDraft| {
         Box::pin(async move {
             run_validator(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 "cargo clippy -- -D warnings",
                 &["clippy", "--", "-D", "warnings"],
             )
@@ -778,7 +713,7 @@ fn build_implementation_step(
         let web_search = review_web_search.clone();
         Box::pin(async move {
             let llm = build_agent(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 web_search,
             )?;
             let request = CompletionRequest::new(
@@ -802,7 +737,7 @@ fn build_implementation_step(
         let web_search = contract_validation_web_search.clone();
         Box::pin(async move {
             let llm = build_agent(
-                worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
+                mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 web_search,
             )?;
             let request = CompletionRequest::new(
@@ -1028,10 +963,11 @@ fn build_phase_review_step(
         let model = model.clone();
         let system_prompt = system_prompt.clone();
         Box::pin(async move {
-            let baseline_root = create_baseline_snapshot(
+            let baseline_root = naaf_create_baseline_snapshot(
                 runtime.project_root(),
                 &format!("baseline-{}", input.phase.request.phase.replace('_', "-")),
-            )?;
+            )
+            .map_err(|error| AppError::Workspace(error.to_string()))?;
             let mut completed_items = input.phase.request.completed_items.clone();
             let mut current_results = Vec::new();
             for draft in &input.drafts {
@@ -1050,7 +986,8 @@ fn build_phase_review_step(
                     task_results: completed_items.clone(),
                 },
             )?;
-            remove_directory_if_exists(&baseline_root)?;
+            naaf_remove_directory_if_exists(&baseline_root)
+                .map_err(|error| AppError::Workspace(error.to_string()))?;
 
             let review = execute_json_stage::<FinalReview>(
                 llm.as_ref(),
@@ -1104,22 +1041,14 @@ fn build_planning_task(
     Output = ExecutionPlan,
     Error = LlmStageError,
 > + use<> {
-    let model = model.to_string();
     let system_prompt = planning_system_prompt(web_search_enabled);
-
-    llm.task(
-        move |_runtime: &AppRuntime, approved: ApprovedContract| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(planning_user_prompt(&approved)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        system_prompt,
+        |approved: ApprovedContract| planning_user_prompt(&approved),
         decode_json_output::<ExecutionPlan>,
+        "planning".to_string(),
     )
-    .observed_as("planning")
 }
 
 fn build_knowledge_compilation_task(
@@ -1132,22 +1061,14 @@ fn build_knowledge_compilation_task(
     Output = KnowledgeArtifact,
     Error = LlmStageError,
 > + use<> {
-    let model = model.to_string();
     let system_prompt = knowledge_compilation_system_prompt(web_search_enabled);
-
-    llm.task(
-        move |_runtime: &AppRuntime, intent: IntentBrief| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(knowledge_compilation_user_prompt(&intent)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        system_prompt,
+        |intent: IntentBrief| knowledge_compilation_user_prompt(&intent),
         decode_json_output::<KnowledgeArtifact>,
+        "knowledge_compilation".to_string(),
     )
-    .observed_as("knowledge_compilation")
 }
 
 fn build_reconcile_task(
@@ -1159,22 +1080,13 @@ fn build_reconcile_task(
     Output = ReconciledProposal,
     Error = LlmStageError,
 > + use<> {
-    let model = model.to_string();
-    let system_prompt = reconcile_system_prompt();
-
-    llm.task(
-        move |_runtime: &AppRuntime, solutions: Vec<ValidatedSolution>| {
-            Ok::<_, AppError>(CompletionRequest::new(
-                model.clone(),
-                vec![
-                    Message::system(system_prompt.clone()),
-                    Message::user(reconcile_user_prompt(&solutions)?),
-                ],
-            ))
-        },
+    llm.json_task(
+        model.to_string(),
+        reconcile_system_prompt(),
+        |solutions: Vec<ValidatedSolution>| reconcile_user_prompt(&solutions),
         decode_json_output::<ReconciledProposal>,
+        "reconcile".to_string(),
     )
-    .observed_as("reconcile")
 }
 
 fn build_review_patch(
@@ -1248,39 +1160,6 @@ fn build_solution_branch(
     generate.then(validate)
 }
 
-fn build_workspace_delta(
-    source_root: &Path,
-    target_root: &Path,
-) -> Result<Vec<crate::models::FileDelta>, AppError> {
-    let source_paths = collect_workspace_files(source_root)?;
-    let target_paths = collect_workspace_files(target_root)?;
-    let paths = source_paths
-        .union(&target_paths)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let mut changes = Vec::new();
-
-    for path in paths {
-        let source = read_optional_file(source_root, &path)?;
-        let target = read_optional_file(target_root, &path)?;
-        if source == target {
-            continue;
-        }
-
-        changes.push(crate::models::FileDelta {
-            path: path.clone(),
-            action: if source.is_some() {
-                "write".to_string()
-            } else {
-                "delete".to_string()
-            },
-            content: source,
-        });
-    }
-
-    Ok(changes)
-}
-
 fn collect_solution_pair_task(
     name: &'static str,
 ) -> impl Task<
@@ -1295,76 +1174,6 @@ fn collect_solution_pair_task(
         },
     )
     .observed_as(name)
-}
-
-fn collect_workspace_files(root: &Path) -> Result<BTreeSet<String>, AppError> {
-    let mut paths = BTreeSet::new();
-    collect_workspace_files_recursive(root, root, &mut paths)?;
-    Ok(paths)
-}
-
-fn collect_workspace_files_recursive(
-    root: &Path,
-    current: &Path,
-    paths: &mut BTreeSet<String>,
-) -> Result<(), AppError> {
-    for entry in fs::read_dir(current).map_err(|error| {
-        AppError::Workflow(format!(
-            "failed to read directory `{}`: {error}",
-            current.display()
-        ))
-    })? {
-        let entry = entry.map_err(|error| {
-            AppError::Workflow(format!(
-                "failed to iterate directory `{}`: {error}",
-                current.display()
-            ))
-        })?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if should_skip_workspace_entry(&file_name) {
-            continue;
-        }
-
-        let file_type = entry.file_type().map_err(|error| {
-            AppError::Workflow(format!("failed to inspect `{}`: {error}", path.display()))
-        })?;
-        if file_type.is_dir() {
-            collect_workspace_files_recursive(root, &path, paths)?;
-        } else if file_type.is_file() {
-            let relative = path.strip_prefix(root).map_err(|error| {
-                AppError::Workflow(format!("failed to relativise path: {error}"))
-            })?;
-            paths.insert(relative.to_string_lossy().replace('\\', "/"));
-        }
-    }
-
-    Ok(())
-}
-
-fn command_failure_summary(stdout: &[u8], stderr: &[u8]) -> String {
-    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
-    if !stderr.is_empty() {
-        return truncate_text(&stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
-    if !stdout.is_empty() {
-        return truncate_text(&stdout);
-    }
-
-    "command exited unsuccessfully with no output".to_string()
-}
-
-fn create_baseline_snapshot(project_root: &Path, name: &str) -> Result<PathBuf, AppError> {
-    let snapshot_root = worktree_path(project_root, name);
-    remove_directory_if_exists(&snapshot_root)?;
-    fs::create_dir_all(&snapshot_root).map_err(|error| {
-        AppError::Workflow(format!("failed to create baseline snapshot: {error}"))
-    })?;
-    sync_workspace_state(project_root, &snapshot_root)?;
-    Ok(snapshot_root)
 }
 
 async fn execute_json_stage<T>(
@@ -1734,104 +1543,38 @@ fn management_node_name(pass_index: usize) -> String {
     format!("implementation_management_{pass_index}")
 }
 
-async fn merge_change_into_workspace(
-    project_root: &Path,
-    baseline_root: &Path,
-    item_root: &Path,
-    change: &crate::models::FileDelta,
-) -> Result<(), AppError> {
-    let base = read_optional_file(baseline_root, &change.path)?;
-    let current = read_optional_file(project_root, &change.path)?;
-    let item = read_optional_file(item_root, &change.path)?;
-
-    if current == item {
-        return Ok(());
-    }
-
-    if current == base {
-        apply_single_change(project_root, change)?;
-        return Ok(());
-    }
-
-    match (base, current, item) {
-        (Some(base), Some(current), Some(item)) => {
-            let merged =
-                merge_file_versions(project_root, &change.path, &current, &base, &item).await?;
-            write_workspace_file(project_root, &change.path, &merged)?;
-            Ok(())
-        }
-        (None, Some(current), Some(item)) if current == item => Ok(()),
-        (Some(_base), None, None) => Ok(()),
-        _ => Err(AppError::Workflow(format!(
-            "conflicting parallel changes for `{}` could not be merged safely",
-            change.path
-        ))),
-    }
-}
-
-async fn merge_file_versions(
-    project_root: &Path,
-    path: &str,
-    current: &str,
-    base: &str,
-    item: &str,
-) -> Result<String, AppError> {
-    let temp_root = worktree_path(project_root, "merge-temp");
-    fs::create_dir_all(&temp_root).map_err(|error| {
-        AppError::Workflow(format!("failed to create merge temp directory: {error}"))
-    })?;
-    let current_path = temp_root.join("current.tmp");
-    let base_path = temp_root.join("base.tmp");
-    let item_path = temp_root.join("item.tmp");
-    fs::write(&current_path, current)
-        .map_err(|error| AppError::Workflow(format!("failed to write merge temp file: {error}")))?;
-    fs::write(&base_path, base)
-        .map_err(|error| AppError::Workflow(format!("failed to write merge temp file: {error}")))?;
-    fs::write(&item_path, item)
-        .map_err(|error| AppError::Workflow(format!("failed to write merge temp file: {error}")))?;
-
-    let output = Command::new("git")
-        .args([
-            "merge-file",
-            "-p",
-            current_path.to_string_lossy().as_ref(),
-            base_path.to_string_lossy().as_ref(),
-            item_path.to_string_lossy().as_ref(),
-        ])
-        .current_dir(project_root)
-        .output()
-        .await
-        .map_err(|error| {
-            AppError::Workflow(format!("failed to run merge for `{path}`: {error}"))
-        })?;
-    remove_directory_if_exists(&temp_root)?;
-
-    if !output.status.success() {
-        return Err(AppError::Workflow(format!(
-            "parallel changes to `{path}` produced merge conflicts"
-        )));
-    }
-
-    String::from_utf8(output.stdout).map_err(|error| {
-        AppError::Workflow(format!(
-            "merged content for `{path}` was not valid UTF-8: {error}"
-        ))
-    })
-}
-
 async fn merge_item_worktree(
     project_root: &Path,
     baseline_root: &Path,
     draft: &ImplementationDraft,
 ) -> Result<ImplementationItemResult, AppError> {
-    let item_root = worktree_path(project_root, &draft.worktree_name);
-    let changes = build_workspace_delta(&item_root, baseline_root)?;
+    let item_root = mmat_worktree_path(project_root, &draft.worktree_name);
+    let changes = naaf_build_workspace_delta(&item_root, baseline_root)
+        .map_err(|error| AppError::Workspace(error.to_string()))?;
 
     for change in &changes {
-        merge_change_into_workspace(project_root, baseline_root, &item_root, change).await?;
+        let naaf_change = NaafFileDelta {
+            path: change.path.clone(),
+            action: change.action.clone(),
+            content: change.content.clone(),
+        };
+        naaf_merge_change_into_workspace(project_root, baseline_root, &item_root, &naaf_change)
+            .await
+            .map_err(|error| AppError::Workspace(error.to_string()))?;
     }
 
-    remove_worktree(project_root, &draft.worktree_name).await?;
+    naaf_remove_worktree(project_root, &draft.worktree_name)
+        .await
+        .map_err(|error| AppError::Workspace(error.to_string()))?;
+
+    let naaf_changes: Vec<crate::models::FileDelta> = changes
+        .into_iter()
+        .map(|c| crate::models::FileDelta {
+            path: c.path,
+            action: c.action,
+            content: c.content,
+        })
+        .collect();
 
     Ok(ImplementationItemResult {
         item_id: draft.input.work_item.id.clone(),
@@ -1841,7 +1584,7 @@ async fn merge_item_worktree(
         objective: draft.input.work_item.objective.clone(),
         summary: draft.delta.summary.clone(),
         contract_refs: draft.input.work_item.contract_refs.clone(),
-        changed_files: changes.into_iter().map(|change| change.path).collect(),
+        changed_files: naaf_changes.into_iter().map(|change| change.path).collect(),
         rationale: draft.delta.rationale.clone(),
         commands_run: build_command_evidence(&draft.input.work_item),
         reviewer_findings: Vec::new(),
@@ -1907,36 +1650,9 @@ fn phase_review_action(pass_index: usize, review: &FinalReview) -> PhaseReviewAc
 }
 
 async fn prepare_worktree(project_root: &Path, worktree_name: &str) -> Result<PathBuf, AppError> {
-    let worktree_root = worktree_path(project_root, worktree_name);
-    if worktree_root.exists() {
-        remove_worktree(project_root, worktree_name).await?;
-    }
-
-    let worktree_parent = worktree_root.parent().ok_or_else(|| {
-        AppError::Workflow(format!(
-            "worktree path `{}` had no parent",
-            worktree_root.display()
-        ))
-    })?;
-    fs::create_dir_all(worktree_parent).map_err(|error| {
-        AppError::Workflow(format!("failed to create worktree directory: {error}"))
-    })?;
-
-    run_git_command(
-        project_root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            worktree_root.to_string_lossy().as_ref(),
-            "HEAD",
-        ],
-        "create isolated worktree",
-    )
-    .await?;
-
-    sync_workspace_state(project_root, &worktree_root)?;
-    Ok(worktree_root)
+    naaf_prepare_worktree(project_root, worktree_name)
+        .await
+        .map_err(|error| AppError::Workspace(error.to_string()))
 }
 
 fn push_solution_task(
@@ -1957,17 +1673,6 @@ fn push_solution_task(
         },
     )
     .observed_as(name)
-}
-
-fn read_optional_file(root: &Path, relative: &str) -> Result<Option<String>, AppError> {
-    let path = root.join(relative);
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    fs::read_to_string(&path).map(Some).map_err(|error| {
-        AppError::Workflow(format!("failed to read `{}`: {error}", path.display()))
-    })
 }
 
 fn register_tool<T>(
@@ -2009,61 +1714,6 @@ fn remediation_management_node_spec(
     .with_parent(review_id)
 }
 
-fn remove_directory_if_exists(path: &Path) -> Result<(), AppError> {
-    if path.exists() {
-        fs::remove_dir_all(path).map_err(|error| {
-            AppError::Workflow(format!("failed to remove `{}`: {error}", path.display()))
-        })?;
-    }
-    Ok(())
-}
-
-async fn remove_worktree(project_root: &Path, worktree_name: &str) -> Result<(), AppError> {
-    let worktree_root = worktree_path(project_root, worktree_name);
-    if !worktree_root.exists() {
-        return Ok(());
-    }
-
-    let output = Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            worktree_root.to_string_lossy().as_ref(),
-        ])
-        .current_dir(project_root)
-        .output()
-        .await
-        .map_err(|error| AppError::Workflow(format!("failed to remove worktree: {error}")))?;
-
-    if !output.status.success() && worktree_root.exists() {
-        fs::remove_dir_all(&worktree_root).map_err(|error| {
-            AppError::Workflow(format!(
-                "failed to remove stale worktree directory `{}`: {error}",
-                worktree_root.display()
-            ))
-        })?;
-    }
-
-    Ok(())
-}
-
-fn resolve_project_path(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
-    let path = Path::new(relative);
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::Prefix(_) | Component::RootDir | Component::ParentDir
-        )
-    }) {
-        return Err(AppError::Workflow(format!(
-            "file delta path `{relative}` must stay within the project root"
-        )));
-    }
-
-    Ok(root.join(path))
-}
-
 fn review_node_name(pass_index: usize) -> String {
     format!("phase_review_{pass_index}")
 }
@@ -2103,7 +1753,7 @@ async fn run_command(root: &Path, label: &str, args: &[&str]) -> Result<(), AppE
 
     Err(AppError::Workflow(format!(
         "{label} failed: {}",
-        command_failure_summary(&output.stdout, &output.stderr)
+        naaf_command_failure_summary(&output.stdout, &output.stderr)
     )))
 }
 
@@ -2215,24 +1865,6 @@ fn log_release_assessment_summary(
     Ok(())
 }
 
-async fn run_git_command(project_root: &Path, args: &[&str], label: &str) -> Result<(), AppError> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(project_root)
-        .output()
-        .await
-        .map_err(|error| AppError::Workflow(format!("failed to {label}: {error}")))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(AppError::Workflow(format!(
-        "failed to {label}: {}",
-        command_failure_summary(&output.stdout, &output.stderr)
-    )))
-}
-
 async fn run_validator(
     root: &Path,
     label: &str,
@@ -2252,33 +1884,8 @@ async fn run_validator(
     Ok(vec![StageFinding {
         severity: "error".to_string(),
         category: label.to_string(),
-        message: command_failure_summary(&output.stdout, &output.stderr),
+        message: naaf_command_failure_summary(&output.stdout, &output.stderr),
     }])
-}
-
-fn should_skip_workspace_entry(name: &str) -> bool {
-    matches!(name, ".git" | "target" | WORKTREE_DIR)
-}
-
-fn sync_workspace_state(source_root: &Path, target_root: &Path) -> Result<(), AppError> {
-    let delta = build_workspace_delta(source_root, target_root)?;
-    apply_file_deltas(
-        target_root,
-        &ImplementationDelta {
-            summary: "sync workspace state".to_string(),
-            rationale: Vec::new(),
-            changes: delta,
-        },
-    )
-}
-
-fn truncate_text(text: &str) -> String {
-    const MAX_LEN: usize = 600;
-    if text.len() <= MAX_LEN {
-        text.to_string()
-    } else {
-        format!("{}...", &text[..MAX_LEN])
-    }
 }
 
 fn workflow_outcome_from_phase_result(result: &PhaseReviewResult) -> WorkflowOutcome {
@@ -2326,23 +1933,8 @@ fn persist_task_cards(runtime: &AppRuntime, task_cards: &[TaskCard]) -> Result<(
     Ok(())
 }
 
-fn worktree_path(project_root: &Path, worktree_name: &str) -> PathBuf {
+fn mmat_worktree_path(project_root: &Path, worktree_name: &str) -> PathBuf {
     project_root.join(WORKTREE_DIR).join(worktree_name)
-}
-
-fn write_workspace_file(
-    project_root: &Path,
-    relative: &str,
-    content: &str,
-) -> Result<(), AppError> {
-    let path = resolve_project_path(project_root, relative)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| AppError::Workflow(format!("failed to create directory: {error}")))?;
-    }
-    fs::write(path, content).map_err(|error| {
-        AppError::Workflow(format!("failed to write merged file `{relative}`: {error}"))
-    })
 }
 
 #[cfg(test)]
