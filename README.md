@@ -10,7 +10,7 @@ Today the execution pipeline is opinionated toward Rust projects because the bui
 
 - Starts with a free-form prompt such as a feature request, refactor, or product idea.
 - Runs a discovery stage over the current repository and, optionally, external web research.
-- Generates multiple candidate solution branches: pragmatic, best-practice, alternative, contrarian, and ambitious.
+- Generates three candidate solution branches by default: conservative, recommended, and ambitious.
 - Reconciles those branches into one proposal and asks you to approve it or request revisions.
 - Builds an implementation plan and runs an architect-style review over that plan.
 - Executes implementation items in isolated git worktrees under `.mmat-worktrees`.
@@ -90,7 +90,7 @@ Add a CLI flag to export the generated plan as JSON.
 From there MMAT will:
 
 1. Inspect the repository and build a discovery brief.
-2. Explore multiple solution branches.
+2. Explore three solution branches by default.
 3. Present a reconciled proposal and ask for approval or revisions.
 4. Plan the implementation.
 5. Execute validated changes.

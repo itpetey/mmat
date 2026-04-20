@@ -143,45 +143,14 @@ pub(crate) async fn run_mmat(
     let discovery_step = Step::builder(build_discovery_task(&llm, &model, search_enabled))
         .with_findings::<NeverFinding>()
         .build();
-    let pragmatic = build_solution_branch(
-        &llm,
-        &model,
-        crate::models::SolutionBranch::Pragmatic,
-        search_enabled,
-    );
-    let best_practice = build_solution_branch(
-        &llm,
-        &model,
-        crate::models::SolutionBranch::BestPractice,
-        search_enabled,
-    );
-    let alternative = build_solution_branch(
-        &llm,
-        &model,
-        crate::models::SolutionBranch::Alternative,
-        search_enabled,
-    );
-    let contrarian = build_solution_branch(
-        &llm,
-        &model,
-        crate::models::SolutionBranch::Contrarian,
-        search_enabled,
-    );
-    let ambitious = build_solution_branch(
-        &llm,
-        &model,
-        crate::models::SolutionBranch::Ambitious,
-        search_enabled,
-    );
-    let solutions_workflow = pragmatic
-        .join(best_practice)
-        .reconcile_task(collect_solution_pair_task("collect_established_pair"))
-        .join(
-            alternative
-                .join(contrarian)
-                .reconcile_task(collect_solution_pair_task("collect_challenger_pair")),
-        )
-        .reconcile_task(merge_solution_lists_task("merge_solution_groups"))
+    let [conservative_branch, recommended_branch, ambitious_branch] =
+        crate::models::SolutionBranch::default_set();
+    let conservative = build_solution_branch(&llm, &model, conservative_branch, search_enabled);
+    let recommended = build_solution_branch(&llm, &model, recommended_branch, search_enabled);
+    let ambitious = build_solution_branch(&llm, &model, ambitious_branch, search_enabled);
+    let solutions_workflow = conservative
+        .join(recommended)
+        .reconcile_task(collect_solution_pair_task("collect_default_pair"))
         .join(ambitious)
         .reconcile_task(push_solution_task("add_ambitious_solution"));
     let reconcile_step = Step::builder(build_reconcile_task(&llm, &model))
@@ -1754,26 +1723,6 @@ async fn merge_item_worktree(
         changed_files: changes.into_iter().map(|change| change.path).collect(),
         rationale: draft.delta.rationale.clone(),
     })
-}
-
-fn merge_solution_lists_task(
-    name: &'static str,
-) -> impl Task<
-    Runtime = AppRuntime,
-    Input = (Vec<ValidatedSolution>, Vec<ValidatedSolution>),
-    Output = Vec<ValidatedSolution>,
-    Error = LlmStageError,
-> {
-    task_fn(
-        |_runtime: &AppRuntime, input: (Vec<ValidatedSolution>, Vec<ValidatedSolution>)| {
-            Box::pin(async move {
-                let mut merged = input.0;
-                merged.extend(input.1);
-                Ok::<_, LlmStageError>(merged)
-            })
-        },
-    )
-    .observed_as(name)
 }
 
 fn next_management_request(result: &PhaseReviewResult) -> ImplementationManagementRequest {

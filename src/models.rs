@@ -300,37 +300,31 @@ pub(crate) struct ImplementationItemResult {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SolutionBranch {
-    Pragmatic,
-    BestPractice,
-    Alternative,
-    Contrarian,
+    Conservative,
+    Recommended,
     Ambitious,
 }
 
 impl SolutionBranch {
     pub(crate) fn slug(self) -> &'static str {
         match self {
-            Self::Pragmatic => "pragmatic",
-            Self::BestPractice => "best_practice",
-            Self::Alternative => "alternative",
-            Self::Contrarian => "contrarian",
+            Self::Conservative => "conservative",
+            Self::Recommended => "recommended",
             Self::Ambitious => "ambitious",
         }
     }
 
+    pub(crate) fn default_set() -> [Self; 3] {
+        [Self::Conservative, Self::Recommended, Self::Ambitious]
+    }
+
     pub(crate) fn instruction(self) -> &'static str {
         match self {
-            Self::Pragmatic => {
+            Self::Conservative => {
                 "Optimise for the fastest credible delivery path with the lowest operational and implementation risk. Prefer boring technology and the smallest viable scope that still solves the problem well."
             }
-            Self::BestPractice => {
+            Self::Recommended => {
                 "Optimise for strong engineering discipline, maintainability, clarity, and long-term operability. Recommend the professional default even if it is not the quickest route."
-            }
-            Self::Alternative => {
-                "Produce a materially different solution shape from the default path. Seek a different architecture, delivery model, or product framing while still aiming for viability."
-            }
-            Self::Contrarian => {
-                "Challenge whether the requested solution is necessary at all. Consider simplification, process change, deferral, or not building anything new. If a build is still warranted, make the case reluctantly and clearly."
             }
             Self::Ambitious => {
                 "Optimise for upside, leverage, and strategic advantage. You may expand scope, propose an enabling platform first, and recommend bleeding-edge technology when it materially improves the design. Extra ambition must still be justified against delivery risk."
@@ -345,8 +339,18 @@ mod tests {
 
     use super::{
         ApprovalRequest, ImplementationDraft, ImplementationTaskInput, IntentBrief, RunSummary,
-        WorkflowOutcome,
+        SolutionBranch, WorkflowOutcome,
     };
+
+    #[test]
+    fn default_solution_branches_use_three_lane_set() {
+        let branches = SolutionBranch::default_set();
+
+        assert_eq!(branches.len(), 3);
+        assert_eq!(branches[0].slug(), "conservative");
+        assert_eq!(branches[1].slug(), "recommended");
+        assert_eq!(branches[2].slug(), "ambitious");
+    }
 
     #[test]
     fn intent_brief_deserialises_readiness_flag() {
