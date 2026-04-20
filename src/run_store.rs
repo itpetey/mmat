@@ -1,13 +1,9 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::Path;
 
+use naaf_persistence_fs::ArtifactStore;
 use serde::Serialize;
 
-use crate::{artifacts::RunArtifact, error::AppError, parsing::to_pretty_json};
+use crate::{artifacts::RunArtifact, error::AppError};
 
 const RUNS_DIR: &str = ".mmat/runs";
 const TASK_CARDS_DIR: &str = "task-cards";
@@ -16,25 +12,26 @@ const TASK_RESULTS_DIR: &str = "task-results";
 #[derive(Clone, Debug)]
 pub(crate) struct RunStore {
     run_id: String,
-    run_root: PathBuf,
+    inner: ArtifactStore,
 }
 
 impl RunStore {
     pub(crate) fn create(project_root: &Path) -> Result<Self, AppError> {
-        let run_id = generate_run_id()?;
+        let run_id = naaf_persistence_fs::generate_run_id()
+            .map_err(|error| AppError::Workflow(format!("failed to generate run id: {error}")))?;
         Self::create_with_run_id(project_root, run_id)
     }
 
     fn create_with_run_id(project_root: &Path, run_id: String) -> Result<Self, AppError> {
         let run_root = project_root.join(RUNS_DIR).join(&run_id);
-        fs::create_dir_all(&run_root).map_err(|error| {
+        let inner = ArtifactStore::create(&run_root).map_err(|error| {
             AppError::Workflow(format!(
                 "failed to create run directory `{}`: {error}",
                 run_root.display()
             ))
         })?;
 
-        Ok(Self { run_id, run_root })
+        Ok(Self { run_id, inner })
     }
 
     pub(crate) fn run_id(&self) -> &str {
@@ -42,15 +39,17 @@ impl RunStore {
     }
 
     pub(crate) fn run_root(&self) -> &Path {
-        &self.run_root
+        self.inner.run_root()
     }
 
     pub(crate) fn write_json<T>(&self, artifact: RunArtifact, value: &T) -> Result<(), AppError>
     where
         T: Serialize + ?Sized,
     {
-        let path = self.run_root.join(artifact.file_name());
-        self.write_json_to_path(&path, value)
+        let path = artifact.file_name();
+        self.inner.write_json(path, value).map_err(|error| {
+            AppError::Workflow(format!("failed to write run artifact `{path}`: {error}"))
+        })
     }
 
     pub(crate) fn write_task_card<T>(&self, task_id: &str, value: &T) -> Result<(), AppError>
@@ -58,8 +57,10 @@ impl RunStore {
         T: Serialize + ?Sized,
     {
         let file_name = format!("{}.json", sanitise_file_stem(task_id));
-        let path = self.run_root.join(TASK_CARDS_DIR).join(file_name);
-        self.write_json_to_path(&path, value)
+        let path = format!("{TASK_CARDS_DIR}/{file_name}");
+        self.inner.write_json(&path, value).map_err(|error| {
+            AppError::Workflow(format!("failed to write task card `{path}`: {error}"))
+        })
     }
 
     pub(crate) fn write_task_result<T>(&self, task_id: &str, value: &T) -> Result<(), AppError>
@@ -67,27 +68,21 @@ impl RunStore {
         T: Serialize + ?Sized,
     {
         let file_name = format!("{}.json", sanitise_file_stem(task_id));
-        let path = self.run_root.join(TASK_RESULTS_DIR).join(file_name);
-        self.write_json_to_path(&path, value)
+        let path = format!("{TASK_RESULTS_DIR}/{file_name}");
+        self.inner.write_json(&path, value).map_err(|error| {
+            AppError::Workflow(format!("failed to write task result `{path}`: {error}"))
+        })
     }
 
-    fn write_json_to_path<T>(&self, path: &Path, value: &T) -> Result<(), AppError>
+    #[allow(dead_code)]
+    pub(crate) fn read_json<T>(&self, artifact: RunArtifact) -> Result<Option<T>, AppError>
     where
-        T: Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
     {
-        let payload = to_pretty_json(value)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                AppError::Workflow(format!(
-                    "failed to create run artifact directory `{}`: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
-        fs::write(path, payload).map_err(|error| {
+        self.inner.read_json(artifact.file_name()).map_err(|error| {
             AppError::Workflow(format!(
-                "failed to write run artifact `{}`: {error}",
-                path.display()
+                "failed to read run artifact `{}`: {error}",
+                artifact.file_name()
             ))
         })
     }
@@ -108,21 +103,6 @@ fn sanitise_file_stem(value: &str) -> String {
     } else {
         output
     }
-}
-
-fn generate_run_id() -> Result<String, AppError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            AppError::Workflow(format!("failed to read system clock for run id: {error}"))
-        })?;
-
-    Ok(format!(
-        "run-{}-{:09}-{}",
-        now.as_secs(),
-        now.subsec_nanos(),
-        process::id()
-    ))
 }
 
 #[cfg(test)]
