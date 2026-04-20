@@ -11,7 +11,7 @@ pub(crate) struct ImplementationManagementRequest {
     pub(crate) pass_index: usize,
     pub(crate) phase: String,
     pub(crate) approved: ApprovedContract,
-    pub(crate) plan: ImplementationPlan,
+    pub(crate) plan: ExecutionPlan,
     pub(crate) architect_review: StageReview,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
     pub(crate) remediation_items: Vec<RemediationItem>,
@@ -20,8 +20,8 @@ pub(crate) struct ImplementationManagementRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ImplementationTaskInput {
     pub(crate) approved: ApprovedContract,
-    pub(crate) plan: ImplementationPlan,
-    pub(crate) work_item: ManagedItem,
+    pub(crate) plan: ExecutionPlan,
+    pub(crate) work_item: TaskCard,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
     pub(crate) prior_feedback: Vec<StageFinding>,
 }
@@ -32,7 +32,7 @@ pub(crate) struct WorkflowOutcome {
     pub(crate) approval: ApprovalOutcome,
     pub(crate) contract: Option<ProjectContract>,
     pub(crate) contract_approval: Option<ApprovalOutcome>,
-    pub(crate) plan: Option<ImplementationPlan>,
+    pub(crate) plan: Option<ExecutionPlan>,
     pub(crate) architect_review: Option<StageReview>,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
     pub(crate) final_review: Option<FinalReview>,
@@ -53,7 +53,7 @@ pub(crate) struct RunSummary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FinalReviewInput {
     pub(crate) approved: ApprovedContract,
-    pub(crate) plan: ImplementationPlan,
+    pub(crate) plan: ExecutionPlan,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
 }
 
@@ -158,24 +158,25 @@ pub(crate) struct StageReview {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationPlan {
+pub(crate) struct ExecutionPlan {
     pub(crate) summary: String,
-    pub(crate) milestones: Vec<PlanMilestone>,
+    pub(crate) milestones: Vec<ExecutionMilestone>,
+    pub(crate) task_cards: Vec<TaskCard>,
     pub(crate) risks: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PlanMilestone {
+pub(crate) struct ExecutionMilestone {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) objective: String,
-    pub(crate) items: Vec<PlanItem>,
+    pub(crate) task_card_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ImplementationWorklist {
     pub(crate) summary: String,
-    pub(crate) items: Vec<ManagedItem>,
+    pub(crate) items: Vec<TaskCard>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -254,23 +255,18 @@ pub(crate) struct StageFinding {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PlanItem {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) description: String,
-    pub(crate) acceptance_criteria: Vec<String>,
-    pub(crate) dependencies: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ManagedItem {
+pub(crate) struct TaskCard {
     pub(crate) id: String,
     pub(crate) source: String,
     pub(crate) milestone_id: Option<String>,
     pub(crate) title: String,
     pub(crate) objective: String,
+    pub(crate) contract_refs: Vec<String>,
     pub(crate) acceptance_criteria: Vec<String>,
+    pub(crate) expected_files: Vec<String>,
+    pub(crate) verification_commands: Vec<String>,
     pub(crate) dependencies: Vec<String>,
+    pub(crate) rollback_notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -418,13 +414,20 @@ mod tests {
                     "id": "m1",
                     "title": "Planning",
                     "objective": "Produce the plan",
-                    "items": [{
-                        "id": "item-1",
-                        "title": "Add planning stage",
-                        "description": "Create the planning stage outputs",
-                        "acceptance_criteria": ["returns milestones"],
-                        "dependencies": []
-                    }]
+                    "task_card_ids": ["item-1"]
+                }],
+                "task_cards": [{
+                    "id": "item-1",
+                    "source": "plan",
+                    "milestone_id": "m1",
+                    "title": "Add planning stage",
+                    "objective": "Create the planning stage outputs",
+                    "contract_refs": ["AC-1"],
+                    "acceptance_criteria": ["returns milestones"],
+                    "expected_files": ["src/models.rs"],
+                    "verification_commands": ["cargo test"],
+                    "dependencies": [],
+                    "rollback_notes": ["revert the milestone"]
                 }],
                 "risks": ["review churn"]
             },
@@ -528,13 +531,20 @@ mod tests {
                         "id": "m1",
                         "title": "Execution",
                         "objective": "Ship the workflow",
-                        "items": [{
-                            "id": "item-1",
-                            "title": "Implement validation",
-                            "description": "Add cargo validators",
-                            "acceptance_criteria": ["check passes"],
-                            "dependencies": []
-                        }]
+                        "task_card_ids": ["item-1"]
+                    }],
+                    "task_cards": [{
+                        "id": "item-1",
+                        "source": "plan",
+                        "milestone_id": "m1",
+                        "title": "Implement validation",
+                        "objective": "Add cargo validators",
+                        "contract_refs": ["AC-1"],
+                        "acceptance_criteria": ["check passes"],
+                        "expected_files": ["src/workflow.rs"],
+                        "verification_commands": ["cargo check", "cargo test"],
+                        "dependencies": [],
+                        "rollback_notes": ["revert validator changes"]
                     }],
                     "risks": []
                 },
@@ -544,8 +554,12 @@ mod tests {
                     "milestone_id": "m1",
                     "title": "Implement validation",
                     "objective": "Add cargo validators",
+                    "contract_refs": ["AC-1"],
                     "acceptance_criteria": ["check passes"],
-                    "dependencies": []
+                    "expected_files": ["src/workflow.rs"],
+                    "verification_commands": ["cargo check", "cargo test"],
+                    "dependencies": [],
+                    "rollback_notes": ["revert validator changes"]
                 },
                 "completed_items": [{
                     "item_id": "item-0",
@@ -631,6 +645,7 @@ mod tests {
             "plan": {
                 "summary": "remediate",
                 "milestones": [],
+                "task_cards": [],
                 "risks": []
             },
             "work_item": {
@@ -639,8 +654,12 @@ mod tests {
                 "milestone_id": null,
                 "title": "Fix remaining issue",
                 "objective": "Address review finding",
+                "contract_refs": ["AC-2"],
                 "acceptance_criteria": ["review passes"],
-                "dependencies": []
+                "expected_files": ["src/workflow.rs"],
+                "verification_commands": ["cargo test"],
+                "dependencies": [],
+                "rollback_notes": ["revert the remediation"]
             },
             "completed_items": [],
             "prior_feedback": []

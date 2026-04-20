@@ -22,12 +22,11 @@ use crate::{
     error::AppError,
     models::{
         ApprovalOutcome, ApprovalRequest, ApprovedContract, ApprovedProposal,
-        ContractApprovalRequest, ContractDraftInput, FinalReview, FinalReviewInput,
+        ContractApprovalRequest, ContractDraftInput, ExecutionPlan, FinalReview, FinalReviewInput,
         ImplementationDelta, ImplementationDraft, ImplementationItemResult,
-        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
-        ImplementationWorklist, IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal,
-        RunSummary, StageFinding, StageReview, ValidatedSolution, ValidationFinding,
-        WorkflowOutcome,
+        ImplementationManagementRequest, ImplementationTaskInput, ImplementationWorklist,
+        IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal, RunSummary, StageFinding,
+        StageReview, TaskCard, ValidatedSolution, ValidationFinding, WorkflowOutcome,
     },
     parsing::decode_json_output,
     prompts::{
@@ -358,7 +357,8 @@ pub(crate) async fn run_mmat(
             .run(runtime, approved_contract.clone())
             .await
             .map_err(|error| AppError::Workflow(format!("planning stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ImplementationPlan, &plan)?;
+        runtime.persist_artifact(RunArtifact::ExecutionPlan, &plan)?;
+        persist_task_cards(runtime, &plan.task_cards)?;
         log_planning_summary(runtime, &plan)?;
 
         write_run_summary(
@@ -531,17 +531,13 @@ fn build_approval_task(
 fn build_architect_review_task(
     llm: &AppAgent,
     model: &str,
-) -> impl Task<
-    Runtime = AppRuntime,
-    Input = ImplementationPlan,
-    Output = StageReview,
-    Error = LlmStageError,
-> + use<> {
+) -> impl Task<Runtime = AppRuntime, Input = ExecutionPlan, Output = StageReview, Error = LlmStageError>
++ use<> {
     let model = model.to_string();
     let system_prompt = architect_review_system_prompt();
 
     llm.task(
-        move |_runtime: &AppRuntime, plan: ImplementationPlan| {
+        move |_runtime: &AppRuntime, plan: ExecutionPlan| {
             Ok::<_, AppError>(CompletionRequest::new(
                 model.clone(),
                 vec![
@@ -1036,7 +1032,7 @@ fn build_planning_task(
 ) -> impl Task<
     Runtime = AppRuntime,
     Input = ApprovedContract,
-    Output = ImplementationPlan,
+    Output = ExecutionPlan,
     Error = LlmStageError,
 > + use<> {
     let model = model.to_string();
@@ -1052,7 +1048,7 @@ fn build_planning_task(
                 ],
             ))
         },
-        decode_json_output::<ImplementationPlan>,
+        decode_json_output::<ExecutionPlan>,
     )
     .observed_as("planning")
 }
@@ -1307,7 +1303,7 @@ fn implementation_node_name(pass_index: usize, item_id: &str) -> String {
 
 fn initial_management_request(
     approved: ApprovedContract,
-    plan: ImplementationPlan,
+    plan: ExecutionPlan,
     architect_review: StageReview,
 ) -> ImplementationManagementRequest {
     ImplementationManagementRequest {
@@ -1535,10 +1531,11 @@ fn log_implementation_result(
     Ok(())
 }
 
-fn log_planning_summary(runtime: &AppRuntime, plan: &ImplementationPlan) -> Result<(), AppError> {
+fn log_planning_summary(runtime: &AppRuntime, plan: &ExecutionPlan) -> Result<(), AppError> {
     runtime.log_info("Planning complete.")?;
     runtime.log_info(format!("Plan summary: {}", plan.summary))?;
     runtime.log_info(format!("Milestones: {}", plan.milestones.len()))?;
+    runtime.log_info(format!("Task cards: {}", plan.task_cards.len()))?;
     Ok(())
 }
 
@@ -1607,7 +1604,7 @@ fn log_worklist_summary(
 ) -> Result<(), AppError> {
     runtime.log_info(format!("Implementation management: {}", worklist.summary))?;
     runtime.log_info(format!(
-        "Work items in this phase: {}",
+        "Task cards in this phase: {}",
         worklist.items.len()
     ))?;
     Ok(())
@@ -1965,7 +1962,7 @@ async fn run_command(root: &Path, label: &str, args: &[&str]) -> Result<(), AppE
 async fn run_dynamic_implementation_workflow(
     runtime: &AppRuntime,
     approved: ApprovedContract,
-    plan: ImplementationPlan,
+    plan: ExecutionPlan,
     architect_review: StageReview,
     execution_steps: ExecutionGraphSteps,
 ) -> Result<WorkflowOutcome, AppError> {
@@ -2097,6 +2094,14 @@ fn write_run_summary(
     })
 }
 
+fn persist_task_cards(runtime: &AppRuntime, task_cards: &[TaskCard]) -> Result<(), AppError> {
+    for task_card in task_cards {
+        runtime.persist_task_card(task_card)?;
+    }
+
+    Ok(())
+}
+
 fn worktree_path(project_root: &Path, worktree_name: &str) -> PathBuf {
     project_root.join(WORKTREE_DIR).join(worktree_name)
 }
@@ -2126,17 +2131,16 @@ mod tests {
         next_management_request, phase_label, phase_review_action,
     };
     use crate::models::{
-        ApprovalOutcome, ApprovedContract, ApprovedProposal, FileDelta, FinalReview,
-        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
-        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput, IntentBrief,
-        ManagedItem, PlanMilestone, ProjectContract, ReconciledProposal, RemediationItem,
-        StageReview,
+        ApprovalOutcome, ApprovedContract, ApprovedProposal, ExecutionMilestone, ExecutionPlan,
+        FileDelta, FinalReview, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
+        ImplementationManagementRequest, ImplementationTaskInput, IntentBrief, ProjectContract,
+        ReconciledProposal, RemediationItem, StageReview, TaskCard,
     };
     use crate::{error::AppError, runtime::AppRuntime};
     use naaf_core::{NeverFinding, NodeId, Step, task_fn};
 
     fn item_result_from_draft(
-        item: &crate::models::ManagedItem,
+        item: &crate::models::TaskCard,
         draft: &ImplementationDraft,
     ) -> ImplementationItemResult {
         ImplementationItemResult {
@@ -2268,13 +2272,26 @@ mod tests {
                     next_step: "plan".to_string(),
                 },
             },
-            plan: ImplementationPlan {
+            plan: ExecutionPlan {
                 summary: "plan".to_string(),
-                milestones: vec![PlanMilestone {
+                milestones: vec![ExecutionMilestone {
                     id: "m1".to_string(),
                     title: "Milestone".to_string(),
                     objective: "Ship it".to_string(),
-                    items: Vec::new(),
+                    task_card_ids: vec!["item-0".to_string()],
+                }],
+                task_cards: vec![TaskCard {
+                    id: "item-0".to_string(),
+                    source: "plan".to_string(),
+                    milestone_id: Some("m1".to_string()),
+                    title: "Task 0".to_string(),
+                    objective: "Ship it".to_string(),
+                    contract_refs: vec!["AC-1".to_string()],
+                    acceptance_criteria: vec!["done".to_string()],
+                    expected_files: vec!["src/lib.rs".to_string()],
+                    verification_commands: vec!["cargo test".to_string()],
+                    dependencies: Vec::new(),
+                    rollback_notes: vec!["revert task".to_string()],
                 }],
                 risks: Vec::new(),
             },
@@ -2293,14 +2310,18 @@ mod tests {
             worklist: crate::models::ImplementationWorklist {
                 summary: "worklist".to_string(),
                 items: (0..item_count)
-                    .map(|index| ManagedItem {
+                    .map(|index| TaskCard {
                         id: format!("item-{index}"),
                         source: "plan".to_string(),
                         milestone_id: Some("m1".to_string()),
                         title: format!("Item {index}"),
                         objective: "Do the thing".to_string(),
+                        contract_refs: vec![format!("AC-{index}")],
                         acceptance_criteria: vec!["done".to_string()],
+                        expected_files: vec!["src/workflow.rs".to_string()],
+                        verification_commands: vec!["cargo test".to_string()],
                         dependencies: Vec::new(),
+                        rollback_notes: vec!["undo item".to_string()],
                     })
                     .collect(),
             },
@@ -2572,14 +2593,18 @@ mod tests {
 
     #[test]
     fn item_result_from_draft_carries_changed_files_and_rationale() {
-        let item = ManagedItem {
+        let item = TaskCard {
             id: "item-1".to_string(),
             source: "plan".to_string(),
             milestone_id: Some("m1".to_string()),
             title: "Add stage".to_string(),
             objective: "Implement the feature".to_string(),
+            contract_refs: vec!["AC-1".to_string()],
             acceptance_criteria: vec!["works".to_string()],
+            expected_files: vec!["src/workflow.rs".to_string()],
+            verification_commands: vec!["cargo test".to_string()],
             dependencies: Vec::new(),
+            rollback_notes: vec!["revert the stage".to_string()],
         };
         let draft = ImplementationDraft {
             input: serde_json::from_value::<ImplementationTaskInput>(serde_json::json!({
@@ -2628,6 +2653,7 @@ mod tests {
                 "plan": {
                     "summary": "plan",
                     "milestones": [],
+                    "task_cards": [],
                     "risks": []
                 },
                 "work_item": {
@@ -2636,8 +2662,12 @@ mod tests {
                     "milestone_id": "m1",
                     "title": "Add stage",
                     "objective": "Implement the feature",
+                    "contract_refs": ["AC-1"],
                     "acceptance_criteria": ["works"],
-                    "dependencies": []
+                    "expected_files": ["src/workflow.rs", "src/prompts.rs"],
+                    "verification_commands": ["cargo test"],
+                    "dependencies": [],
+                    "rollback_notes": ["revert the stage"]
                 },
                 "completed_items": [],
                 "prior_feedback": []

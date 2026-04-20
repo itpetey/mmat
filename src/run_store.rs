@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::{artifacts::RunArtifact, error::AppError, parsing::to_pretty_json};
 
 const RUNS_DIR: &str = ".mmat/runs";
+const TASK_CARDS_DIR: &str = "task-cards";
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunStore {
@@ -48,13 +49,54 @@ impl RunStore {
         T: Serialize + ?Sized,
     {
         let path = self.run_root.join(artifact.file_name());
+        self.write_json_to_path(&path, value)
+    }
+
+    pub(crate) fn write_task_card<T>(&self, task_id: &str, value: &T) -> Result<(), AppError>
+    where
+        T: Serialize + ?Sized,
+    {
+        let file_name = format!("{}.json", sanitise_file_stem(task_id));
+        let path = self.run_root.join(TASK_CARDS_DIR).join(file_name);
+        self.write_json_to_path(&path, value)
+    }
+
+    fn write_json_to_path<T>(&self, path: &Path, value: &T) -> Result<(), AppError>
+    where
+        T: Serialize + ?Sized,
+    {
         let payload = to_pretty_json(value)?;
-        fs::write(&path, payload).map_err(|error| {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                AppError::Workflow(format!(
+                    "failed to create run artifact directory `{}`: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(path, payload).map_err(|error| {
             AppError::Workflow(format!(
                 "failed to write run artifact `{}`: {error}",
                 path.display()
             ))
         })
+    }
+}
+
+fn sanitise_file_stem(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            output.push(ch);
+        } else {
+            output.push('_');
+        }
+    }
+
+    if output.is_empty() {
+        "task-card".to_string()
+    } else {
+        output
     }
 }
 
@@ -124,6 +166,22 @@ mod tests {
 
         let store = RunStore::create(&root).expect("run store should be created");
         assert!(store.run_id().starts_with("run-"));
+
+        fs::remove_dir_all(root).expect("temp root should be removed");
+    }
+
+    #[test]
+    fn writes_task_cards_to_dedicated_directory() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("temp root should be created");
+
+        let store = RunStore::create(&root).expect("run store should be created");
+        store
+            .write_task_card("task:1", &json!({"title": "Task"}))
+            .expect("task card should be written");
+
+        let card_path = store.run_root().join("task-cards/task_1.json");
+        assert!(card_path.exists());
 
         fs::remove_dir_all(root).expect("temp root should be removed");
     }

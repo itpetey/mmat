@@ -8,7 +8,12 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use tracing::Level;
 
-use crate::{artifacts::RunArtifact, error::AppError, models::RunSummary, run_store::RunStore};
+use crate::{
+    artifacts::RunArtifact,
+    error::AppError,
+    models::{RunSummary, TaskCard},
+    run_store::RunStore,
+};
 
 pub(crate) struct AppWebSearchTool {
     inner: WebSearchTool<AppRuntime>,
@@ -135,6 +140,10 @@ impl AppRuntime {
 
     pub(crate) fn persist_run_summary(&self, summary: &RunSummary) -> Result<(), AppError> {
         self.persist_artifact(RunArtifact::RunSummary, summary)
+    }
+
+    pub(crate) fn persist_task_card(&self, task_card: &TaskCard) -> Result<(), AppError> {
+        self.run_store.write_task_card(&task_card.id, task_card)
     }
 }
 

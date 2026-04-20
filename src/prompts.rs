@@ -2,7 +2,7 @@ use crate::{
     error::AppError,
     models::{
         ApprovalRequest, ApprovedContract, ContractApprovalRequest, ContractDraftInput,
-        FinalReviewInput, ImplementationDelta, ImplementationManagementRequest, ImplementationPlan,
+        ExecutionPlan, FinalReviewInput, ImplementationDelta, ImplementationManagementRequest,
         ImplementationTaskInput, IntentBrief, SolutionBranch, SolutionProposal, ValidatedSolution,
     },
     parsing::to_pretty_json,
@@ -21,12 +21,12 @@ pub(crate) fn approval_user_prompt(request: &ApprovalRequest) -> Result<String, 
 }
 
 pub(crate) fn architect_review_system_prompt() -> String {
-    "You are the planning validator acting as a senior software architect. Critique the implementation plan for feasibility, sequencing, architecture, risk management, and missing work. Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"findings\": [{\n    \"severity\": string,\n    \"category\": string,\n    \"message\": string\n  }]\n}. Use an empty findings array only when the plan is ready to execute.".to_string()
+    "You are the planning validator acting as a senior software architect. Critique the execution plan for feasibility, sequencing, architecture, risk management, and missing work. Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"findings\": [{\n    \"severity\": string,\n    \"category\": string,\n    \"message\": string\n  }]\n}. Use an empty findings array only when the plan is ready to execute.".to_string()
 }
 
-pub(crate) fn architect_review_user_prompt(plan: &ImplementationPlan) -> Result<String, AppError> {
+pub(crate) fn architect_review_user_prompt(plan: &ExecutionPlan) -> Result<String, AppError> {
     Ok(format!(
-        "Review this implementation plan as the senior architect and return JSON only:\n{}",
+        "Review this execution plan as the senior architect and return JSON only:\n{}",
         to_pretty_json(plan)?,
     ))
 }
@@ -98,7 +98,10 @@ pub(crate) fn implementation_management_system_prompt(web_search_enabled: bool) 
     [
         "You are the implementation management stage. Turn the approved plan or remediation backlog into an executable worklist. Preserve ids, respect dependencies, and schedule only the items that should be acted on in this phase. ".to_string(),
         tool_guidance(web_search_enabled, false),
-        " Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"items\": [{\n    \"id\": string,\n    \"source\": string,\n    \"milestone_id\": string | null,\n    \"title\": string,\n    \"objective\": string,\n    \"acceptance_criteria\": string[],\n    \"dependencies\": string[]\n  }]\n}".to_string(),
+        format!(
+            " Return raw JSON only with this shape: {{\n  \"summary\": string,\n  \"items\": [{{\n{}\n  }}]\n}}",
+            task_card_schema_lines(4)
+        ),
     ]
     .concat()
 }
@@ -142,18 +145,44 @@ pub(crate) fn peer_review_user_prompt(
 
 pub(crate) fn planning_system_prompt(web_search_enabled: bool) -> String {
     [
-        "You are the planning stage that runs after the user has approved the project contract. Produce an implementation plan with concrete milestones and specific items within each milestone. ".to_string(),
+        "You are the planning stage that runs after the user has approved the project contract. Produce an execution plan with concrete milestones and execution-ready task cards. Every task card must be specific enough for implementation without inventing missing details later. ".to_string(),
         tool_guidance(web_search_enabled, false),
-        " Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"milestones\": [{\n    \"id\": string,\n    \"title\": string,\n    \"objective\": string,\n    \"items\": [{\n      \"id\": string,\n      \"title\": string,\n      \"description\": string,\n      \"acceptance_criteria\": string[],\n      \"dependencies\": string[]\n    }]\n  }],\n  \"risks\": string[]\n}".to_string(),
+        format!(
+            " Return raw JSON only with this shape: {{\n  \"summary\": string,\n  \"milestones\": [{{\n    \"id\": string,\n    \"title\": string,\n    \"objective\": string,\n    \"task_card_ids\": string[]\n  }}],\n  \"task_cards\": [{{\n{}\n  }}],\n  \"risks\": string[]\n}}",
+            task_card_schema_lines(4)
+        ),
     ]
     .concat()
 }
 
 pub(crate) fn planning_user_prompt(approved: &ApprovedContract) -> Result<String, AppError> {
     Ok(format!(
-        "Approved project contract and context:\n{}\n\nDesign the implementation plan now. Each milestone and item must have a stable id. Return JSON only.",
+        "Approved project contract and context:\n{}\n\nDesign the execution plan now. Each milestone and task card must have a stable id. Return JSON only.",
         to_pretty_json(approved)?,
     ))
+}
+
+fn task_card_schema_lines(indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    let fields = [
+        "\"id\": string,",
+        "\"source\": string,",
+        "\"milestone_id\": string | null,",
+        "\"title\": string,",
+        "\"objective\": string,",
+        "\"contract_refs\": string[],",
+        "\"acceptance_criteria\": string[],",
+        "\"expected_files\": string[],",
+        "\"verification_commands\": string[],",
+        "\"dependencies\": string[],",
+        "\"rollback_notes\": string[]",
+    ];
+
+    fields
+        .into_iter()
+        .map(|field| format!("{prefix}{field}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn reconcile_system_prompt() -> String {
