@@ -6,10 +6,12 @@ use naaf_tui::TuiAppBuilder;
 use runtime::AppRuntime;
 use workflow::run_mmat;
 
+mod artifacts;
 mod error;
 mod models;
 mod parsing;
 mod prompts;
+mod run_store;
 mod runtime;
 mod workflow;
 
@@ -40,7 +42,12 @@ async fn main() -> Result<(), AppError> {
 
     let project_root = env::current_dir()
         .map_err(|error| AppError::Config(format!("failed to read current directory: {error}")))?;
-    let runtime = AppRuntime::new(sender, project_root);
+    let runtime = AppRuntime::new(sender, project_root)?;
+    runtime.log_info(format!(
+        "Run `{}` artifacts will be written to `{}`.",
+        runtime.run_id(),
+        runtime.run_root().display()
+    ))?;
     runtime.log_info("MMAT is ready. Enter a project prompt to begin.")?;
 
     let result = async {

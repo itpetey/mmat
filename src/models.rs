@@ -37,6 +37,17 @@ pub(crate) struct WorkflowOutcome {
     pub(crate) next_step: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RunSummary {
+    pub(crate) run_id: String,
+    pub(crate) project_root: String,
+    pub(crate) run_root: String,
+    pub(crate) prompt: String,
+    pub(crate) status: String,
+    pub(crate) current_stage: String,
+    pub(crate) next_step: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FinalReviewInput {
     pub(crate) approved: ApprovedProposal,
@@ -282,7 +293,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ApprovalRequest, DiscoveryBrief, ImplementationDraft, ImplementationTaskInput,
+        ApprovalRequest, DiscoveryBrief, ImplementationDraft, ImplementationTaskInput, RunSummary,
         WorkflowOutcome,
     };
 
@@ -537,5 +548,23 @@ mod tests {
 
         assert!(input.work_item.milestone_id.is_none());
         assert_eq!(input.work_item.source, "final_review");
+    }
+
+    #[test]
+    fn run_summary_round_trips_core_run_metadata() {
+        let summary: RunSummary = serde_json::from_value(json!({
+            "run_id": "run-1",
+            "project_root": "/tmp/project",
+            "run_root": "/tmp/project/.mmat/runs/run-1",
+            "prompt": "build a todo app",
+            "status": "running",
+            "current_stage": "planning",
+            "next_step": "architect_review"
+        }))
+        .expect("run summary should parse");
+
+        assert_eq!(summary.run_id, "run-1");
+        assert_eq!(summary.current_stage, "planning");
+        assert_eq!(summary.next_step.as_deref(), Some("architect_review"));
     }
 }

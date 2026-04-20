@@ -3,11 +3,12 @@ use std::{env, path::Path};
 use futures::future::LocalBoxFuture;
 use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion, Tool, ToolSpec, WebSearchTool, repository};
 use naaf_tui::{EventSender, TuiEvent};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tracing::Level;
 
-use crate::error::AppError;
+use crate::{artifacts::RunArtifact, error::AppError, models::RunSummary, run_store::RunStore};
 
 pub(crate) struct AppWebSearchTool {
     inner: WebSearchTool<AppRuntime>,
@@ -29,6 +30,7 @@ pub(crate) struct AppSearchFilesTool {
 pub(crate) struct AppRuntime {
     tui: EventSender,
     project_root: std::path::PathBuf,
+    run_store: RunStore,
 }
 
 #[derive(Clone, Debug)]
@@ -72,8 +74,16 @@ impl AppSearchFilesTool {
 }
 
 impl AppRuntime {
-    pub(crate) fn new(tui: EventSender, project_root: std::path::PathBuf) -> Self {
-        Self { tui, project_root }
+    pub(crate) fn new(
+        tui: EventSender,
+        project_root: std::path::PathBuf,
+    ) -> Result<Self, AppError> {
+        let run_store = RunStore::create(&project_root)?;
+        Ok(Self {
+            tui,
+            project_root,
+            run_store,
+        })
     }
 
     fn send_event(&self, event: TuiEvent) -> Result<(), AppError> {
@@ -102,6 +112,29 @@ impl AppRuntime {
 
     pub(crate) fn project_root(&self) -> &Path {
         &self.project_root
+    }
+
+    pub(crate) fn run_id(&self) -> &str {
+        self.run_store.run_id()
+    }
+
+    pub(crate) fn run_root(&self) -> &Path {
+        self.run_store.run_root()
+    }
+
+    pub(crate) fn persist_artifact<T>(
+        &self,
+        artifact: RunArtifact,
+        value: &T,
+    ) -> Result<(), AppError>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.run_store.write_json(artifact, value)
+    }
+
+    pub(crate) fn persist_run_summary(&self, summary: &RunSummary) -> Result<(), AppError> {
+        self.persist_artifact(RunArtifact::RunSummary, summary)
     }
 }
 

@@ -18,13 +18,14 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 
 use crate::{
+    artifacts::RunArtifact,
     error::AppError,
     models::{
         ApprovalOutcome, ApprovalRequest, ApprovedProposal, DiscoveryBrief, FinalReview,
         FinalReviewInput, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
-        ImplementationWorklist, ProjectPrompt, ReconciledProposal, StageFinding, StageReview,
-        ValidatedSolution, ValidationFinding, WorkflowOutcome,
+        ImplementationWorklist, ProjectPrompt, ReconciledProposal, RunSummary, StageFinding,
+        StageReview, ValidatedSolution, ValidationFinding, WorkflowOutcome,
     },
     parsing::decode_json_output,
     prompts::{
@@ -212,6 +213,7 @@ pub(crate) async fn run_mmat(
     let mut prompt_context = prompt;
 
     loop {
+        write_run_summary(runtime, &prompt_context, "running", "discovery", None)?;
         let discovery = discovery_step
             .run(
                 runtime,
@@ -221,9 +223,17 @@ pub(crate) async fn run_mmat(
             )
             .await
             .map_err(|error| AppError::Workflow(format!("discovery stage failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::DiscoveryBrief, &discovery)?;
         log_discovery_summary(runtime, &discovery)?;
 
         if !discovery_ready_for_solution(&discovery) {
+            write_run_summary(
+                runtime,
+                &prompt_context,
+                "awaiting_clarification",
+                "discovery",
+                Some("user clarification"),
+            )?;
             let clarification = prompt_for_discovery_clarification(runtime, &discovery).await?;
             prompt_context = append_user_guidance(
                 &prompt_context,
@@ -233,6 +243,13 @@ pub(crate) async fn run_mmat(
             continue;
         }
 
+        write_run_summary(
+            runtime,
+            &prompt_context,
+            "running",
+            "solution_generation",
+            None,
+        )?;
         let solutions = solutions_workflow
             .run(runtime, discovery.clone())
             .await
@@ -243,12 +260,20 @@ pub(crate) async fn run_mmat(
             .run(runtime, solutions)
             .await
             .map_err(|error| AppError::Workflow(format!("reconcile stage failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::ReconciledProposal, &reconciled)?;
         log_reconciled_summary(runtime, &reconciled)?;
 
         runtime.log_info(
             "The next prompt will collect approval, revision notes, or any final constraints.",
         )?;
 
+        write_run_summary(
+            runtime,
+            &prompt_context,
+            "awaiting_approval",
+            "approval",
+            None,
+        )?;
         let approval_response = prompt_for_approval(runtime, &reconciled).await?;
         let approval = approval_step
             .run(
@@ -260,6 +285,7 @@ pub(crate) async fn run_mmat(
             )
             .await
             .map_err(|error| AppError::Workflow(format!("approval stage failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::ApprovalOutcome, &approval)?;
         log_approval_summary(runtime, &approval)?;
 
         if !approval_granted(&approval) {
@@ -271,6 +297,7 @@ pub(crate) async fn run_mmat(
                 "User revision after proposal review",
                 &approval_response,
             );
+            write_run_summary(runtime, &prompt_context, "revising", "discovery", None)?;
             continue;
         }
 
@@ -280,26 +307,51 @@ pub(crate) async fn run_mmat(
         };
         runtime.log_info("Approval granted. Starting planning and execution.")?;
 
+        write_run_summary(runtime, &prompt_context, "running", "planning", None)?;
         let plan = planning_step
             .run(runtime, approved.clone())
             .await
             .map_err(|error| AppError::Workflow(format!("planning stage failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::ImplementationPlan, &plan)?;
         log_planning_summary(runtime, &plan)?;
 
+        write_run_summary(
+            runtime,
+            &prompt_context,
+            "running",
+            "architect_review",
+            None,
+        )?;
         let architect_review = architect_review_step
             .run(runtime, plan.clone())
             .await
             .map_err(|error| AppError::Workflow(format!("architect review failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::ArchitectReview, &architect_review)?;
         log_stage_review(runtime, "Architect review", &architect_review)?;
 
-        return run_dynamic_implementation_workflow(
+        write_run_summary(runtime, &prompt_context, "running", "implementation", None)?;
+        let outcome = run_dynamic_implementation_workflow(
             runtime,
             approved,
             plan,
             architect_review,
             execution_steps.clone(),
         )
-        .await;
+        .await?;
+
+        if let Some(final_review) = &outcome.final_review {
+            runtime.persist_artifact(RunArtifact::FinalReview, final_review)?;
+        }
+        runtime.persist_artifact(RunArtifact::WorkflowOutcome, &outcome)?;
+        write_run_summary(
+            runtime,
+            &prompt_context,
+            &outcome.status,
+            "completed",
+            Some(&outcome.next_step),
+        )?;
+
+        return Ok(outcome);
     }
 }
 
@@ -1864,6 +1916,24 @@ fn workflow_outcome_from_phase_result(result: &PhaseReviewResult) -> WorkflowOut
         final_review: Some(result.review.clone()),
         next_step: result.review.next_step.clone(),
     }
+}
+
+fn write_run_summary(
+    runtime: &AppRuntime,
+    prompt: &str,
+    status: &str,
+    current_stage: &str,
+    next_step: Option<&str>,
+) -> Result<(), AppError> {
+    runtime.persist_run_summary(&RunSummary {
+        run_id: runtime.run_id().to_string(),
+        project_root: runtime.project_root().display().to_string(),
+        run_root: runtime.run_root().display().to_string(),
+        prompt: prompt.to_string(),
+        status: status.to_string(),
+        current_stage: current_stage.to_string(),
+        next_step: next_step.map(str::to_string),
+    })
 }
 
 fn worktree_path(project_root: &Path, worktree_name: &str) -> PathBuf {
