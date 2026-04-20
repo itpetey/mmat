@@ -1,9 +1,9 @@
 use crate::{
     error::AppError,
     models::{
-        ApprovalRequest, ApprovedProposal, FinalReviewInput, ImplementationDelta,
-        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput, IntentBrief,
-        SolutionBranch, SolutionProposal, ValidatedSolution,
+        ApprovalRequest, ApprovedContract, ContractApprovalRequest, ContractDraftInput,
+        FinalReviewInput, ImplementationDelta, ImplementationManagementRequest, ImplementationPlan,
+        ImplementationTaskInput, IntentBrief, SolutionBranch, SolutionProposal, ValidatedSolution,
     },
     parsing::to_pretty_json,
 };
@@ -28,6 +28,34 @@ pub(crate) fn architect_review_user_prompt(plan: &ImplementationPlan) -> Result<
     Ok(format!(
         "Review this implementation plan as the senior architect and return JSON only:\n{}",
         to_pretty_json(plan)?,
+    ))
+}
+
+pub(crate) fn contract_approval_system_prompt() -> String {
+    "You are the contract approval stage. The user has reviewed the generated project contract and responded. Decide whether the response approves the contract or requests revisions, capture any final constraints, and return raw JSON only with this shape: {\n  \"decision\": string,\n  \"summary\": string,\n  \"final_details\": string[],\n  \"next_step\": string\n}".to_string()
+}
+
+pub(crate) fn contract_approval_user_prompt(
+    request: &ContractApprovalRequest,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "Project contract under review:\n{}\n\nUser response:\n{}\n\nInterpret the user's response and return JSON only.",
+        to_pretty_json(&request.contract)?,
+        request.user_response,
+    ))
+}
+
+pub(crate) fn contract_system_prompt(web_search_enabled: bool) -> String {
+    format!(
+        "You are the contract formation stage. Convert the approved direction into an explicit project contract that later stages must follow. Preserve the approved intent, make non-goals and exclusions explicit, and define acceptance criteria and definition of done in concrete terms. {} Return raw JSON only with this shape: {{\n  \"problem_statement\": string,\n  \"user_goals\": string[],\n  \"non_goals\": string[],\n  \"assumptions\": string[],\n  \"constraints\": string[],\n  \"acceptance_criteria\": string[],\n  \"definition_of_done\": string[],\n  \"approved_tech_choices\": string[],\n  \"explicit_exclusions\": string[],\n  \"demo_scenarios\": string[]\n}}",
+        tool_guidance(web_search_enabled, false)
+    )
+}
+
+pub(crate) fn contract_user_prompt(input: &ContractDraftInput) -> Result<String, AppError> {
+    Ok(format!(
+        "Intent brief and approved proposal:\n{}\n\nWrite the project contract now. Return JSON only.",
+        to_pretty_json(input)?,
     ))
 }
 
@@ -114,16 +142,16 @@ pub(crate) fn peer_review_user_prompt(
 
 pub(crate) fn planning_system_prompt(web_search_enabled: bool) -> String {
     [
-        "You are the planning stage that runs after the user has approved the reconciled proposal. Produce an implementation plan with concrete milestones and specific items within each milestone. ".to_string(),
+        "You are the planning stage that runs after the user has approved the project contract. Produce an implementation plan with concrete milestones and specific items within each milestone. ".to_string(),
         tool_guidance(web_search_enabled, false),
         " Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"milestones\": [{\n    \"id\": string,\n    \"title\": string,\n    \"objective\": string,\n    \"items\": [{\n      \"id\": string,\n      \"title\": string,\n      \"description\": string,\n      \"acceptance_criteria\": string[],\n      \"dependencies\": string[]\n    }]\n  }],\n  \"risks\": string[]\n}".to_string(),
     ]
     .concat()
 }
 
-pub(crate) fn planning_user_prompt(approved: &ApprovedProposal) -> Result<String, AppError> {
+pub(crate) fn planning_user_prompt(approved: &ApprovedContract) -> Result<String, AppError> {
     Ok(format!(
-        "Approved proposal and constraints:\n{}\n\nDesign the implementation plan now. Each milestone and item must have a stable id. Return JSON only.",
+        "Approved project contract and context:\n{}\n\nDesign the implementation plan now. Each milestone and item must have a stable id. Return JSON only.",
         to_pretty_json(approved)?,
     ))
 }

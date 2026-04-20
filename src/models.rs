@@ -10,7 +10,7 @@ pub(crate) struct ApprovalRequest {
 pub(crate) struct ImplementationManagementRequest {
     pub(crate) pass_index: usize,
     pub(crate) phase: String,
-    pub(crate) approved: ApprovedProposal,
+    pub(crate) approved: ApprovedContract,
     pub(crate) plan: ImplementationPlan,
     pub(crate) architect_review: StageReview,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
@@ -19,7 +19,7 @@ pub(crate) struct ImplementationManagementRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ImplementationTaskInput {
-    pub(crate) approved: ApprovedProposal,
+    pub(crate) approved: ApprovedContract,
     pub(crate) plan: ImplementationPlan,
     pub(crate) work_item: ManagedItem,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
@@ -30,6 +30,8 @@ pub(crate) struct ImplementationTaskInput {
 pub(crate) struct WorkflowOutcome {
     pub(crate) status: String,
     pub(crate) approval: ApprovalOutcome,
+    pub(crate) contract: Option<ProjectContract>,
+    pub(crate) contract_approval: Option<ApprovalOutcome>,
     pub(crate) plan: Option<ImplementationPlan>,
     pub(crate) architect_review: Option<StageReview>,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
@@ -50,7 +52,7 @@ pub(crate) struct RunSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FinalReviewInput {
-    pub(crate) approved: ApprovedProposal,
+    pub(crate) approved: ApprovedContract,
     pub(crate) plan: ImplementationPlan,
     pub(crate) completed_items: Vec<ImplementationItemResult>,
 }
@@ -72,6 +74,48 @@ pub(crate) struct ValidatedSolution {
 pub(crate) struct ApprovedProposal {
     pub(crate) proposal: ReconciledProposal,
     pub(crate) approval: ApprovalOutcome,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ContractDraftInput {
+    pub(crate) intent: IntentBrief,
+    pub(crate) approved: ApprovedProposal,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ContractApprovalRequest {
+    pub(crate) contract: ProjectContract,
+    pub(crate) user_response: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectContract {
+    pub(crate) problem_statement: String,
+    pub(crate) user_goals: Vec<String>,
+    pub(crate) non_goals: Vec<String>,
+    pub(crate) assumptions: Vec<String>,
+    pub(crate) constraints: Vec<String>,
+    pub(crate) acceptance_criteria: Vec<String>,
+    pub(crate) definition_of_done: Vec<String>,
+    pub(crate) approved_tech_choices: Vec<String>,
+    pub(crate) explicit_exclusions: Vec<String>,
+    pub(crate) demo_scenarios: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ChangeRequest {
+    pub(crate) summary: String,
+    pub(crate) rationale: String,
+    pub(crate) proposed_changes: Vec<String>,
+    pub(crate) impact: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ApprovedContract {
+    pub(crate) approved: ApprovedProposal,
+    pub(crate) contract: ProjectContract,
+    pub(crate) contract_approval: ApprovalOutcome,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -433,25 +477,45 @@ mod tests {
         let draft: ImplementationDraft = serde_json::from_value(json!({
             "input": {
                 "approved": {
-                    "proposal": {
-                        "title": "Approved proposal",
-                        "executive_summary": "summary",
-                        "recommended_direction": "direction",
-                        "why_this_plan": "why",
-                        "adopted_ideas": [],
-                        "deferred_ideas": [],
-                        "scope": "scope",
-                        "architecture": ["layered"],
-                        "delivery_plan": ["plan"],
-                        "technologies": ["rust"],
-                        "major_risks": ["drift"],
-                        "open_questions": []
+                    "approved": {
+                        "proposal": {
+                            "title": "Approved proposal",
+                            "executive_summary": "summary",
+                            "recommended_direction": "direction",
+                            "why_this_plan": "why",
+                            "adopted_ideas": [],
+                            "deferred_ideas": [],
+                            "scope": "scope",
+                            "architecture": ["layered"],
+                            "delivery_plan": ["plan"],
+                            "technologies": ["rust"],
+                            "major_risks": ["drift"],
+                            "open_questions": []
+                        },
+                        "approval": {
+                            "decision": "approve",
+                            "summary": "looks good",
+                            "final_details": ["no worktrees yet"],
+                            "next_step": "implement"
+                        }
                     },
-                    "approval": {
+                    "contract": {
+                        "problem_statement": "Build the workflow",
+                        "user_goals": ["Ship validation"],
+                        "non_goals": ["Rewrite the framework"],
+                        "assumptions": ["Rust workspace"],
+                        "constraints": ["Use cargo validators"],
+                        "acceptance_criteria": ["cargo check passes"],
+                        "definition_of_done": ["workflow completes"],
+                        "approved_tech_choices": ["rust"],
+                        "explicit_exclusions": ["Python service"],
+                        "demo_scenarios": ["Run MMAT"]
+                    },
+                    "contract_approval": {
                         "decision": "approve",
-                        "summary": "looks good",
-                        "final_details": ["no worktrees yet"],
-                        "next_step": "implement"
+                        "summary": "contract looks good",
+                        "final_details": [],
+                        "next_step": "plan"
                     }
                 },
                 "plan": {
@@ -519,25 +583,45 @@ mod tests {
     fn implementation_task_input_accepts_null_milestone_id() {
         let input: ImplementationTaskInput = serde_json::from_value(json!({
             "approved": {
-                "proposal": {
-                    "title": "Approved proposal",
-                    "executive_summary": "summary",
-                    "recommended_direction": "direction",
-                    "why_this_plan": "why",
-                    "adopted_ideas": [],
-                    "deferred_ideas": [],
-                    "scope": "scope",
-                    "architecture": [],
-                    "delivery_plan": [],
-                    "technologies": [],
-                    "major_risks": [],
-                    "open_questions": []
+                "approved": {
+                    "proposal": {
+                        "title": "Approved proposal",
+                        "executive_summary": "summary",
+                        "recommended_direction": "direction",
+                        "why_this_plan": "why",
+                        "adopted_ideas": [],
+                        "deferred_ideas": [],
+                        "scope": "scope",
+                        "architecture": [],
+                        "delivery_plan": [],
+                        "technologies": [],
+                        "major_risks": [],
+                        "open_questions": []
+                    },
+                    "approval": {
+                        "decision": "approve",
+                        "summary": "ok",
+                        "final_details": [],
+                        "next_step": "implement"
+                    }
                 },
-                "approval": {
+                "contract": {
+                    "problem_statement": "Fix the issue",
+                    "user_goals": ["Resolve the review finding"],
+                    "non_goals": ["Expand scope"],
+                    "assumptions": ["Existing implementation remains valid"],
+                    "constraints": ["Stay within the repo"],
+                    "acceptance_criteria": ["review passes"],
+                    "definition_of_done": ["issue resolved"],
+                    "approved_tech_choices": ["rust"],
+                    "explicit_exclusions": ["New service"],
+                    "demo_scenarios": ["Run review again"]
+                },
+                "contract_approval": {
                     "decision": "approve",
-                    "summary": "ok",
+                    "summary": "contract approved",
                     "final_details": [],
-                    "next_step": "implement"
+                    "next_step": "plan"
                 }
             },
             "plan": {

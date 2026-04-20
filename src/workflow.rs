@@ -21,22 +21,25 @@ use crate::{
     artifacts::RunArtifact,
     error::AppError,
     models::{
-        ApprovalOutcome, ApprovalRequest, ApprovedProposal, FinalReview, FinalReviewInput,
+        ApprovalOutcome, ApprovalRequest, ApprovedContract, ApprovedProposal,
+        ContractApprovalRequest, ContractDraftInput, FinalReview, FinalReviewInput,
         ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
-        ImplementationWorklist, IntentBrief, ProjectPrompt, ReconciledProposal, RunSummary,
-        StageFinding, StageReview, ValidatedSolution, ValidationFinding, WorkflowOutcome,
+        ImplementationWorklist, IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal,
+        RunSummary, StageFinding, StageReview, ValidatedSolution, ValidationFinding,
+        WorkflowOutcome,
     },
     parsing::decode_json_output,
     prompts::{
         approval_system_prompt, approval_user_prompt, architect_review_system_prompt,
-        architect_review_user_prompt, discovery_system_prompt, discovery_user_prompt,
-        final_review_system_prompt, final_review_user_prompt,
-        implementation_management_system_prompt, implementation_management_user_prompt,
-        implementation_task_system_prompt, implementation_task_user_prompt,
-        peer_review_system_prompt, peer_review_user_prompt, planning_system_prompt,
-        planning_user_prompt, reconcile_system_prompt, reconcile_user_prompt,
-        solution_generation_system_prompt, solution_generation_user_prompt,
+        architect_review_user_prompt, contract_approval_system_prompt,
+        contract_approval_user_prompt, contract_system_prompt, contract_user_prompt,
+        discovery_system_prompt, discovery_user_prompt, final_review_system_prompt,
+        final_review_user_prompt, implementation_management_system_prompt,
+        implementation_management_user_prompt, implementation_task_system_prompt,
+        implementation_task_user_prompt, peer_review_system_prompt, peer_review_user_prompt,
+        planning_system_prompt, planning_user_prompt, reconcile_system_prompt,
+        reconcile_user_prompt, solution_generation_system_prompt, solution_generation_user_prompt,
         solution_validation_system_prompt, solution_validation_user_prompt,
     },
     runtime::{
@@ -187,6 +190,12 @@ pub(crate) async fn run_mmat(
     let approval_step = Step::builder(build_approval_task(&llm, &model))
         .with_findings::<NeverFinding>()
         .build();
+    let contract_step = Step::builder(build_contract_task(&llm, &model, search_enabled))
+        .with_findings::<NeverFinding>()
+        .build();
+    let contract_approval_step = Step::builder(build_contract_approval_task(&llm, &model))
+        .with_findings::<NeverFinding>()
+        .build();
 
     let planning_step = Step::builder(build_planning_task(&llm, &model, search_enabled))
         .with_findings::<NeverFinding>()
@@ -318,11 +327,66 @@ pub(crate) async fn run_mmat(
             proposal: reconciled,
             approval: approval.clone(),
         };
-        runtime.log_info("Approval granted. Starting planning and execution.")?;
+        runtime.log_info("Proposal approved. Forming the project contract.")?;
+
+        write_run_summary(runtime, &prompt_context, "running", "contract", None)?;
+        let contract = contract_step
+            .run(
+                runtime,
+                ContractDraftInput {
+                    intent: discovery.clone(),
+                    approved: approved.clone(),
+                },
+            )
+            .await
+            .map_err(|error| AppError::Workflow(format!("contract stage failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::ProjectContract, &contract)?;
+        log_contract_summary(runtime, &contract)?;
+
+        write_run_summary(
+            runtime,
+            &prompt_context,
+            "awaiting_contract_approval",
+            "contract",
+            None,
+        )?;
+        let contract_response = prompt_for_contract_approval(runtime, &contract).await?;
+        let contract_approval = contract_approval_step
+            .run(
+                runtime,
+                ContractApprovalRequest {
+                    contract: contract.clone(),
+                    user_response: contract_response.clone(),
+                },
+            )
+            .await
+            .map_err(|error| AppError::Workflow(format!("contract approval failed: {error}")))?;
+        runtime.persist_artifact(RunArtifact::ContractApprovalOutcome, &contract_approval)?;
+        log_contract_approval_summary(runtime, &contract_approval)?;
+
+        if !approval_granted(&contract_approval) {
+            runtime.log_info(
+                "Contract revisions requested. Returning to discovery with the user's latest guidance.",
+            )?;
+            prompt_context = append_user_guidance(
+                &prompt_context,
+                "User revision after contract review",
+                &contract_response,
+            );
+            write_run_summary(runtime, &prompt_context, "revising", "discovery", None)?;
+            continue;
+        }
+
+        let approved_contract = ApprovedContract {
+            approved,
+            contract: contract.clone(),
+            contract_approval: contract_approval.clone(),
+        };
+        runtime.log_info("Contract approved. Starting planning and execution.")?;
 
         write_run_summary(runtime, &prompt_context, "running", "planning", None)?;
         let plan = planning_step
-            .run(runtime, approved.clone())
+            .run(runtime, approved_contract.clone())
             .await
             .map_err(|error| AppError::Workflow(format!("planning stage failed: {error}")))?;
         runtime.persist_artifact(RunArtifact::ImplementationPlan, &plan)?;
@@ -345,7 +409,7 @@ pub(crate) async fn run_mmat(
         write_run_summary(runtime, &prompt_context, "running", "implementation", None)?;
         let outcome = run_dynamic_implementation_workflow(
             runtime,
-            approved,
+            approved_contract,
             plan,
             architect_review,
             execution_steps.clone(),
@@ -520,6 +584,61 @@ fn build_architect_review_task(
         decode_json_output::<StageReview>,
     )
     .observed_as("architect_review")
+}
+
+fn build_contract_approval_task(
+    llm: &AppAgent,
+    model: &str,
+) -> impl Task<
+    Runtime = AppRuntime,
+    Input = ContractApprovalRequest,
+    Output = ApprovalOutcome,
+    Error = LlmStageError,
+> + use<> {
+    let model = model.to_string();
+    let system_prompt = contract_approval_system_prompt();
+
+    llm.task(
+        move |_runtime: &AppRuntime, request: ContractApprovalRequest| {
+            Ok::<_, AppError>(CompletionRequest::new(
+                model.clone(),
+                vec![
+                    Message::system(system_prompt.clone()),
+                    Message::user(contract_approval_user_prompt(&request)?),
+                ],
+            ))
+        },
+        decode_json_output::<ApprovalOutcome>,
+    )
+    .observed_as("contract_approval")
+}
+
+fn build_contract_task(
+    llm: &AppAgent,
+    model: &str,
+    web_search_enabled: bool,
+) -> impl Task<
+    Runtime = AppRuntime,
+    Input = ContractDraftInput,
+    Output = ProjectContract,
+    Error = LlmStageError,
+> + use<> {
+    let model = model.to_string();
+    let system_prompt = contract_system_prompt(web_search_enabled);
+
+    llm.task(
+        move |_runtime: &AppRuntime, input: ContractDraftInput| {
+            Ok::<_, AppError>(CompletionRequest::new(
+                model.clone(),
+                vec![
+                    Message::system(system_prompt.clone()),
+                    Message::user(contract_user_prompt(&input)?),
+                ],
+            ))
+        },
+        decode_json_output::<ProjectContract>,
+    )
+    .observed_as("project_contract")
 }
 
 fn build_discovery_task(
@@ -947,7 +1066,7 @@ fn build_planning_task(
     web_search_enabled: bool,
 ) -> impl Task<
     Runtime = AppRuntime,
-    Input = ApprovedProposal,
+    Input = ApprovedContract,
     Output = ImplementationPlan,
     Error = LlmStageError,
 > + use<> {
@@ -955,7 +1074,7 @@ fn build_planning_task(
     let system_prompt = planning_system_prompt(web_search_enabled);
 
     llm.task(
-        move |_runtime: &AppRuntime, approved: ApprovedProposal| {
+        move |_runtime: &AppRuntime, approved: ApprovedContract| {
             Ok::<_, AppError>(CompletionRequest::new(
                 model.clone(),
                 vec![
@@ -1218,7 +1337,7 @@ fn implementation_node_name(pass_index: usize, item_id: &str) -> String {
 }
 
 fn initial_management_request(
-    approved: ApprovedProposal,
+    approved: ApprovedContract,
     plan: ImplementationPlan,
     architect_review: StageReview,
 ) -> ImplementationManagementRequest {
@@ -1242,6 +1361,34 @@ fn log_approval_summary(runtime: &AppRuntime, approval: &ApprovalOutcome) -> Res
             approval.final_details.join(" | ")
         ))?;
     }
+    Ok(())
+}
+
+fn log_contract_approval_summary(
+    runtime: &AppRuntime,
+    approval: &ApprovalOutcome,
+) -> Result<(), AppError> {
+    runtime.log_info(format!("Contract approval outcome: {}", approval.decision))?;
+    runtime.log_info(approval.summary.clone())?;
+    if !approval.final_details.is_empty() {
+        runtime.log_info(format!(
+            "Captured contract details: {}",
+            approval.final_details.join(" | ")
+        ))?;
+    }
+    Ok(())
+}
+
+fn log_contract_summary(runtime: &AppRuntime, contract: &ProjectContract) -> Result<(), AppError> {
+    runtime.log_info("Project contract drafted.")?;
+    runtime.log_info(format!(
+        "Contract problem statement: {}",
+        contract.problem_statement
+    ))?;
+    runtime.log_info(format!(
+        "Contract acceptance criteria: {}",
+        contract.acceptance_criteria.len()
+    ))?;
     Ok(())
 }
 
@@ -1303,6 +1450,42 @@ async fn prompt_for_approval(
                 .map(|question| format!("- {question}")),
         );
     }
+
+    Ok(runtime
+        .ask(HumanQuestion {
+            question: prompt.join("\n"),
+            choices: None,
+        })
+        .await?
+        .content)
+}
+
+async fn prompt_for_contract_approval(
+    runtime: &AppRuntime,
+    contract: &ProjectContract,
+) -> Result<String, AppError> {
+    let mut prompt = vec![
+        "Please review the project contract before planning starts.".to_string(),
+        String::new(),
+        format!("Problem statement: {}", contract.problem_statement),
+    ];
+
+    if !contract.user_goals.is_empty() {
+        prompt.push(format!("User goals: {}", contract.user_goals.join(" | ")));
+    }
+
+    if !contract.acceptance_criteria.is_empty() {
+        prompt.push(format!(
+            "Acceptance criteria: {}",
+            contract.acceptance_criteria.join(" | ")
+        ));
+    }
+
+    prompt.push(String::new());
+    prompt.push(
+        "Reply with `approve` to freeze the contract, or describe the revisions or constraints you want."
+            .to_string(),
+    );
 
     Ok(runtime
         .ask(HumanQuestion {
@@ -1832,7 +2015,7 @@ async fn run_command(root: &Path, label: &str, args: &[&str]) -> Result<(), AppE
 
 async fn run_dynamic_implementation_workflow(
     runtime: &AppRuntime,
-    approved: ApprovedProposal,
+    approved: ApprovedContract,
     plan: ImplementationPlan,
     architect_review: StageReview,
     execution_steps: ExecutionGraphSteps,
@@ -1936,7 +2119,9 @@ fn workflow_outcome_from_phase_result(result: &PhaseReviewResult) -> WorkflowOut
         } else {
             "needs_more_work".to_string()
         },
-        approval: result.phase.request.approved.approval.clone(),
+        approval: result.phase.request.approved.approved.approval.clone(),
+        contract: Some(result.phase.request.approved.contract.clone()),
+        contract_approval: Some(result.phase.request.approved.contract_approval.clone()),
         plan: Some(result.phase.request.plan.clone()),
         architect_review: Some(result.phase.request.architect_review.clone()),
         completed_items: result.completed_items.clone(),
@@ -1992,10 +2177,11 @@ mod tests {
         next_management_request, phase_label, phase_review_action,
     };
     use crate::models::{
-        ApprovalOutcome, ApprovedProposal, FileDelta, FinalReview, ImplementationDelta,
-        ImplementationDraft, ImplementationItemResult, ImplementationManagementRequest,
-        ImplementationPlan, ImplementationTaskInput, IntentBrief, ManagedItem, PlanMilestone,
-        ReconciledProposal, RemediationItem, StageReview,
+        ApprovalOutcome, ApprovedContract, ApprovedProposal, FileDelta, FinalReview,
+        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
+        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput, IntentBrief,
+        ManagedItem, PlanMilestone, ProjectContract, ReconciledProposal, RemediationItem,
+        StageReview,
     };
     use crate::{error::AppError, runtime::AppRuntime};
     use naaf_core::{NeverFinding, NodeId, Step, task_fn};
@@ -2091,26 +2277,46 @@ mod tests {
         ImplementationManagementRequest {
             pass_index,
             phase: phase_label(pass_index),
-            approved: ApprovedProposal {
-                proposal: ReconciledProposal {
-                    title: "Proposal".to_string(),
-                    executive_summary: "summary".to_string(),
-                    recommended_direction: "direction".to_string(),
-                    why_this_plan: "why".to_string(),
-                    adopted_ideas: Vec::new(),
-                    deferred_ideas: Vec::new(),
-                    scope: "scope".to_string(),
-                    architecture: Vec::new(),
-                    delivery_plan: Vec::new(),
-                    technologies: Vec::new(),
-                    major_risks: Vec::new(),
-                    open_questions: Vec::new(),
+            approved: ApprovedContract {
+                approved: ApprovedProposal {
+                    proposal: ReconciledProposal {
+                        title: "Proposal".to_string(),
+                        executive_summary: "summary".to_string(),
+                        recommended_direction: "direction".to_string(),
+                        why_this_plan: "why".to_string(),
+                        adopted_ideas: Vec::new(),
+                        deferred_ideas: Vec::new(),
+                        scope: "scope".to_string(),
+                        architecture: Vec::new(),
+                        delivery_plan: Vec::new(),
+                        technologies: Vec::new(),
+                        major_risks: Vec::new(),
+                        open_questions: Vec::new(),
+                    },
+                    approval: ApprovalOutcome {
+                        decision: "approve".to_string(),
+                        summary: "approved".to_string(),
+                        final_details: Vec::new(),
+                        next_step: "implement".to_string(),
+                    },
                 },
-                approval: ApprovalOutcome {
+                contract: ProjectContract {
+                    problem_statement: "Build the thing".to_string(),
+                    user_goals: vec!["Ship the thing".to_string()],
+                    non_goals: vec!["Rewrite everything".to_string()],
+                    assumptions: vec!["Single repository".to_string()],
+                    constraints: vec!["Use Rust".to_string()],
+                    acceptance_criteria: vec!["Tests pass".to_string()],
+                    definition_of_done: vec!["Workflow completes".to_string()],
+                    approved_tech_choices: vec!["Rust".to_string()],
+                    explicit_exclusions: vec!["Mobile app".to_string()],
+                    demo_scenarios: vec!["Run the workflow".to_string()],
+                },
+                contract_approval: ApprovalOutcome {
                     decision: "approve".to_string(),
-                    summary: "approved".to_string(),
+                    summary: "contract approved".to_string(),
                     final_details: Vec::new(),
-                    next_step: "implement".to_string(),
+                    next_step: "plan".to_string(),
                 },
             },
             plan: ImplementationPlan {
@@ -2429,25 +2635,45 @@ mod tests {
         let draft = ImplementationDraft {
             input: serde_json::from_value::<ImplementationTaskInput>(serde_json::json!({
                 "approved": {
-                    "proposal": {
-                        "title": "Plan",
-                        "executive_summary": "summary",
-                        "recommended_direction": "direction",
-                        "why_this_plan": "why",
-                        "adopted_ideas": [],
-                        "deferred_ideas": [],
-                        "scope": "scope",
-                        "architecture": [],
-                        "delivery_plan": [],
-                        "technologies": [],
-                        "major_risks": [],
-                        "open_questions": []
+                    "approved": {
+                        "proposal": {
+                            "title": "Plan",
+                            "executive_summary": "summary",
+                            "recommended_direction": "direction",
+                            "why_this_plan": "why",
+                            "adopted_ideas": [],
+                            "deferred_ideas": [],
+                            "scope": "scope",
+                            "architecture": [],
+                            "delivery_plan": [],
+                            "technologies": [],
+                            "major_risks": [],
+                            "open_questions": []
+                        },
+                        "approval": {
+                            "decision": "approve",
+                            "summary": "ok",
+                            "final_details": [],
+                            "next_step": "build"
+                        }
                     },
-                    "approval": {
+                    "contract": {
+                        "problem_statement": "Implement the plan",
+                        "user_goals": ["Add stage"],
+                        "non_goals": ["Rewrite everything"],
+                        "assumptions": ["Rust project"],
+                        "constraints": ["Stay within the repo"],
+                        "acceptance_criteria": ["works"],
+                        "definition_of_done": ["tests pass"],
+                        "approved_tech_choices": ["rust"],
+                        "explicit_exclusions": ["new service"],
+                        "demo_scenarios": ["run the workflow"]
+                    },
+                    "contract_approval": {
                         "decision": "approve",
-                        "summary": "ok",
+                        "summary": "contract approved",
                         "final_details": [],
-                        "next_step": "build"
+                        "next_step": "plan"
                     }
                 },
                 "plan": {
