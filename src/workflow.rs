@@ -11,8 +11,8 @@ use naaf_core::{
     materialiser_fn, repair_fn, task_fn,
 };
 use naaf_llm::{
-    CompletionRequest, Executor, ExecutorConfig, LlmAgent, Message, OpenAiClient, OpenAiConfig,
-    OpenAiError, QuestionTool, RegisterToolError, Tool, ToolRegistry,
+    CompletionRequest, Executor, ExecutorConfig, HumanIO, HumanQuestion, LlmAgent, Message,
+    OpenAiClient, OpenAiConfig, OpenAiError, QuestionTool, RegisterToolError, Tool, ToolRegistry,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
@@ -20,8 +20,8 @@ use tokio::process::Command;
 use crate::{
     error::AppError,
     models::{
-        ApprovalOutcome, ApprovedProposal, DiscoveryBrief, FinalReview, FinalReviewInput,
-        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
+        ApprovalOutcome, ApprovalRequest, ApprovedProposal, DiscoveryBrief, FinalReview,
+        FinalReviewInput, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
         ImplementationWorklist, ProjectPrompt, ReconciledProposal, StageFinding, StageReview,
         ValidatedSolution, ValidationFinding, WorkflowOutcome,
@@ -186,52 +186,6 @@ pub(crate) async fn run_mmat(
         .with_findings::<NeverFinding>()
         .build();
 
-    let discovery = discovery_step
-        .run(runtime, ProjectPrompt { raw: prompt })
-        .await
-        .map_err(|error| AppError::Workflow(format!("discovery stage failed: {error}")))?;
-    log_discovery_summary(runtime, &discovery)?;
-
-    let solutions = solutions_workflow
-        .run(runtime, discovery.clone())
-        .await
-        .map_err(|error| AppError::Workflow(format!("solution generation failed: {error}")))?;
-    log_solution_summaries(runtime, &solutions)?;
-
-    let reconciled = reconcile_step
-        .run(runtime, solutions)
-        .await
-        .map_err(|error| AppError::Workflow(format!("reconcile stage failed: {error}")))?;
-    log_reconciled_summary(runtime, &reconciled)?;
-
-    runtime.log_info(
-        "The next prompt will collect approval, revision notes, or any final constraints.",
-    )?;
-
-    let approval = approval_step
-        .run(runtime, reconciled.clone())
-        .await
-        .map_err(|error| AppError::Workflow(format!("approval stage failed: {error}")))?;
-    log_approval_summary(runtime, &approval)?;
-
-    if !approval_granted(&approval) {
-        return Ok(WorkflowOutcome {
-            status: "awaiting_user_revision".to_string(),
-            approval: approval.clone(),
-            plan: None,
-            architect_review: None,
-            completed_items: Vec::new(),
-            final_review: None,
-            next_step: approval.next_step.clone(),
-        });
-    }
-
-    let approved = ApprovedProposal {
-        proposal: reconciled,
-        approval: approval.clone(),
-    };
-    runtime.log_info("Approval granted. Starting planning and execution.")?;
-
     let planning_step = Step::builder(build_planning_task(&llm, &model, search_enabled))
         .with_findings::<NeverFinding>()
         .build();
@@ -255,20 +209,98 @@ pub(crate) async fn run_mmat(
         outcome: build_outcome_step(),
     };
 
-    let plan = planning_step
-        .run(runtime, approved.clone())
-        .await
-        .map_err(|error| AppError::Workflow(format!("planning stage failed: {error}")))?;
-    log_planning_summary(runtime, &plan)?;
+    let mut prompt_context = prompt;
 
-    let architect_review = architect_review_step
-        .run(runtime, plan.clone())
-        .await
-        .map_err(|error| AppError::Workflow(format!("architect review failed: {error}")))?;
-    log_stage_review(runtime, "Architect review", &architect_review)?;
+    loop {
+        let discovery = discovery_step
+            .run(
+                runtime,
+                ProjectPrompt {
+                    raw: prompt_context.clone(),
+                },
+            )
+            .await
+            .map_err(|error| AppError::Workflow(format!("discovery stage failed: {error}")))?;
+        log_discovery_summary(runtime, &discovery)?;
 
-    run_dynamic_implementation_workflow(runtime, approved, plan, architect_review, execution_steps)
-        .await
+        if !discovery_ready_for_solution(&discovery) {
+            let clarification = prompt_for_discovery_clarification(runtime, &discovery).await?;
+            prompt_context = append_user_guidance(
+                &prompt_context,
+                "User clarification after discovery",
+                &clarification,
+            );
+            continue;
+        }
+
+        let solutions = solutions_workflow
+            .run(runtime, discovery.clone())
+            .await
+            .map_err(|error| AppError::Workflow(format!("solution generation failed: {error}")))?;
+        log_solution_summaries(runtime, &solutions)?;
+
+        let reconciled = reconcile_step
+            .run(runtime, solutions)
+            .await
+            .map_err(|error| AppError::Workflow(format!("reconcile stage failed: {error}")))?;
+        log_reconciled_summary(runtime, &reconciled)?;
+
+        runtime.log_info(
+            "The next prompt will collect approval, revision notes, or any final constraints.",
+        )?;
+
+        let approval_response = prompt_for_approval(runtime, &reconciled).await?;
+        let approval = approval_step
+            .run(
+                runtime,
+                ApprovalRequest {
+                    proposal: reconciled.clone(),
+                    user_response: approval_response.clone(),
+                },
+            )
+            .await
+            .map_err(|error| AppError::Workflow(format!("approval stage failed: {error}")))?;
+        log_approval_summary(runtime, &approval)?;
+
+        if !approval_granted(&approval) {
+            runtime.log_info(
+                "Revision requested. Returning to discovery with the user's latest guidance.",
+            )?;
+            prompt_context = append_user_guidance(
+                &prompt_context,
+                "User revision after proposal review",
+                &approval_response,
+            );
+            continue;
+        }
+
+        let approved = ApprovedProposal {
+            proposal: reconciled,
+            approval: approval.clone(),
+        };
+        runtime.log_info("Approval granted. Starting planning and execution.")?;
+
+        let plan = planning_step
+            .run(runtime, approved.clone())
+            .await
+            .map_err(|error| AppError::Workflow(format!("planning stage failed: {error}")))?;
+        log_planning_summary(runtime, &plan)?;
+
+        let architect_review = architect_review_step
+            .run(runtime, plan.clone())
+            .await
+            .map_err(|error| AppError::Workflow(format!("architect review failed: {error}")))?;
+        log_stage_review(runtime, "Architect review", &architect_review)?;
+
+        return run_dynamic_implementation_workflow(
+            runtime,
+            approved,
+            plan,
+            architect_review,
+            execution_steps.clone(),
+        )
+        .await;
+    }
 }
 
 fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), AppError> {
@@ -332,6 +364,19 @@ fn approval_granted(approval: &ApprovalOutcome) -> bool {
     )
 }
 
+fn append_user_guidance(prompt: &str, heading: &str, response: &str) -> String {
+    let response = response.trim();
+    if response.is_empty() {
+        return prompt.to_string();
+    }
+
+    format!("{prompt}\n\n{heading}:\n{response}")
+}
+
+fn discovery_ready_for_solution(discovery: &DiscoveryBrief) -> bool {
+    discovery.ready_for_solution
+}
+
 fn build_agent(
     project_root: &Path,
     web_search: Option<WebSearchConfig>,
@@ -363,7 +408,7 @@ fn build_approval_task(
     model: &str,
 ) -> impl Task<
     Runtime = AppRuntime,
-    Input = ReconciledProposal,
+    Input = ApprovalRequest,
     Output = ApprovalOutcome,
     Error = LlmStageError,
 > + use<> {
@@ -371,12 +416,12 @@ fn build_approval_task(
     let system_prompt = approval_system_prompt();
 
     llm.task(
-        move |_runtime: &AppRuntime, proposal: ReconciledProposal| {
+        move |_runtime: &AppRuntime, request: ApprovalRequest| {
             Ok::<_, AppError>(CompletionRequest::new(
                 model.clone(),
                 vec![
                     Message::system(system_prompt.clone()),
-                    Message::user(approval_user_prompt(&proposal)?),
+                    Message::user(approval_user_prompt(&request)?),
                 ],
             ))
         },
@@ -1137,6 +1182,10 @@ fn log_approval_summary(runtime: &AppRuntime, approval: &ApprovalOutcome) -> Res
 
 fn log_discovery_summary(runtime: &AppRuntime, discovery: &DiscoveryBrief) -> Result<(), AppError> {
     runtime.log_info("Discovery complete.")?;
+    runtime.log_info(format!(
+        "Ready for solution generation: {}",
+        discovery.ready_for_solution
+    ))?;
     runtime.log_info(format!("Recommended path: {}", discovery.recommended_path))?;
     if !discovery.constraints.is_empty() {
         runtime.log_info(format!(
@@ -1144,7 +1193,88 @@ fn log_discovery_summary(runtime: &AppRuntime, discovery: &DiscoveryBrief) -> Re
             discovery.constraints.join(" | ")
         ))?;
     }
+    if !discovery.open_questions.is_empty() {
+        runtime.log_info(format!(
+            "Open questions: {}",
+            discovery.open_questions.join(" | ")
+        ))?;
+    }
     Ok(())
+}
+
+async fn prompt_for_approval(
+    runtime: &AppRuntime,
+    proposal: &ReconciledProposal,
+) -> Result<String, AppError> {
+    let mut prompt = vec![
+        "Please review the proposal before implementation starts.".to_string(),
+        String::new(),
+        format!("Title: {}", proposal.title),
+    ];
+
+    if !proposal.executive_summary.trim().is_empty() {
+        prompt.push(format!("Summary: {}", proposal.executive_summary.trim()));
+    }
+
+    prompt.push(String::new());
+    prompt.push(
+        "Reply with `approve` to continue, or describe the revisions or constraints you want."
+            .to_string(),
+    );
+
+    if !proposal.open_questions.is_empty() {
+        prompt.push(String::new());
+        prompt.push("Open questions still worth considering:".to_string());
+        prompt.extend(
+            proposal
+                .open_questions
+                .iter()
+                .map(|question| format!("- {question}")),
+        );
+    }
+
+    Ok(runtime
+        .ask(HumanQuestion {
+            question: prompt.join("\n"),
+            choices: None,
+        })
+        .await?
+        .content)
+}
+
+async fn prompt_for_discovery_clarification(
+    runtime: &AppRuntime,
+    discovery: &DiscoveryBrief,
+) -> Result<String, AppError> {
+    let mut prompt =
+        vec!["Discovery still needs more detail before solution generation can start.".to_string()];
+
+    if !discovery.problem_statement.trim().is_empty() {
+        prompt.push(format!(
+            "Current understanding: {}",
+            discovery.problem_statement.trim()
+        ));
+    }
+
+    if !discovery.open_questions.is_empty() {
+        prompt.push("Please answer these points in one reply:".to_string());
+        for question in &discovery.open_questions {
+            prompt.push(format!("- {question}"));
+        }
+    } else {
+        prompt.push(
+            "Please provide the missing problem statement, intended outcome, and any constraints in one reply."
+                .to_string(),
+        );
+    }
+
+    Ok(runtime
+        .ask(HumanQuestion {
+            question: prompt.join("\n"),
+            choices: None,
+        })
+        .await?
+        .content)
 }
 
 fn log_final_review_summary(runtime: &AppRuntime, review: &FinalReview) -> Result<(), AppError> {
@@ -1759,15 +1889,16 @@ fn write_workspace_file(
 mod tests {
     use super::{
         ExecutionGraphSteps, FinalReviewDisposition, ImplementationExecutionInput, ManagedPhase,
-        PhaseExecutionInput, PhaseReviewAction, PhaseReviewResult, approval_granted,
-        build_outcome_patch, build_outcome_step, build_phase_patch, build_review_patch,
-        final_review_disposition, next_management_request, phase_label, phase_review_action,
+        PhaseExecutionInput, PhaseReviewAction, PhaseReviewResult, append_user_guidance,
+        approval_granted, build_outcome_patch, build_outcome_step, build_phase_patch,
+        build_review_patch, discovery_ready_for_solution, final_review_disposition,
+        next_management_request, phase_label, phase_review_action,
     };
     use crate::models::{
-        ApprovalOutcome, ApprovedProposal, FileDelta, FinalReview, ImplementationDelta,
-        ImplementationDraft, ImplementationItemResult, ImplementationManagementRequest,
-        ImplementationPlan, ImplementationTaskInput, ManagedItem, PlanMilestone,
-        ReconciledProposal, RemediationItem, StageReview,
+        ApprovalOutcome, ApprovedProposal, DiscoveryBrief, FileDelta, FinalReview,
+        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
+        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput, ManagedItem,
+        PlanMilestone, ReconciledProposal, RemediationItem, StageReview,
     };
     use crate::{error::AppError, runtime::AppRuntime};
     use naaf_core::{NeverFinding, NodeId, Step, task_fn};
@@ -1955,6 +2086,47 @@ mod tests {
                 next_step: "next".to_string(),
             }));
         }
+    }
+
+    #[test]
+    fn discovery_ready_for_solution_uses_model_flag() {
+        let ready = DiscoveryBrief {
+            ready_for_solution: true,
+            problem_statement: "Build a task tracker".to_string(),
+            desired_outcomes: vec!["Track tasks".to_string()],
+            assumptions: Vec::new(),
+            constraints: Vec::new(),
+            clarification_summary: Vec::new(),
+            research_notes: Vec::new(),
+            recommended_path: "Generate solutions".to_string(),
+            open_questions: Vec::new(),
+        };
+
+        let waiting = DiscoveryBrief {
+            ready_for_solution: false,
+            recommended_path: "Ask for clarification".to_string(),
+            open_questions: vec!["What are we building?".to_string()],
+            ..ready.clone()
+        };
+
+        assert!(discovery_ready_for_solution(&ready));
+        assert!(!discovery_ready_for_solution(&waiting));
+    }
+
+    #[test]
+    fn append_user_guidance_ignores_blank_responses() {
+        assert_eq!(
+            append_user_guidance("Prompt", "User clarification", "   "),
+            "Prompt"
+        );
+    }
+
+    #[test]
+    fn append_user_guidance_adds_titled_follow_up() {
+        assert_eq!(
+            append_user_guidance("Prompt", "User clarification", "Add Python"),
+            "Prompt\n\nUser clarification:\nAdd Python"
+        );
     }
 
     #[test]

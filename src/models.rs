@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ApprovalRequest {
+    pub(crate) proposal: ReconciledProposal,
+    pub(crate) user_response: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ImplementationManagementRequest {
     pub(crate) pass_index: usize,
     pub(crate) phase: String,
@@ -131,6 +137,7 @@ pub(crate) struct ProjectPrompt {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DiscoveryBrief {
+    pub(crate) ready_for_solution: bool,
     pub(crate) problem_statement: String,
     pub(crate) desired_outcomes: Vec<String>,
     pub(crate) assumptions: Vec<String>,
@@ -274,7 +281,54 @@ impl SolutionBranch {
 mod tests {
     use serde_json::json;
 
-    use super::{ImplementationDraft, ImplementationTaskInput, WorkflowOutcome};
+    use super::{
+        ApprovalRequest, DiscoveryBrief, ImplementationDraft, ImplementationTaskInput,
+        WorkflowOutcome,
+    };
+
+    #[test]
+    fn discovery_brief_deserialises_readiness_flag() {
+        let brief: DiscoveryBrief = serde_json::from_value(json!({
+            "ready_for_solution": true,
+            "problem_statement": "Build a task tracker",
+            "desired_outcomes": ["Capture tasks"],
+            "assumptions": [],
+            "constraints": ["Use Python"],
+            "clarification_summary": ["User asked for a small web app"],
+            "research_notes": [],
+            "recommended_path": "Generate solution branches",
+            "open_questions": []
+        }))
+        .expect("discovery brief should parse");
+
+        assert!(brief.ready_for_solution);
+        assert_eq!(brief.problem_statement, "Build a task tracker");
+    }
+
+    #[test]
+    fn approval_request_round_trips_proposal_and_user_feedback() {
+        let request: ApprovalRequest = serde_json::from_value(json!({
+            "proposal": {
+                "title": "Proposal",
+                "executive_summary": "summary",
+                "recommended_direction": "direction",
+                "why_this_plan": "why",
+                "adopted_ideas": [],
+                "deferred_ideas": [],
+                "scope": "scope",
+                "architecture": [],
+                "delivery_plan": [],
+                "technologies": [],
+                "major_risks": [],
+                "open_questions": []
+            },
+            "user_response": "approve with Python"
+        }))
+        .expect("approval request should parse");
+
+        assert_eq!(request.proposal.title, "Proposal");
+        assert_eq!(request.user_response, "approve with Python");
+    }
 
     #[test]
     fn workflow_outcome_deserialises_nested_execution_state() {

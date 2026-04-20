@@ -1,21 +1,22 @@
 use crate::{
     error::AppError,
     models::{
-        ApprovedProposal, DiscoveryBrief, FinalReviewInput, ImplementationDelta,
+        ApprovalRequest, ApprovedProposal, DiscoveryBrief, FinalReviewInput, ImplementationDelta,
         ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
-        ReconciledProposal, SolutionBranch, SolutionProposal, ValidatedSolution,
+        SolutionBranch, SolutionProposal, ValidatedSolution,
     },
     parsing::to_pretty_json,
 };
 
 pub(crate) fn approval_system_prompt() -> String {
-    "You are the approval stage. First make sure the user has a fair chance to approve, request revisions, or add constraints by using `ask_user`. You may ask follow-up questions if the first answer is ambiguous. Then return raw JSON only with this shape: {\n  \"decision\": string,\n  \"summary\": string,\n  \"final_details\": string[],\n  \"next_step\": string\n}".to_string()
+    "You are the approval stage. The user has already reviewed the proposal and responded. Decide whether the response grants approval or requests revisions, capture any final constraints, and return raw JSON only with this shape: {\n  \"decision\": string,\n  \"summary\": string,\n  \"final_details\": string[],\n  \"next_step\": string\n}".to_string()
 }
 
-pub(crate) fn approval_user_prompt(proposal: &ReconciledProposal) -> Result<String, AppError> {
+pub(crate) fn approval_user_prompt(request: &ApprovalRequest) -> Result<String, AppError> {
     Ok(format!(
-        "Present this reconciled proposal back to the user, collect approval or revision notes, and summarise the result as JSON only:\n{}",
-        to_pretty_json(proposal)?,
+        "Proposal under review:\n{}\n\nUser response:\n{}\n\nInterpret the user's response and return JSON only.",
+        to_pretty_json(&request.proposal)?,
+        request.user_response,
     ))
 }
 
@@ -32,14 +33,14 @@ pub(crate) fn architect_review_user_prompt(plan: &ImplementationPlan) -> Result<
 
 pub(crate) fn discovery_system_prompt(web_search_enabled: bool) -> String {
     format!(
-        "You are the discovery stage in a NAAF workflow for complex, unstructured work. Assess the user's prompt, gather missing information, and recommend the best path forward. {} Return raw JSON only with this shape: {{\n  \"problem_statement\": string,\n  \"desired_outcomes\": string[],\n  \"assumptions\": string[],\n  \"constraints\": string[],\n  \"clarification_summary\": string[],\n  \"research_notes\": string[],\n  \"recommended_path\": string,\n  \"open_questions\": string[]\n}}",
+        "You are the discovery stage in a NAAF workflow for complex, unstructured work. Assess the user's prompt, gather missing information, and recommend the best path forward. Keep clarifying until you can responsibly build concrete solution branches. Set `ready_for_solution` to true only when the problem statement, intended outcomes, and constraints are specific enough for solution design. {} Return raw JSON only with this shape: {{\n  \"ready_for_solution\": boolean,\n  \"problem_statement\": string,\n  \"desired_outcomes\": string[],\n  \"assumptions\": string[],\n  \"constraints\": string[],\n  \"clarification_summary\": string[],\n  \"research_notes\": string[],\n  \"recommended_path\": string,\n  \"open_questions\": string[]\n}}",
         tool_guidance(web_search_enabled, true)
     )
 }
 
 pub(crate) fn discovery_user_prompt(prompt: &str) -> String {
     format!(
-        "User prompt:\n{prompt}\n\nClarify only when needed, do any useful research available to you, and finish with JSON only."
+        "User prompt:\n{prompt}\n\nClarify whenever the request is still too ambiguous to design solutions, do any useful research available to you, and finish with JSON only."
     )
 }
 

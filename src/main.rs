@@ -50,19 +50,24 @@ async fn main() -> Result<(), AppError> {
     }
     .await;
 
-    match result {
+    let show_completion_hint = match result {
         Ok(outcome) => {
             runtime.log_info(format!(
                 "Workflow status: {}. {}",
                 outcome.status, outcome.next_step
             ))?;
+            true
         }
+        Err(AppError::TuiClosed | AppError::PromptClosed) => false,
         Err(error) => {
             runtime.log_error(format!("Workflow failed: {error}"))?;
+            true
         }
-    }
+    };
 
-    runtime.log_info("Workflow complete. Press q to exit.")?;
+    if show_completion_hint {
+        runtime.log_info("Workflow complete. Press q to exit.")?;
+    }
     handle
         .shutdown()
         .await
