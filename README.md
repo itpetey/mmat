@@ -112,3 +112,10 @@ cargo fmt --all
 cargo clippy -- -D warnings
 cargo test
 ```
+
+## Horizon
+
+- Track ideas and bugs over time
+- Allow injecting ideas ad hoc with a constant development loop
+- Ability to feed in resources over time - research articles, code snippets etc.
+- Ability to automatically parallelise development using worktrees with a reconcile step to rebase back onto active branch
