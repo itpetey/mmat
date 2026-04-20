@@ -21,11 +21,11 @@ use crate::{
     artifacts::RunArtifact,
     error::AppError,
     models::{
-        ApprovalOutcome, ApprovalRequest, ApprovedProposal, DiscoveryBrief, FinalReview,
-        FinalReviewInput, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
+        ApprovalOutcome, ApprovalRequest, ApprovedProposal, FinalReview, FinalReviewInput,
+        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
-        ImplementationWorklist, ProjectPrompt, ReconciledProposal, RunSummary, StageFinding,
-        StageReview, ValidatedSolution, ValidationFinding, WorkflowOutcome,
+        ImplementationWorklist, IntentBrief, ProjectPrompt, ReconciledProposal, RunSummary,
+        StageFinding, StageReview, ValidatedSolution, ValidationFinding, WorkflowOutcome,
     },
     parsing::decode_json_output,
     prompts::{
@@ -54,6 +54,7 @@ const DEFAULT_MODEL: &str = "essentialai/rnj-1";
 const EXECUTOR_TURNS: usize = 12;
 const IMPLEMENTATION_RETRY_LIMIT: usize = 3;
 const MAX_FINAL_REVIEW_PASSES: usize = 3;
+const MAX_DISCOVERY_CLARIFICATION_PASSES: usize = 2;
 const WORKFLOW_MAX_CONCURRENCY: usize = 4;
 const WORKTREE_DIR: &str = ".mmat-worktrees";
 
@@ -211,6 +212,7 @@ pub(crate) async fn run_mmat(
     };
 
     let mut prompt_context = prompt;
+    let mut clarification_attempt = 0usize;
 
     loop {
         write_run_summary(runtime, &prompt_context, "running", "discovery", None)?;
@@ -219,14 +221,18 @@ pub(crate) async fn run_mmat(
                 runtime,
                 ProjectPrompt {
                     raw: prompt_context.clone(),
+                    clarification_attempt,
+                    clarification_limit: MAX_DISCOVERY_CLARIFICATION_PASSES,
                 },
             )
             .await
             .map_err(|error| AppError::Workflow(format!("discovery stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::DiscoveryBrief, &discovery)?;
+        runtime.persist_artifact(RunArtifact::IntentBrief, &discovery)?;
         log_discovery_summary(runtime, &discovery)?;
 
-        if !discovery_ready_for_solution(&discovery) {
+        if !discovery_ready_for_solution(&discovery)
+            && clarification_attempt < MAX_DISCOVERY_CLARIFICATION_PASSES
+        {
             write_run_summary(
                 runtime,
                 &prompt_context,
@@ -240,7 +246,14 @@ pub(crate) async fn run_mmat(
                 "User clarification after discovery",
                 &clarification,
             );
+            clarification_attempt += 1;
             continue;
+        }
+
+        if !discovery_ready_for_solution(&discovery) {
+            runtime.log_warn(
+                "Clarification budget exhausted. Proceeding with the recorded best-guess intent brief and defaults.",
+            )?;
         }
 
         write_run_summary(
@@ -425,7 +438,7 @@ fn append_user_guidance(prompt: &str, heading: &str, response: &str) -> String {
     format!("{prompt}\n\n{heading}:\n{response}")
 }
 
-fn discovery_ready_for_solution(discovery: &DiscoveryBrief) -> bool {
+fn discovery_ready_for_solution(discovery: &IntentBrief) -> bool {
     discovery.ready_for_solution
 }
 
@@ -513,12 +526,8 @@ fn build_discovery_task(
     llm: &AppAgent,
     model: &str,
     web_search_enabled: bool,
-) -> impl Task<
-    Runtime = AppRuntime,
-    Input = ProjectPrompt,
-    Output = DiscoveryBrief,
-    Error = LlmStageError,
-> + use<> {
+) -> impl Task<Runtime = AppRuntime, Input = ProjectPrompt, Output = IntentBrief, Error = LlmStageError>
++ use<> {
     let model = model.to_string();
     let system_prompt = discovery_system_prompt(web_search_enabled);
 
@@ -528,11 +537,15 @@ fn build_discovery_task(
                 model.clone(),
                 vec![
                     Message::system(system_prompt.clone()),
-                    Message::user(discovery_user_prompt(&input.raw)),
+                    Message::user(discovery_user_prompt(
+                        &input.raw,
+                        input.clarification_attempt,
+                        input.clarification_limit,
+                    )),
                 ],
             ))
         },
-        decode_json_output::<DiscoveryBrief>,
+        decode_json_output::<IntentBrief>,
     )
     .observed_as("discovery")
 }
@@ -1007,7 +1020,7 @@ fn build_solution_branch(
     model: &str,
     branch: crate::models::SolutionBranch,
     web_search_enabled: bool,
-) -> Step<AppRuntime, DiscoveryBrief, ValidatedSolution, NeverFinding, LlmStageError> {
+) -> Step<AppRuntime, IntentBrief, ValidatedSolution, NeverFinding, LlmStageError> {
     let generation_model = model.to_string();
     let validation_model = model.to_string();
     let generation_system = solution_generation_system_prompt(branch, web_search_enabled);
@@ -1017,7 +1030,7 @@ fn build_solution_branch(
 
     let generate = Step::builder(
         llm.task(
-            move |_runtime: &AppRuntime, discovery: DiscoveryBrief| {
+            move |_runtime: &AppRuntime, discovery: IntentBrief| {
                 Ok::<_, AppError>(CompletionRequest::new(
                     generation_model.clone(),
                     vec![
@@ -1232,23 +1245,29 @@ fn log_approval_summary(runtime: &AppRuntime, approval: &ApprovalOutcome) -> Res
     Ok(())
 }
 
-fn log_discovery_summary(runtime: &AppRuntime, discovery: &DiscoveryBrief) -> Result<(), AppError> {
-    runtime.log_info("Discovery complete.")?;
+fn log_discovery_summary(runtime: &AppRuntime, discovery: &IntentBrief) -> Result<(), AppError> {
+    runtime.log_info("Intent capture complete.")?;
     runtime.log_info(format!(
         "Ready for solution generation: {}",
         discovery.ready_for_solution
     ))?;
     runtime.log_info(format!("Recommended path: {}", discovery.recommended_path))?;
+    if !discovery.default_assumptions.is_empty() {
+        runtime.log_info(format!(
+            "Default assumptions: {}",
+            discovery.default_assumptions.join(" | ")
+        ))?;
+    }
     if !discovery.constraints.is_empty() {
         runtime.log_info(format!(
             "Constraints: {}",
             discovery.constraints.join(" | ")
         ))?;
     }
-    if !discovery.open_questions.is_empty() {
+    if !discovery.clarification_questions.is_empty() {
         runtime.log_info(format!(
-            "Open questions: {}",
-            discovery.open_questions.join(" | ")
+            "Clarification questions: {}",
+            discovery.clarification_questions.join(" | ")
         ))?;
     }
     Ok(())
@@ -1296,10 +1315,11 @@ async fn prompt_for_approval(
 
 async fn prompt_for_discovery_clarification(
     runtime: &AppRuntime,
-    discovery: &DiscoveryBrief,
+    discovery: &IntentBrief,
 ) -> Result<String, AppError> {
-    let mut prompt =
-        vec!["Discovery still needs more detail before solution generation can start.".to_string()];
+    let mut prompt = vec![
+        "Intent capture still has unresolved ambiguities before solution generation.".to_string(),
+    ];
 
     if !discovery.problem_statement.trim().is_empty() {
         prompt.push(format!(
@@ -1308,9 +1328,16 @@ async fn prompt_for_discovery_clarification(
         ));
     }
 
-    if !discovery.open_questions.is_empty() {
+    if !discovery.default_assumptions.is_empty() {
+        prompt.push(format!(
+            "Current defaults if unanswered: {}",
+            discovery.default_assumptions.join(" | ")
+        ));
+    }
+
+    if !discovery.clarification_questions.is_empty() {
         prompt.push("Please answer these points in one reply:".to_string());
-        for question in &discovery.open_questions {
+        for question in &discovery.clarification_questions {
             prompt.push(format!("- {question}"));
         }
     } else {
@@ -1965,10 +1992,10 @@ mod tests {
         next_management_request, phase_label, phase_review_action,
     };
     use crate::models::{
-        ApprovalOutcome, ApprovedProposal, DiscoveryBrief, FileDelta, FinalReview,
-        ImplementationDelta, ImplementationDraft, ImplementationItemResult,
-        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput, ManagedItem,
-        PlanMilestone, ReconciledProposal, RemediationItem, StageReview,
+        ApprovalOutcome, ApprovedProposal, FileDelta, FinalReview, ImplementationDelta,
+        ImplementationDraft, ImplementationItemResult, ImplementationManagementRequest,
+        ImplementationPlan, ImplementationTaskInput, IntentBrief, ManagedItem, PlanMilestone,
+        ReconciledProposal, RemediationItem, StageReview,
     };
     use crate::{error::AppError, runtime::AppRuntime};
     use naaf_core::{NeverFinding, NodeId, Step, task_fn};
@@ -2160,22 +2187,27 @@ mod tests {
 
     #[test]
     fn discovery_ready_for_solution_uses_model_flag() {
-        let ready = DiscoveryBrief {
+        let ready = IntentBrief {
             ready_for_solution: true,
             problem_statement: "Build a task tracker".to_string(),
-            desired_outcomes: vec!["Track tasks".to_string()],
+            user_goals: vec!["Track tasks".to_string()],
+            non_goals: vec!["Collaboration".to_string()],
             assumptions: Vec::new(),
+            default_assumptions: vec!["Single-user web app".to_string()],
             constraints: Vec::new(),
+            ambiguities: Vec::new(),
+            risks: Vec::new(),
+            acceptance_criteria: vec!["Users can add tasks".to_string()],
             clarification_summary: Vec::new(),
             research_notes: Vec::new(),
             recommended_path: "Generate solutions".to_string(),
-            open_questions: Vec::new(),
+            clarification_questions: Vec::new(),
         };
 
-        let waiting = DiscoveryBrief {
+        let waiting = IntentBrief {
             ready_for_solution: false,
             recommended_path: "Ask for clarification".to_string(),
-            open_questions: vec!["What are we building?".to_string()],
+            clarification_questions: vec!["What are we building?".to_string()],
             ..ready.clone()
         };
 

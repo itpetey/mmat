@@ -1,7 +1,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RunArtifact {
     RunSummary,
-    DiscoveryBrief,
+    IntentBrief,
     ReconciledProposal,
     ApprovalOutcome,
     ImplementationPlan,
@@ -14,7 +14,7 @@ impl RunArtifact {
     pub(crate) fn file_name(self) -> &'static str {
         match self {
             Self::RunSummary => "run-summary.json",
-            Self::DiscoveryBrief => "discovery-brief.json",
+            Self::IntentBrief => "intent-brief.json",
             Self::ReconciledProposal => "reconciled-proposal.json",
             Self::ApprovalOutcome => "approval-outcome.json",
             Self::ImplementationPlan => "implementation-plan.json",
@@ -32,10 +32,7 @@ mod tests {
     #[test]
     fn run_artifacts_map_to_stable_file_names() {
         assert_eq!(RunArtifact::RunSummary.file_name(), "run-summary.json");
-        assert_eq!(
-            RunArtifact::DiscoveryBrief.file_name(),
-            "discovery-brief.json"
-        );
+        assert_eq!(RunArtifact::IntentBrief.file_name(), "intent-brief.json");
         assert_eq!(
             RunArtifact::ReconciledProposal.file_name(),
             "reconciled-proposal.json"

@@ -144,19 +144,26 @@ pub(crate) struct ImplementationDelta {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ProjectPrompt {
     pub(crate) raw: String,
+    pub(crate) clarification_attempt: usize,
+    pub(crate) clarification_limit: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct DiscoveryBrief {
+pub(crate) struct IntentBrief {
     pub(crate) ready_for_solution: bool,
     pub(crate) problem_statement: String,
-    pub(crate) desired_outcomes: Vec<String>,
+    pub(crate) user_goals: Vec<String>,
+    pub(crate) non_goals: Vec<String>,
     pub(crate) assumptions: Vec<String>,
+    pub(crate) default_assumptions: Vec<String>,
     pub(crate) constraints: Vec<String>,
+    pub(crate) ambiguities: Vec<String>,
+    pub(crate) risks: Vec<String>,
+    pub(crate) acceptance_criteria: Vec<String>,
     pub(crate) clarification_summary: Vec<String>,
     pub(crate) research_notes: Vec<String>,
     pub(crate) recommended_path: String,
-    pub(crate) open_questions: Vec<String>,
+    pub(crate) clarification_questions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -293,27 +300,33 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ApprovalRequest, DiscoveryBrief, ImplementationDraft, ImplementationTaskInput, RunSummary,
+        ApprovalRequest, ImplementationDraft, ImplementationTaskInput, IntentBrief, RunSummary,
         WorkflowOutcome,
     };
 
     #[test]
-    fn discovery_brief_deserialises_readiness_flag() {
-        let brief: DiscoveryBrief = serde_json::from_value(json!({
+    fn intent_brief_deserialises_readiness_flag() {
+        let brief: IntentBrief = serde_json::from_value(json!({
             "ready_for_solution": true,
             "problem_statement": "Build a task tracker",
-            "desired_outcomes": ["Capture tasks"],
-            "assumptions": [],
+            "user_goals": ["Capture tasks"],
+            "non_goals": ["Collaboration"],
+            "assumptions": ["Single user"],
+            "default_assumptions": ["Web app"],
             "constraints": ["Use Python"],
+            "ambiguities": ["Deployment target"],
+            "risks": ["Too much scope"],
+            "acceptance_criteria": ["Tasks can be created"],
             "clarification_summary": ["User asked for a small web app"],
             "research_notes": [],
             "recommended_path": "Generate solution branches",
-            "open_questions": []
+            "clarification_questions": []
         }))
-        .expect("discovery brief should parse");
+        .expect("intent brief should parse");
 
         assert!(brief.ready_for_solution);
         assert_eq!(brief.problem_statement, "Build a task tracker");
+        assert_eq!(brief.user_goals, vec!["Capture tasks"]);
     }
 
     #[test]

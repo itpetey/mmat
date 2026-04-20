@@ -1,8 +1,8 @@
 use crate::{
     error::AppError,
     models::{
-        ApprovalRequest, ApprovedProposal, DiscoveryBrief, FinalReviewInput, ImplementationDelta,
-        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput,
+        ApprovalRequest, ApprovedProposal, FinalReviewInput, ImplementationDelta,
+        ImplementationManagementRequest, ImplementationPlan, ImplementationTaskInput, IntentBrief,
         SolutionBranch, SolutionProposal, ValidatedSolution,
     },
     parsing::to_pretty_json,
@@ -33,14 +33,20 @@ pub(crate) fn architect_review_user_prompt(plan: &ImplementationPlan) -> Result<
 
 pub(crate) fn discovery_system_prompt(web_search_enabled: bool) -> String {
     format!(
-        "You are the discovery stage in a NAAF workflow for complex, unstructured work. Assess the user's prompt, gather missing information, and recommend the best path forward. Keep clarifying until you can responsibly build concrete solution branches. Set `ready_for_solution` to true only when the problem statement, intended outcomes, and constraints are specific enough for solution design. {} Return raw JSON only with this shape: {{\n  \"ready_for_solution\": boolean,\n  \"problem_statement\": string,\n  \"desired_outcomes\": string[],\n  \"assumptions\": string[],\n  \"constraints\": string[],\n  \"clarification_summary\": string[],\n  \"research_notes\": string[],\n  \"recommended_path\": string,\n  \"open_questions\": string[]\n}}",
+        "You are the intent stage in a NAAF workflow for complex, unstructured work. Turn the user's prompt into a best-guess intent brief that preserves momentum while making uncertainty explicit. Ask only the highest-value clarification questions. When details are missing, record explicit default assumptions so downstream stages can still proceed. Set `ready_for_solution` to true when the brief is specific enough for solution design or when the remaining ambiguity can be handled safely through recorded defaults. {} Return raw JSON only with this shape: {{\n  \"ready_for_solution\": boolean,\n  \"problem_statement\": string,\n  \"user_goals\": string[],\n  \"non_goals\": string[],\n  \"assumptions\": string[],\n  \"default_assumptions\": string[],\n  \"constraints\": string[],\n  \"ambiguities\": string[],\n  \"risks\": string[],\n  \"acceptance_criteria\": string[],\n  \"clarification_summary\": string[],\n  \"research_notes\": string[],\n  \"recommended_path\": string,\n  \"clarification_questions\": string[]\n}}",
         tool_guidance(web_search_enabled, true)
     )
 }
 
-pub(crate) fn discovery_user_prompt(prompt: &str) -> String {
+pub(crate) fn discovery_user_prompt(
+    prompt: &str,
+    clarification_attempt: usize,
+    clarification_limit: usize,
+) -> String {
     format!(
-        "User prompt:\n{prompt}\n\nClarify whenever the request is still too ambiguous to design solutions, do any useful research available to you, and finish with JSON only."
+        "User prompt:\n{prompt}\n\nThis is clarification attempt {} of {}. Produce the best possible intent brief from the information available, do any useful research available to you, and finish with JSON only. If ambiguity remains, prioritise explicit defaults and the most important clarification questions.",
+        clarification_attempt + 1,
+        clarification_limit + 1,
     )
 }
 
@@ -147,10 +153,10 @@ pub(crate) fn solution_generation_system_prompt(
 
 pub(crate) fn solution_generation_user_prompt(
     branch: SolutionBranch,
-    discovery: &DiscoveryBrief,
+    discovery: &IntentBrief,
 ) -> Result<String, AppError> {
     Ok(format!(
-        "Discovery brief:\n{}\n\nProduce the `{}` solution branch now. Ensure the proposal is distinct, specific, and internally coherent. Return JSON only.",
+        "Intent brief:\n{}\n\nProduce the `{}` solution branch now. Ensure the proposal is distinct, specific, and internally coherent. Return JSON only.",
         to_pretty_json(discovery)?,
         branch.slug(),
     ))
