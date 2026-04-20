@@ -335,6 +335,19 @@ pub(crate) struct EvidenceLog {
     pub(crate) task_results: Vec<ImplementationItemResult>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct KnowledgeArtifact {
+    pub(crate) channel: String,
+    pub(crate) entries: Vec<KnowledgeEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct KnowledgeEntry {
+    pub(crate) key: String,
+    pub(crate) content: String,
+    pub(crate) provenance: String,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SolutionBranch {
     Conservative,

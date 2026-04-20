@@ -11,6 +11,7 @@ pub(crate) enum RunArtifact {
     ArchitectReview,
     FinalReview,
     ReleaseAssessment,
+    KnowledgeArtifact,
     WorkflowOutcome,
 }
 
@@ -28,6 +29,7 @@ impl RunArtifact {
             Self::ArchitectReview => "architect-review.json",
             Self::FinalReview => "final-review.json",
             Self::ReleaseAssessment => "release-assessment.json",
+            Self::KnowledgeArtifact => "knowledge-artifact.json",
             Self::WorkflowOutcome => "workflow-outcome.json",
         }
     }

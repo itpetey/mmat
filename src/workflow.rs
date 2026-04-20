@@ -26,9 +26,9 @@ use crate::{
         ContractApprovalRequest, ContractDraftInput, EvidenceLog, ExecutionPlan, FinalReview,
         FinalReviewInput, ImplementationDelta, ImplementationDraft, ImplementationItemResult,
         ImplementationManagementRequest, ImplementationTaskInput, ImplementationWorklist,
-        IntentBrief, ProjectContract, ProjectPrompt, ReconciledProposal, ReleaseAssessment,
-        ReleaseAssessmentInput, RunSummary, StageFinding, StageReview, TaskCard, ValidatedSolution,
-        ValidationFinding, WorkflowOutcome,
+        IntentBrief, KnowledgeArtifact, ProjectContract, ProjectPrompt, ReconciledProposal,
+        ReleaseAssessment, ReleaseAssessmentInput, RunSummary, StageFinding, StageReview, TaskCard,
+        ValidatedSolution, ValidationFinding, WorkflowOutcome,
     },
     parsing::decode_json_output,
     prompts::{
@@ -39,7 +39,8 @@ use crate::{
         discovery_system_prompt, discovery_user_prompt, final_review_system_prompt,
         final_review_user_prompt, implementation_management_system_prompt,
         implementation_management_user_prompt, implementation_task_system_prompt,
-        implementation_task_user_prompt, peer_review_system_prompt, peer_review_user_prompt,
+        implementation_task_user_prompt, knowledge_compilation_system_prompt,
+        knowledge_compilation_user_prompt, peer_review_system_prompt, peer_review_user_prompt,
         planning_system_prompt, planning_user_prompt, reconcile_system_prompt,
         reconcile_user_prompt, release_assessment_system_prompt, release_assessment_user_prompt,
         solution_generation_system_prompt, solution_generation_user_prompt,
@@ -175,6 +176,13 @@ pub(crate) async fn run_mmat(
     let architect_review_step = Step::builder(build_architect_review_task(&llm, &model))
         .with_findings::<NeverFinding>()
         .build();
+    let knowledge_step = Step::builder(build_knowledge_compilation_task(
+        &llm,
+        &model,
+        search_enabled,
+    ))
+    .with_findings::<NeverFinding>()
+    .build();
     let execution_steps = ExecutionGraphSteps {
         implementation: build_implementation_step(&model, web_search.clone())?,
         managed_phase: build_managed_phase_step(
@@ -236,6 +244,22 @@ pub(crate) async fn run_mmat(
                 "Clarification budget exhausted. Proceeding with the recorded best-guess intent brief and defaults.",
             )?;
         }
+
+        write_run_summary(
+            runtime,
+            &prompt_context,
+            "running",
+            "knowledge_compilation",
+            None,
+        )?;
+        let repository_knowledge = knowledge_step
+            .run(runtime, discovery.clone())
+            .await
+            .map_err(|error| {
+                AppError::Workflow(format!("knowledge compilation failed: {error}"))
+            })?;
+        runtime.persist_artifact(RunArtifact::KnowledgeArtifact, &repository_knowledge)?;
+        log_knowledge_summary(runtime, &repository_knowledge)?;
 
         write_run_summary(
             runtime,
@@ -1098,6 +1122,34 @@ fn build_planning_task(
     .observed_as("planning")
 }
 
+fn build_knowledge_compilation_task(
+    llm: &AppAgent,
+    model: &str,
+    web_search_enabled: bool,
+) -> impl Task<
+    Runtime = AppRuntime,
+    Input = IntentBrief,
+    Output = KnowledgeArtifact,
+    Error = LlmStageError,
+> + use<> {
+    let model = model.to_string();
+    let system_prompt = knowledge_compilation_system_prompt(web_search_enabled);
+
+    llm.task(
+        move |_runtime: &AppRuntime, intent: IntentBrief| {
+            Ok::<_, AppError>(CompletionRequest::new(
+                model.clone(),
+                vec![
+                    Message::system(system_prompt.clone()),
+                    Message::user(knowledge_compilation_user_prompt(&intent)?),
+                ],
+            ))
+        },
+        decode_json_output::<KnowledgeArtifact>,
+    )
+    .observed_as("knowledge_compilation")
+}
+
 fn build_reconcile_task(
     llm: &AppAgent,
     model: &str,
@@ -1398,6 +1450,18 @@ fn log_contract_summary(runtime: &AppRuntime, contract: &ProjectContract) -> Res
     runtime.log_info(format!(
         "Contract acceptance criteria: {}",
         contract.acceptance_criteria.len()
+    ))?;
+    Ok(())
+}
+
+fn log_knowledge_summary(
+    runtime: &AppRuntime,
+    knowledge: &KnowledgeArtifact,
+) -> Result<(), AppError> {
+    runtime.log_info(format!(
+        "Knowledge compilation complete: {} entries in '{}' channel.",
+        knowledge.entries.len(),
+        knowledge.channel
     ))?;
     Ok(())
 }

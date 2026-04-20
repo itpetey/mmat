@@ -79,6 +79,20 @@ pub(crate) fn discovery_user_prompt(
     )
 }
 
+pub(crate) fn knowledge_compilation_system_prompt(_web_search_enabled: bool) -> String {
+    format!(
+        "You are the knowledge compilation stage. Extract structured knowledge from the intent brief and the current repository context. Organise findings into three channels: repository (facts about the codebase, architecture, conventions, commands), project_memory (decisions, constraints, unresolved questions from the intent brief), and external_evidence (relevant API docs, specs, or third-party constraints). Return raw JSON only with this shape: {{\n  \"channel\": string,\n  \"entries\": [{{\n    \"key\": string,\n    \"content\": string,\n    \"provenance\": string\n  }}]\n}}{}",
+        ""
+    )
+}
+
+pub(crate) fn knowledge_compilation_user_prompt(intent: &IntentBrief) -> Result<String, AppError> {
+    Ok(format!(
+        "Intent brief:\n{}\n\nCompile knowledge artifacts now. Return JSON only.",
+        to_pretty_json(intent)?,
+    ))
+}
+
 pub(crate) fn final_review_system_prompt(web_search_enabled: bool) -> String {
     [
         "You are the final integration review stage. Assess the finished solution for completion, adherence to the approved specification, code quality, code structure, and any remaining risks. ".to_string(),
