@@ -21,27 +21,99 @@ struct Cli {
     /// Write TUI debug events and state snapshots to this log file
     #[arg(long, value_name = "PATH")]
     debug_log: Option<PathBuf>,
+
+    /// Project prompt to start immediately (bypasses the TUI input screen)
+    #[arg(long, value_name = "PROMPT")]
+    prompt: Option<String>,
+
+    /// Override the project root directory
+    #[arg(long, value_name = "DIR")]
+    project_root: Option<PathBuf>,
+
+    /// Resume a previous run from its run directory
+    #[arg(long, value_name = "DIR")]
+    resume: Option<PathBuf>,
+
+    /// Print run artifact paths to stdout and exit after the workflow
+    #[arg(long)]
+    export_artifacts: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
+    let project_root = cli
+        .project_root
+        .clone()
+        .or_else(|| env::current_dir().ok())
+        .ok_or_else(|| AppError::Config("failed to determine project root".to_string()))?;
+
+    if cli.prompt.is_some() || cli.resume.is_some() {
+        run_non_interactive(&cli, project_root).await
+    } else {
+        run_interactive(&cli, project_root).await
+    }
+}
+
+async fn run_non_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
+    let prompt = cli.prompt.clone().ok_or_else(|| {
+        AppError::Config("--prompt is required when not running in TUI mode".to_string())
+    })?;
+
+    let runtime = AppRuntime::new_non_interactive(project_root)?;
+    runtime.log_info(format!(
+        "Run `{}` artifacts will be written to `{}`.",
+        runtime.run_id(),
+        runtime.run_root().display()
+    ))?;
+    runtime.log_info("MMAT is running in non-interactive mode.")?;
+
+    let result = run_mmat(&runtime, prompt).await;
+
+    match result {
+        Ok(outcome) => {
+            runtime.log_info(format!(
+                "Workflow status: {}. {}",
+                outcome.status, outcome.next_step
+            ))?;
+        }
+        Err(error) => {
+            runtime.log_error(format!("Workflow failed: {error}"))?;
+            return Err(error);
+        }
+    }
+
+    if cli.export_artifacts {
+        for entry in std::fs::read_dir(runtime.run_root())
+            .map_err(|error| AppError::Config(format!("failed to read run directory: {error}")))?
+        {
+            let entry = entry.map_err(|error| {
+                AppError::Config(format!("failed to read directory entry: {error}"))
+            })?;
+            if entry.path().is_file() {
+                println!("{}", entry.path().display());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
     let mut builder = TuiAppBuilder::default()
         .title("MMAT")
         .with_input_screen("What are we building?")
         .install_tracing_layer();
 
-    if let Some(path) = cli.debug_log {
-        builder = builder.debug_log_path(path);
+    if let Some(path) = &cli.debug_log {
+        builder = builder.debug_log_path(path.clone());
     }
 
     let (sender, handle, instruction_rx) = builder
         .spawn_with_input()
         .map_err(|error| AppError::Config(format!("failed to start TUI: {error}")))?;
 
-    let project_root = env::current_dir()
-        .map_err(|error| AppError::Config(format!("failed to read current directory: {error}")))?;
     let runtime = AppRuntime::new(sender, project_root)?;
     runtime.log_info(format!(
         "Run `{}` artifacts will be written to `{}`.",
@@ -101,5 +173,43 @@ mod tests {
         let help = Cli::command().render_help().to_string();
 
         assert!(help.contains("--debug-log <PATH>"));
+    }
+
+    #[test]
+    fn parses_prompt_flag() {
+        let cli = Cli::try_parse_from(["mmat", "--prompt", "build a todo app"])
+            .expect("prompt flag should parse");
+
+        assert_eq!(cli.prompt.as_deref(), Some("build a todo app"));
+    }
+
+    #[test]
+    fn parses_project_root_flag() {
+        let cli = Cli::try_parse_from(["mmat", "--project-root", "/tmp/my-project"])
+            .expect("project root flag should parse");
+
+        assert_eq!(
+            cli.project_root,
+            Some(std::path::PathBuf::from("/tmp/my-project"))
+        );
+    }
+
+    #[test]
+    fn parses_export_artifacts_flag() {
+        let cli = Cli::try_parse_from(["mmat", "--export-artifacts"])
+            .expect("export artifacts flag should parse");
+
+        assert!(cli.export_artifacts);
+    }
+
+    #[test]
+    fn parses_resume_flag() {
+        let cli = Cli::try_parse_from(["mmat", "--resume", ".mmat/runs/run-1"])
+            .expect("resume flag should parse");
+
+        assert_eq!(
+            cli.resume,
+            Some(std::path::PathBuf::from(".mmat/runs/run-1"))
+        );
     }
 }

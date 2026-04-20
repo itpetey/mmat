@@ -1,4 +1,4 @@
-use std::{env, path::Path};
+use std::{env, io::BufRead, path::Path};
 
 use futures::future::LocalBoxFuture;
 use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion, Tool, ToolSpec, WebSearchTool, repository};
@@ -32,8 +32,14 @@ pub(crate) struct AppSearchFilesTool {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum RuntimeMode {
+    Tui(EventSender),
+    NonInteractive,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct AppRuntime {
-    tui: EventSender,
+    mode: RuntimeMode,
     project_root: std::path::PathBuf,
     run_store: RunStore,
 }
@@ -85,14 +91,42 @@ impl AppRuntime {
     ) -> Result<Self, AppError> {
         let run_store = RunStore::create(&project_root)?;
         Ok(Self {
-            tui,
+            mode: RuntimeMode::Tui(tui),
+            project_root,
+            run_store,
+        })
+    }
+
+    pub(crate) fn new_non_interactive(project_root: std::path::PathBuf) -> Result<Self, AppError> {
+        let run_store = RunStore::create(&project_root)?;
+        Ok(Self {
+            mode: RuntimeMode::NonInteractive,
             project_root,
             run_store,
         })
     }
 
     fn send_event(&self, event: TuiEvent) -> Result<(), AppError> {
-        self.tui.send(event).map_err(|_| AppError::TuiClosed)
+        match &self.mode {
+            RuntimeMode::Tui(sender) => sender.send(event).map_err(|_| AppError::TuiClosed),
+            RuntimeMode::NonInteractive => {
+                if let TuiEvent::Log {
+                    level,
+                    target,
+                    message,
+                } = event
+                {
+                    let level_str = match level {
+                        Level::ERROR => "ERROR",
+                        Level::WARN => "WARN ",
+                        Level::INFO => "INFO ",
+                        _ => "DEBUG",
+                    };
+                    eprintln!("[{level_str}] [{target}] {message}");
+                }
+                Ok(())
+            }
+        }
     }
 
     fn log(&self, level: Level, message: impl Into<String>) -> Result<(), AppError> {
@@ -163,15 +197,32 @@ impl HumanIO for AppRuntime {
         question: HumanQuestion,
     ) -> LocalBoxFuture<'a, Result<HumanAnswer, Self::Error>> {
         Box::pin(async move {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.send_event(TuiEvent::HumanPrompt {
-                question: question.question,
-                choices: question.choices.unwrap_or_default(),
-                reply: reply_tx,
-            })?;
+            match &self.mode {
+                RuntimeMode::Tui(sender) => {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    sender
+                        .send(TuiEvent::HumanPrompt {
+                            question: question.question,
+                            choices: question.choices.unwrap_or_default(),
+                            reply: reply_tx,
+                        })
+                        .map_err(|_| AppError::TuiClosed)?;
 
-            let answer = reply_rx.await.map_err(|_| AppError::PromptClosed)?;
-            Ok(HumanAnswer { content: answer })
+                    let answer = reply_rx.await.map_err(|_| AppError::PromptClosed)?;
+                    Ok(HumanAnswer { content: answer })
+                }
+                RuntimeMode::NonInteractive => {
+                    eprintln!("\n{}", question.question);
+                    let stdin = std::io::stdin();
+                    let mut answer = String::new();
+                    stdin.lock().read_line(&mut answer).map_err(|error| {
+                        AppError::Config(format!("failed to read stdin: {error}"))
+                    })?;
+                    Ok(HumanAnswer {
+                        content: answer.trim().to_string(),
+                    })
+                }
+            }
         })
     }
 }
