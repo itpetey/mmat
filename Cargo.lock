@@ -977,6 +977,7 @@ dependencies = [
  "futures",
  "naaf-core",
  "naaf-llm",
+ "naaf-persistence-fs",
  "naaf-process",
  "naaf-tui",
  "serde",
@@ -1012,6 +1013,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "naaf-persistence-fs"
+version = "0.1.0"
+dependencies = [
+ "naaf-core",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

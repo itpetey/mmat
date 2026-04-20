@@ -7,13 +7,14 @@ use std::{
 
 use naaf_core::{
     Attempt, CheckExt, EdgeSpec, GraphPatch, MaterialiserExt, NeverFinding, NodeId, NodeInput,
-    NodeSpec, RepairPlannerExt, RetryPolicy, Step, StepNode, Task, TaskExt, Workflow, check_fn,
-    materialiser_fn, repair_fn, task_fn,
+    NodeSpec, RepairPlannerExt, RetryPolicy, RunnerRegistry, Step, StepNode, Task, TaskExt,
+    Workflow, check_fn, materialiser_fn, repair_fn, task_fn,
 };
 use naaf_llm::{
     CompletionRequest, Executor, ExecutorConfig, HumanIO, HumanQuestion, LlmAgent, Message,
     OpenAiClient, OpenAiConfig, OpenAiError, QuestionTool, RegisterToolError, Tool, ToolRegistry,
 };
+use naaf_persistence_fs::FsCheckpointer;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 
@@ -2052,8 +2053,13 @@ async fn run_dynamic_implementation_workflow(
     let initial_request = initial_management_request(approved, plan, architect_review);
     let root = root_management_node_spec(initial_request, execution_steps)?;
 
+    let checkpointer = FsCheckpointer::new(runtime.run_root().join("naaf-checkpoints"));
+    let registry: RunnerRegistry<AppRuntime, AppError> = RunnerRegistry::new();
+
     let report = Workflow::new()
         .with_max_concurrency(WORKFLOW_MAX_CONCURRENCY)
+        .with_checkpointer(checkpointer)
+        .with_registry(registry)
         .with_patch(GraphPatch::new().with_node(root))
         .map_err(|error| AppError::Workflow(format!("failed to build execution graph: {error}")))?
         .run(runtime)

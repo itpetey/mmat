@@ -13,6 +13,7 @@ naaf-llm = { path = "../naaf/main/crates/llm", features = [
   "openai",
   "web-search"
 ] }
+naaf-persistence-fs = { path = "../naaf/main/crates/persistence-fs" }
 naaf-process = { path = "../naaf/main/crates/process" }
 naaf-tui = { path = "../naaf/main/crates/tui" }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
