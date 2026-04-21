@@ -2,7 +2,8 @@ pub use event::FrontendEvent;
 pub use layer::WsLayer;
 pub use server::{EventSender, WsAppBuilder};
 pub use translator::spawn_event_translator;
-pub use ui_state::{UiEvent, UiState};
+#[allow(unused_imports)]
+pub use ui_state::{ComposerMode, ConversationEntry, UiEvent, UiState};
 
 mod event;
 mod layer;

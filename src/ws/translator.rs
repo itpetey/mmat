@@ -1,5 +1,7 @@
 use tokio::sync::mpsc;
 
+use serde_json::Value;
+
 use crate::ws::event::FrontendEvent;
 use crate::ws::ui_state::{PendingPrompt, UiEvent, UiState};
 
@@ -11,9 +13,6 @@ pub fn spawn_event_translator(
         while let Some(event) = event_rx.recv().await {
             match event {
                 FrontendEvent::StepStarted { task_label } => {
-                    if task_label.to_lowercase().contains("planning") {
-                        ui_state.set_planning_started();
-                    }
                     ui_state.push_event(UiEvent::StepStarted { task_label });
                 }
                 FrontendEvent::StepCompleted {
@@ -38,6 +37,9 @@ pub fn spawn_event_translator(
                     ui_state.push_event(UiEvent::ComponentFailed { component, name });
                 }
                 FrontendEvent::Log { level, message, .. } => {
+                    if let Some(content) = extract_assistant_content_from_log(&message) {
+                        ui_state.record_assistant_message(content);
+                    }
                     ui_state.push_event(UiEvent::Log {
                         level: level.to_string(),
                         message,
@@ -64,4 +66,84 @@ pub fn spawn_event_translator(
             }
         }
     })
+}
+
+fn extract_assistant_content_from_log(message: &str) -> Option<String> {
+    let payload = message.strip_prefix("Generated prediction:")?.trim();
+    let value: Value = serde_json::from_str(payload).ok()?;
+    let content = value
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim();
+
+    if content.is_empty() || looks_like_structured_payload(content) {
+        return None;
+    }
+
+    Some(content.to_string())
+}
+
+fn looks_like_structured_payload(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_assistant_content_from_log;
+
+    #[test]
+    fn extracts_human_visible_content_from_generated_prediction_log() {
+        let message = r#"Generated prediction: {
+  "choices": [
+    {
+      "message": {
+        "content": "\n\nHere is the explanation.",
+        "tool_calls": [
+          { "function": { "name": "ask_user", "arguments": "{}" } }
+        ]
+      }
+    }
+  ]
+}"#;
+
+        assert_eq!(
+            extract_assistant_content_from_log(message).as_deref(),
+            Some("Here is the explanation.")
+        );
+    }
+
+    #[test]
+    fn ignores_blank_generated_prediction_content() {
+        let message = r#"Generated prediction: {
+  "choices": [
+    {
+      "message": {
+        "content": "\n\n"
+      }
+    }
+  ]
+}"#;
+
+        assert!(extract_assistant_content_from_log(message).is_none());
+    }
+
+    #[test]
+    fn ignores_structured_json_generated_prediction_content() {
+        let message = r#"Generated prediction: {
+  "choices": [
+    {
+      "message": {
+        "content": "{\"ready_for_solution\":false}"
+      }
+    }
+  ]
+}"#;
+
+        assert!(extract_assistant_content_from_log(message).is_none());
+    }
 }

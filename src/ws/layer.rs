@@ -177,6 +177,13 @@ where
                             _ => {}
                         }
                     }
+
+                    if !message.is_empty() {
+                        self.send(FrontendEvent::Log {
+                            level: *event.metadata().level(),
+                            message,
+                        });
+                    }
                 }
                 span::name::TASK
                 | span::name::CHECK
@@ -205,6 +212,13 @@ where
                             }
                             _ => {}
                         }
+                    }
+
+                    if !message.is_empty() {
+                        self.send(FrontendEvent::Log {
+                            level: *event.metadata().level(),
+                            message,
+                        });
                     }
                 }
                 _ => {
@@ -270,5 +284,9 @@ impl tracing::field::Visit for EventFieldVisitor<'_> {
         }
     }
 
-    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            *self.message = format!("{value:?}");
+        }
+    }
 }

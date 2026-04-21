@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Chat layout with scrollable transcript and bottom composer
 The system SHALL render a full-height chat layout consisting of a scrollable conversation transcript area above a persistent composer. The same page SHALL also expose raw workflow logs in a collapsed container so the conversation remains the primary visible surface.
@@ -74,16 +74,7 @@ The system SHALL render raw log events inside the collapsed raw-log container wi
 - **AND** warning logs appear with warning styling
 - **AND** error logs appear with error styling
 
-### Requirement: Connection status indicator
-The system SHALL display a small connection status indicator showing whether the LiveView websocket is connected.
-
-#### Scenario: Connected status is shown
-- **WHEN** the LiveView websocket is active
-- **THEN** a green or neutral status indicator is visible
-
-#### Scenario: Disconnected status is shown
-- **WHEN** the LiveView websocket connection is lost
-- **THEN** a red or warning status indicator is visible
+## ADDED Requirements
 
 ### Requirement: Assistant-visible conversation entries do not stream partial tokens
 The system SHALL only append assistant-visible conversation entries when their content is stable enough to present as a complete message. Partial token or delta output SHALL remain out of the visible conversation transcript.

@@ -1,24 +1,4 @@
-## ADDED Requirements
-
-### Requirement: UiState captures workflow events
-The system SHALL maintain a shared `UiState` struct that receives `FrontendEvent` entries from the tracing layer and stores them as raw `UiEvent` entries in a bounded event history.
-
-#### Scenario: Log event is recorded in history
-- **WHEN** a `FrontendEvent::Log` is received by the UiState receiver
-- **THEN** a corresponding raw `UiEvent::Log` is appended to `event_history`
-- **AND** the history is capped at 256 entries (oldest dropped when full)
-
-#### Scenario: Step start event is recorded
-- **WHEN** a `FrontendEvent::StepStarted` is received
-- **THEN** a `UiEvent::StepStarted` is appended to `event_history`
-
-#### Scenario: Step completion event is recorded
-- **WHEN** a `FrontendEvent::StepCompleted` is received
-- **THEN** a `UiEvent::StepCompleted` is appended to `event_history`
-
-#### Scenario: Step failure event is recorded
-- **WHEN** a `FrontendEvent::StepFailed` is received
-- **THEN** a `UiEvent::StepFailed` is appended to `event_history`
+## MODIFIED Requirements
 
 ### Requirement: UiState manages pending initial input
 The system SHALL store an optional oneshot sender for the initial user prompt while exposing a shared composer snapshot to the LiveView UI. When the initial prompt is submitted, the sender SHALL be completed with the user's text, the pending sender SHALL be cleared, and the submitted text SHALL be recorded as a visible user conversation entry.
@@ -61,6 +41,8 @@ The system SHALL store an optional pending human prompt containing a question, o
 - **AND** `pending_prompt` is cleared
 - **AND** the submitted reply is appended to the visible conversation history
 
+## ADDED Requirements
+
 ### Requirement: UiState stores conversation history separately from raw workflow logs
 The system SHALL maintain conversation-oriented history alongside the bounded raw `UiEvent` history. Conversation history SHALL contain user submissions, assistant-visible prompt questions, and completed assistant-visible messages. Raw workflow logs SHALL remain available for inspection without being the sole source of transcript rendering.
 
@@ -74,9 +56,9 @@ The system SHALL maintain conversation-oriented history alongside the bounded ra
 - **THEN** a single assistant conversation entry is appended to the conversation history
 - **AND** partial token-level updates are not appended as separate conversation entries
 
-### Requirement: UiState maintains run summary snapshot
-The system SHALL update a `RunSummary` snapshot in `UiState` whenever the workflow writes a run summary. The LiveView UI MAY use this for status display.
+## REMOVED Requirements
 
-#### Scenario: Run summary is updated
-- **WHEN** `write_run_summary()` is called by the workflow
-- **THEN** the `RunSummary` in `UiState` is updated with the latest values
+### Requirement: UiState tracks planning transition
+**Reason**: The browser UI no longer switches into a log-stream-first mode once planning begins. Conversation history remains the primary surface throughout the run.
+
+**Migration**: Render workflow progress through conversation/status entries and keep raw logs in the collapsed debug container instead of relying on `planning_started` to change UI modes.
