@@ -19,51 +19,22 @@ pub struct UiState {
     version_tx: watch::Sender<u64>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct UiSnapshot {
     pub history: VecDeque<UiEvent>,
     pub has_pending_input: bool,
     pub pending_prompt: Option<PendingPromptSnapshot>,
-    pub run_summary: Option<RunSummary>,
-    pub planning_started: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum UiEvent {
-    Log {
-        level: String,
-        target: String,
-        message: String,
-    },
-    StepStarted {
-        task_name: String,
-        task_label: String,
-    },
-    StepCompleted {
-        task_name: String,
-        task_label: String,
-        attempts: usize,
-    },
-    StepFailed {
-        task_name: String,
-        task_label: String,
-        stage: String,
-    },
-    ComponentStarted {
-        component: String,
-        name: String,
-    },
-    ComponentCompleted {
-        component: String,
-        name: String,
-    },
-    ComponentFailed {
-        component: String,
-        name: String,
-    },
-    PlanningTriggered,
+    Log { level: String, message: String },
+    StepStarted { task_label: String },
+    StepCompleted { task_label: String, attempts: usize },
+    StepFailed { task_label: String, stage: String },
+    ComponentStarted { component: String, name: String },
+    ComponentCompleted { component: String, name: String },
+    ComponentFailed { component: String, name: String },
 }
 
 #[derive(Debug)]
@@ -76,7 +47,6 @@ pub struct PendingPrompt {
 #[derive(Clone)]
 pub struct PendingPromptSnapshot {
     pub question: String,
-    #[allow(dead_code)]
     pub choices: Option<Vec<String>>,
 }
 
@@ -104,7 +74,7 @@ impl UiState {
         self.version_tx.subscribe()
     }
 
-    fn bump_version(&self) {
+    pub(crate) fn bump_version(&self) {
         let mut v = self.version.lock();
         *v += 1;
         let _ = self.version_tx.send(*v);
@@ -127,6 +97,30 @@ impl UiState {
         self.bump_version();
     }
 
+    pub fn send_initial_input(&self, text: String) -> bool {
+        let mut pending = self.pending_initial_input.lock();
+        if let Some(sender) = pending.take() {
+            drop(pending);
+            let ok = sender.send(text).is_ok();
+            self.bump_version();
+            ok
+        } else {
+            false
+        }
+    }
+
+    pub fn send_pending_prompt(&self, text: String) -> bool {
+        let mut pending = self.pending_prompt.lock();
+        if let Some(prompt) = pending.take() {
+            drop(pending);
+            let ok = prompt.reply.send(text).is_ok();
+            self.bump_version();
+            ok
+        } else {
+            false
+        }
+    }
+
     pub fn set_planning_started(&self) {
         *self.planning_started.lock() = true;
         self.bump_version();
@@ -143,15 +137,11 @@ impl UiState {
                 question: p.question.clone(),
                 choices: p.choices.clone(),
             });
-        let run_summary = self.run_summary.lock().clone();
-        let planning_started = *self.planning_started.lock();
 
         UiSnapshot {
             history,
             has_pending_input,
             pending_prompt,
-            run_summary,
-            planning_started,
         }
     }
 }
@@ -159,28 +149,17 @@ impl UiState {
 impl From<&FrontendEvent> for UiEvent {
     fn from(event: &FrontendEvent) -> Self {
         match event {
-            FrontendEvent::StepStarted {
-                task_name,
-                task_label,
-            } => Self::StepStarted {
-                task_name: task_name.clone(),
+            FrontendEvent::StepStarted { task_label } => Self::StepStarted {
                 task_label: task_label.clone(),
             },
             FrontendEvent::StepCompleted {
-                task_name,
                 task_label,
                 attempts,
             } => Self::StepCompleted {
-                task_name: task_name.clone(),
                 task_label: task_label.clone(),
                 attempts: *attempts,
             },
-            FrontendEvent::StepFailed {
-                task_name,
-                task_label,
-                stage,
-            } => Self::StepFailed {
-                task_name: task_name.clone(),
+            FrontendEvent::StepFailed { task_label, stage } => Self::StepFailed {
                 task_label: task_label.clone(),
                 stage: stage.clone(),
             },
@@ -196,13 +175,8 @@ impl From<&FrontendEvent> for UiEvent {
                 component: component.clone(),
                 name: name.clone(),
             },
-            FrontendEvent::Log {
-                level,
-                target,
-                message,
-            } => Self::Log {
+            FrontendEvent::Log { level, message, .. } => Self::Log {
                 level: level.to_string(),
-                target: target.clone(),
                 message: message.clone(),
             },
             FrontendEvent::StepAttemptStarted { .. }
@@ -212,7 +186,6 @@ impl From<&FrontendEvent> for UiEvent {
             | FrontendEvent::HumanPrompt { .. }
             | FrontendEvent::Quit => Self::Log {
                 level: "INFO".to_string(),
-                target: "mmat::ui".to_string(),
                 message: event.to_string(),
             },
         }

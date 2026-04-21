@@ -1,42 +1,34 @@
 use std::fmt;
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum FrontendEvent {
     StepStarted {
-        task_name: String,
         task_label: String,
     },
     StepAttemptStarted {
-        task_name: String,
         task_label: String,
         attempt: usize,
     },
     StepAttemptValidated {
-        task_name: String,
         task_label: String,
         attempt: usize,
         accepted: bool,
         finding_count: usize,
     },
     StepRepairStarted {
-        task_name: String,
         task_label: String,
         attempt: usize,
     },
     StepCompleted {
-        task_name: String,
         task_label: String,
         attempts: usize,
     },
     StepRejected {
-        task_name: String,
         task_label: String,
         attempts: usize,
         reason: String,
     },
     StepFailed {
-        task_name: String,
         task_label: String,
         stage: String,
     },
@@ -54,7 +46,6 @@ pub enum FrontendEvent {
     },
     Log {
         level: tracing::Level,
-        target: String,
         message: String,
     },
     HumanPrompt {
@@ -62,7 +53,6 @@ pub enum FrontendEvent {
         choices: Vec<String>,
         reply: tokio::sync::oneshot::Sender<String>,
     },
-    #[allow(dead_code)]
     Quit,
 }
 
@@ -112,11 +102,7 @@ impl fmt::Display for FrontendEvent {
                 write!(f, "{component} completed: {name}")
             }
             Self::ComponentFailed { component, name } => write!(f, "{component} failed: {name}"),
-            Self::Log {
-                level,
-                target,
-                message,
-            } => write!(f, "[{level}] {target}: {message}"),
+            Self::Log { level, message } => write!(f, "[{level}] {message}"),
             Self::HumanPrompt { question, .. } => write!(f, "? {question}"),
             Self::Quit => write!(f, "quit"),
         }

@@ -1,4 +1,9 @@
-use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    env,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use clap::Parser;
 use error::AppError;
@@ -34,10 +39,6 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     project_root: Option<PathBuf>,
 
-    /// Resume a previous run from its run directory
-    #[arg(long, value_name = "DIR")]
-    resume: Option<PathBuf>,
-
     /// Print run artifact paths to stdout and exit after the workflow
     #[arg(long)]
     export_artifacts: bool,
@@ -57,7 +58,7 @@ async fn main() -> Result<(), AppError> {
         .or_else(|| env::current_dir().ok())
         .ok_or_else(|| AppError::Config("failed to determine project root".to_string()))?;
 
-    if cli.prompt.is_some() || cli.resume.is_some() {
+    if cli.prompt.is_some() {
         run_non_interactive(&cli, project_root).await
     } else {
         run_interactive(&cli, project_root).await
@@ -75,10 +76,27 @@ async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppErro
         .spawn_with_input()
         .map_err(|error| AppError::Config(format!("failed to start server: {error}")))?;
 
+    let handle = handle
+        .wait_for_ready()
+        .await
+        .map_err(|error| AppError::Config(format!("server failed to bind: {error}")))?;
+
     let layer = WsLayer::new(sender.clone());
     let translator = spawn_event_translator(event_rx, ui_state.clone());
     use tracing_subscriber::prelude::*;
-    tracing_subscriber::registry().with(layer).init();
+    let subscriber = tracing_subscriber::registry().with(layer);
+
+    if let Some(debug_log) = &cli.debug_log {
+        let file = std::fs::File::create(debug_log).map_err(|error| {
+            AppError::Config(format!("failed to create debug log file: {error}"))
+        })?;
+        let debug_layer = tracing_subscriber::fmt::layer()
+            .with_writer(file)
+            .with_ansi(false);
+        subscriber.with(debug_layer).init();
+    } else {
+        subscriber.init();
+    }
 
     let runtime = AppRuntime::new(sender.clone(), ui_state.clone(), project_root)?;
     runtime.log_info(format!(
@@ -159,18 +177,21 @@ async fn run_non_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), App
     }
 
     if cli.export_artifacts {
-        for entry in std::fs::read_dir(runtime.run_root())
-            .map_err(|error| AppError::Config(format!("failed to read run directory: {error}")))?
-        {
-            let entry = entry.map_err(|error| {
-                AppError::Config(format!("failed to read directory entry: {error}"))
-            })?;
-            if entry.path().is_file() {
-                println!("{}", entry.path().display());
-            }
-        }
+        list_run_artifacts(runtime.run_root())?;
     }
 
+    Ok(())
+}
+
+fn list_run_artifacts(run_root: &Path) -> Result<(), AppError> {
+    for entry in walkdir::WalkDir::new(run_root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.path().is_file() {
+            println!("{}", entry.path().display());
+        }
+    }
     Ok(())
 }
 
@@ -220,17 +241,6 @@ mod tests {
             .expect("export artifacts flag should parse");
 
         assert!(cli.export_artifacts);
-    }
-
-    #[test]
-    fn parses_resume_flag() {
-        let cli = Cli::try_parse_from(["mmat", "--resume", ".mmat/runs/run-1"])
-            .expect("resume flag should parse");
-
-        assert_eq!(
-            cli.resume,
-            Some(std::path::PathBuf::from(".mmat/runs/run-1"))
-        );
     }
 
     #[test]

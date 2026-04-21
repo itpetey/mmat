@@ -57,12 +57,16 @@ pub fn build_phase_patch(
     for item in &phase.worklist.items {
         let item_id = NodeId::new();
         item_ids.push((item_id, item.clone()));
+        let safe_phase = super::execution::sanitise_worktree_name(&phase.request.phase);
+        let safe_item_id = super::execution::sanitise_worktree_name(&item.id);
         patch = patch
             .with_node(
                 NodeSpec::new(
                     super::execution::implementation_node_name(phase.request.pass_index, &item.id),
                     StepNode::new(implementation_step.clone(), {
                         let item = item.clone();
+                        let safe_phase = safe_phase.clone();
+                        let safe_item_id = safe_item_id.clone();
                         move |input: &NodeInput| {
                             let phase = input.output_as::<ManagedPhase>(manager_id)?;
                             Ok(ImplementationExecutionInput {
@@ -73,11 +77,7 @@ pub fn build_phase_patch(
                                     completed_items: phase.request.completed_items.clone(),
                                     prior_feedback: Vec::new(),
                                 },
-                                worktree_name: format!(
-                                    "{}-{}",
-                                    phase.request.phase.replace('_', "-"),
-                                    item.id
-                                ),
+                                worktree_name: format!("{safe_phase}-{safe_item_id}"),
                             })
                         }
                     }),
@@ -86,6 +86,19 @@ pub fn build_phase_patch(
                 .with_parent(manager_id),
             )
             .with_edge(EdgeSpec::new(manager_id, item_id));
+    }
+
+    let id_to_node: std::collections::HashMap<&str, NodeId> = item_ids
+        .iter()
+        .map(|(node_id, item)| (item.id.as_str(), *node_id))
+        .collect();
+
+    for (item_id, item) in &item_ids {
+        for dep_id in &item.dependencies {
+            if let Some(&dep_node_id) = id_to_node.get(dep_id.as_str()) {
+                patch = patch.with_edge(EdgeSpec::new(dep_node_id, *item_id));
+            }
+        }
     }
 
     let review_id = NodeId::new();

@@ -208,15 +208,6 @@ pub(crate) struct ProjectContract {
     pub(crate) demo_scenarios: Vec<String>,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ChangeRequest {
-    pub(crate) summary: String,
-    pub(crate) rationale: String,
-    pub(crate) proposed_changes: Vec<String>,
-    pub(crate) impact: Vec<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ReleaseAssessment {
     pub(crate) contract_items_satisfied: Vec<String>,

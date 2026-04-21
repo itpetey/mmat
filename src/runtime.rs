@@ -113,19 +113,14 @@ impl AppRuntime {
                 sender.send(event).map_err(|_| AppError::WsClosed)
             }
             RuntimeMode::NonInteractive => {
-                if let FrontendEvent::Log {
-                    level,
-                    target,
-                    message,
-                } = event
-                {
+                if let FrontendEvent::Log { level, message } = event {
                     let level_str = match level {
                         Level::ERROR => "ERROR",
                         Level::WARN => "WARN ",
                         Level::INFO => "INFO ",
                         _ => "DEBUG",
                     };
-                    eprintln!("[{level_str}] [{target}] {message}");
+                    eprintln!("[{level_str}] {message}");
                 }
                 Ok(())
             }
@@ -135,7 +130,6 @@ impl AppRuntime {
     fn log(&self, level: Level, message: impl Into<String>) -> Result<(), AppError> {
         self.send_event(FrontendEvent::Log {
             level,
-            target: "mmat".to_string(),
             message: message.into(),
         })
     }
@@ -179,6 +173,8 @@ impl AppRuntime {
         if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
             let mut run_summary = ui_state.run_summary.lock();
             *run_summary = Some(summary.clone());
+            drop(run_summary);
+            ui_state.bump_version();
         }
         self.persist_artifact(RunArtifact::RunSummary, summary)
     }

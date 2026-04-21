@@ -21,6 +21,12 @@ pub struct WsHandle {
     join_handle: tokio::task::JoinHandle<Result<(), WsError>>,
 }
 
+pub struct WsReadyHandle {
+    shutdown_tx: watch::Sender<bool>,
+    join_handle: tokio::task::JoinHandle<Result<(), WsError>>,
+    ready_rx: oneshot::Receiver<Result<(), std::io::Error>>,
+}
+
 pub struct WsAppBuilder {
     addr: SocketAddr,
     ui_state: Arc<UiState>,
@@ -40,6 +46,7 @@ struct InitialInputCardProps {
 struct PromptCardProps {
     ui_state: Arc<UiState>,
     question: String,
+    choices: Option<Vec<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,7 +86,9 @@ impl PartialEq for InitialInputCardProps {
 
 impl PartialEq for PromptCardProps {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.ui_state, &other.ui_state) && self.question == other.question
+        Arc::ptr_eq(&self.ui_state, &other.ui_state)
+            && self.question == other.question
+            && self.choices == other.choices
     }
 }
 
@@ -94,28 +103,12 @@ impl WsAppBuilder {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn spawn(
-        self,
-    ) -> Result<
-        (
-            EventSender,
-            WsHandle,
-            mpsc::UnboundedReceiver<FrontendEvent>,
-        ),
-        WsError,
-    > {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let handle = spawn_server(self.addr, self.ui_state)?;
-        Ok((event_tx, handle, event_rx))
-    }
-
     pub fn spawn_with_input(
         self,
     ) -> Result<
         (
             EventSender,
-            WsHandle,
+            WsReadyHandle,
             InstructionReceiver,
             mpsc::UnboundedReceiver<FrontendEvent>,
         ),
@@ -125,6 +118,20 @@ impl WsAppBuilder {
         let (instruction_tx, instruction_rx) = oneshot::channel();
         let handle = spawn_server_with_input(self.addr, self.ui_state, instruction_tx)?;
         Ok((event_tx, handle, instruction_rx, event_rx))
+    }
+}
+
+impl WsReadyHandle {
+    pub async fn wait_for_ready(self) -> Result<WsHandle, WsError> {
+        let ready_result = self
+            .ready_rx
+            .await
+            .map_err(|_| WsError::Task("server shut down before binding".into()))?;
+        ready_result.map_err(WsError::Bind)?;
+        Ok(WsHandle {
+            shutdown_tx: self.shutdown_tx,
+            join_handle: self.join_handle,
+        })
     }
 }
 
@@ -155,11 +162,10 @@ fn InitialInputCard(props: InitialInputCardProps) -> Element {
                 onkeydown: move |e| {
                     if e.key() == Key::Enter && e.modifiers().shift() {
                         let text = input.read().clone();
-                        if !text.is_empty() {
-                            let mut pending = ui_state1.pending_initial_input.lock();
-                            if let Some(sender) = pending.take() {
-                                let _ = sender.send(text);
-                            }
+                        if !text.is_empty()
+                            && !ui_state1.send_initial_input(text)
+                        {
+                            input.set(String::new());
                         }
                     }
                 },
@@ -168,11 +174,10 @@ fn InitialInputCard(props: InitialInputCardProps) -> Element {
                 class: "prompt-submit",
                 onclick: move |_| {
                     let text = input.read().clone();
-                    if !text.is_empty() {
-                        let mut pending = ui_state2.pending_initial_input.lock();
-                        if let Some(sender) = pending.take() {
-                            let _ = sender.send(text);
-                        }
+                    if !text.is_empty()
+                        && !ui_state2.send_initial_input(text)
+                    {
+                        input.set(String::new());
                     }
                 },
                 "Start"
@@ -186,10 +191,30 @@ fn PromptCard(props: PromptCardProps) -> Element {
     let mut input = use_signal(String::new);
     let ui_state1 = props.ui_state.clone();
     let ui_state2 = props.ui_state.clone();
+    let choices = props.choices.clone();
 
     rsx! {
         div { class: "prompt-card",
             p { "{props.question}" }
+            if let Some(choices) = &choices {
+                if !choices.is_empty() {
+                    div { class: "prompt-choices",
+                        for choice in choices {
+                            button {
+                                class: "prompt-choice-btn",
+                                onclick: {
+                                    let ui_state = props.ui_state.clone();
+                                    let choice = choice.clone();
+                                    move |_| {
+                                        ui_state.send_pending_prompt(choice.clone());
+                                    }
+                                },
+                                "{choice}"
+                            }
+                        }
+                    }
+                }
+            }
             textarea {
                 class: "prompt-input",
                 value: "{input}",
@@ -199,11 +224,10 @@ fn PromptCard(props: PromptCardProps) -> Element {
                 onkeydown: move |e| {
                     if e.key() == Key::Enter && e.modifiers().shift() {
                         let text = input.read().clone();
-                        if !text.is_empty() {
-                            let mut pending = ui_state1.pending_prompt.lock();
-                            if let Some(prompt) = pending.take() {
-                                let _ = prompt.reply.send(text);
-                            }
+                        if !text.is_empty()
+                            && !ui_state1.send_pending_prompt(text)
+                        {
+                            input.set(String::new());
                         }
                     }
                 },
@@ -212,11 +236,10 @@ fn PromptCard(props: PromptCardProps) -> Element {
                 class: "prompt-submit",
                 onclick: move |_| {
                     let text = input.read().clone();
-                    if !text.is_empty() {
-                        let mut pending = ui_state2.pending_prompt.lock();
-                        if let Some(prompt) = pending.take() {
-                            let _ = prompt.reply.send(text);
-                        }
+                    if !text.is_empty()
+                        && !ui_state2.send_pending_prompt(text)
+                    {
+                        input.set(String::new());
                     }
                 },
                 "Reply"
@@ -276,6 +299,9 @@ fn RootApp(props: RootAppProps) -> Element {
             .prompt-input:focus {{ border-color: #5a5aff; }}
             .prompt-submit {{ align-self: flex-end; padding: 0.6rem 1.5rem; border: none; border-radius: 6px; background: #5a5aff; color: #fff; font-size: 0.95rem; font-weight: 600; cursor: pointer; }}
             .prompt-submit:hover {{ background: #4a4aee; }}
+            .prompt-choices {{ display: flex; flex-wrap: wrap; gap: 0.5rem; }}
+            .prompt-choice-btn {{ padding: 0.5rem 1rem; border: 1px solid #3a3a5a; border-radius: 6px; background: #0f3460; color: #e0e0e0; font-size: 0.875rem; cursor: pointer; }}
+            .prompt-choice-btn:hover {{ background: #1a4a70; border-color: #5a5aff; }}
             "
         }
         div { class: "mmat-root",
@@ -293,6 +319,7 @@ fn RootApp(props: RootAppProps) -> Element {
                     PromptCard {
                         ui_state: props.ui_state.clone(),
                         question: prompt.question,
+                        choices: prompt.choices,
                     }
                 } else {
                     div { class: "prompt-card",
@@ -306,11 +333,7 @@ fn RootApp(props: RootAppProps) -> Element {
 
 fn format_event(event: &crate::ws::UiEvent) -> String {
     match event {
-        crate::ws::UiEvent::Log {
-            level,
-            target: _,
-            message,
-        } => format!("[{level}] {message}"),
+        crate::ws::UiEvent::Log { level, message } => format!("[{level}] {message}"),
         crate::ws::UiEvent::StepStarted { task_label, .. } => {
             format!("▶ {task_label}")
         }
@@ -335,7 +358,6 @@ fn format_event(event: &crate::ws::UiEvent) -> String {
         crate::ws::UiEvent::ComponentFailed { component, name } => {
             format!("[{component}] failed: {name}")
         }
-        crate::ws::UiEvent::PlanningTriggered => "Planning started.".to_string(),
     }
 }
 
@@ -344,6 +366,7 @@ async fn run_server(
     ui_state: Arc<UiState>,
     _shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
+    ready_tx: oneshot::Sender<Result<(), std::io::Error>>,
 ) -> Result<(), WsError> {
     let glue = dioxus_liveview::interpreter_glue("/ws");
     let title = "MMAT";
@@ -366,9 +389,16 @@ async fn run_server(
             axum::routing::get(move || async move { index_html.clone() }),
         );
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(WsError::Bind)?;
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let kind = error.kind();
+            let _ = ready_tx.send(Err(std::io::Error::new(kind, error.to_string())));
+            return Err(WsError::Bind(error));
+        }
+    };
+
+    let _ = ready_tx.send(Ok(()));
 
     info!(target: "mmat::ws", "LiveView front end listening on http://{addr}");
 
@@ -377,13 +407,21 @@ async fn run_server(
     server.await.map_err(WsError::Serve)
 }
 
-fn spawn_server(addr: SocketAddr, ui_state: Arc<UiState>) -> Result<WsHandle, WsError> {
+fn spawn_server(addr: SocketAddr, ui_state: Arc<UiState>) -> Result<WsReadyHandle, WsError> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let join_handle = tokio::spawn(run_server(addr, ui_state, shutdown_tx.clone(), shutdown_rx));
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let join_handle = tokio::spawn(run_server(
+        addr,
+        ui_state,
+        shutdown_tx.clone(),
+        shutdown_rx,
+        ready_tx,
+    ));
 
-    Ok(WsHandle {
+    Ok(WsReadyHandle {
         shutdown_tx,
         join_handle,
+        ready_rx,
     })
 }
 
@@ -391,7 +429,7 @@ fn spawn_server_with_input(
     addr: SocketAddr,
     ui_state: Arc<UiState>,
     instruction_tx: oneshot::Sender<String>,
-) -> Result<WsHandle, WsError> {
+) -> Result<WsReadyHandle, WsError> {
     {
         let mut pending = ui_state.pending_initial_input.lock();
         *pending = Some(instruction_tx);

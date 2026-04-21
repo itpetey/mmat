@@ -145,10 +145,7 @@ pub(crate) fn implementation_task_user_prompt(
 }
 
 pub(crate) fn knowledge_compilation_system_prompt(_web_search_enabled: bool) -> String {
-    format!(
-        "You are the knowledge compilation stage. Extract structured knowledge from the intent brief and the current repository context. Organise findings into three channels: repository (facts about the codebase, architecture, conventions, commands), project_memory (decisions, constraints, unresolved questions from the intent brief), and external_evidence (relevant API docs, specs, or third-party constraints). Return raw JSON only with this shape: {{\n  \"channel\": string,\n  \"entries\": [{{\n    \"key\": string,\n    \"content\": string,\n    \"provenance\": string\n  }}]\n}}{}",
-        ""
-    )
+    "You are the knowledge compilation stage. Extract structured knowledge from the intent brief and the current repository context. Return raw JSON only with this shape: {\n  \"channel\": string,\n  \"entries\": [{\n    \"key\": string,\n    \"content\": string,\n    \"provenance\": string\n  }]\n}. Set `channel` to the most appropriate single label (e.g. `repository`, `project_memory`, or `external_evidence`). Include all relevant entries for that channel.".to_string()
 }
 
 pub(crate) fn knowledge_compilation_user_prompt(intent: &IntentBrief) -> Result<String, AppError> {

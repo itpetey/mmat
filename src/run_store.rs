@@ -73,23 +73,17 @@ impl RunStore {
             AppError::Workflow(format!("failed to write task result `{path}`: {error}"))
         })
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn read_json<T>(&self, artifact: RunArtifact) -> Result<Option<T>, AppError>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        self.inner.read_json(artifact.file_name()).map_err(|error| {
-            AppError::Workflow(format!(
-                "failed to read run artifact `{}`: {error}",
-                artifact.file_name()
-            ))
-        })
-    }
 }
 
 fn sanitise_file_stem(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let mut output = String::with_capacity(value.len() + 9);
     for ch in value.chars() {
         if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
             output.push(ch);
@@ -99,10 +93,11 @@ fn sanitise_file_stem(value: &str) -> String {
     }
 
     if output.is_empty() {
-        "task-card".to_string()
-    } else {
-        output
+        output = "task-card".to_string();
     }
+
+    output.push_str(&format!("-{hash:x}"));
+    output
 }
 
 #[cfg(test)]
@@ -170,8 +165,22 @@ mod tests {
             .write_task_card("task:1", &json!({"title": "Task"}))
             .expect("task card should be written");
 
-        let card_path = store.run_root().join("task-cards/task_1.json");
-        assert!(card_path.exists());
+        let cards_dir = store.run_root().join("task-cards");
+        let entries: Vec<_> = fs::read_dir(&cards_dir)
+            .expect("task-cards dir should exist")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .path()
+                .file_stem()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("task_1-")
+        );
 
         fs::remove_dir_all(root).expect("temp root should be removed");
     }
@@ -186,8 +195,22 @@ mod tests {
             .write_task_result("task:1", &json!({"summary": "done"}))
             .expect("task result should be written");
 
-        let result_path = store.run_root().join("task-results/task_1.json");
-        assert!(result_path.exists());
+        let results_dir = store.run_root().join("task-results");
+        let entries: Vec<_> = fs::read_dir(&results_dir)
+            .expect("task-results dir should exist")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .path()
+                .file_stem()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("task_1-")
+        );
 
         fs::remove_dir_all(root).expect("temp root should be removed");
     }

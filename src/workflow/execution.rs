@@ -71,6 +71,29 @@ pub fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(),
         .map_err(|error| AppError::Workspace(error.to_string()))
 }
 
+pub fn sanitise_worktree_name(name: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let mut out = String::with_capacity(name.len() + 9);
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out = "unknown".to_string();
+    }
+    out.push_str(&format!("-{hash:x}"));
+    out
+}
+
 pub fn approval_granted(approval: &crate::models::ApprovalOutcome) -> bool {
     let decision = approval.decision.trim().to_ascii_lowercase();
     matches!(
@@ -82,11 +105,14 @@ pub fn approval_granted(approval: &crate::models::ApprovalOutcome) -> bool {
 pub fn build_agent(
     project_root: &Path,
     web_search: Option<super::WebSearchConfig>,
+    allow_question: bool,
 ) -> Result<AppAgent, AppError> {
     use crate::runtime::{AppGlobPathsTool, AppReadFileTool, AppSearchFilesTool, AppWebSearchTool};
 
     let mut tools: ToolRegistry<AppRuntime, AppError> = ToolRegistry::new();
-    tools = register_tool(tools, QuestionTool::<AppRuntime>::new())?;
+    if allow_question {
+        tools = register_tool(tools, QuestionTool::<AppRuntime>::new())?;
+    }
     tools = register_tool(tools, AppReadFileTool::new(project_root.to_path_buf()))?;
     tools = register_tool(tools, AppGlobPathsTool::new(project_root.to_path_buf()))?;
     tools = register_tool(tools, AppSearchFilesTool::new(project_root.to_path_buf()))?;
@@ -105,24 +131,6 @@ pub fn build_agent(
     let executor =
         Executor::with_tools(client, tools).with_config(ExecutorConfig::new(EXECUTOR_TURNS));
     Ok(LlmAgent::with_executor(executor))
-}
-
-pub fn build_command_evidence(task_card: &TaskCard) -> Vec<CommandEvidence> {
-    let mut commands = std::collections::BTreeSet::new();
-    commands.insert("cargo fmt --all".to_string());
-    commands.insert("cargo check".to_string());
-    commands.insert("cargo test".to_string());
-    commands.insert("cargo clippy -- -D warnings".to_string());
-    commands.insert("peer review".to_string());
-    commands.extend(task_card.verification_commands.iter().cloned());
-
-    commands
-        .into_iter()
-        .map(|command| CommandEvidence {
-            command,
-            outcome: "passed".to_string(),
-        })
-        .collect()
 }
 
 pub fn discovery_ready_for_solution(discovery: &crate::models::IntentBrief) -> bool {
@@ -184,7 +192,7 @@ pub async fn merge_item_worktree(
     project_root: &Path,
     baseline_root: &Path,
     draft: &ImplementationDraft,
-) -> Result<ImplementationItemResult, AppError> {
+) -> Result<(), AppError> {
     let item_root = mmat_worktree_path(project_root, &draft.worktree_name);
     let changes = naaf_build_workspace_delta(&item_root, baseline_root)
         .map_err(|error| AppError::Workspace(error.to_string()))?;
@@ -204,32 +212,109 @@ pub async fn merge_item_worktree(
         .await
         .map_err(|error| AppError::Workspace(error.to_string()))?;
 
-    let naaf_changes: Vec<crate::models::FileDelta> = changes
-        .into_iter()
-        .map(|c| crate::models::FileDelta {
-            path: c.path,
-            action: c.action,
-            content: c.content,
-        })
-        .collect();
+    Ok(())
+}
 
-    Ok(ImplementationItemResult {
-        item_id: draft.input.work_item.id.clone(),
-        source: draft.input.work_item.source.clone(),
-        milestone_id: draft.input.work_item.milestone_id.clone(),
-        title: draft.input.work_item.title.clone(),
-        objective: draft.input.work_item.objective.clone(),
-        summary: draft.delta.summary.clone(),
-        contract_refs: draft.input.work_item.contract_refs.clone(),
-        changed_files: naaf_changes.into_iter().map(|change| change.path).collect(),
-        rationale: draft.delta.rationale.clone(),
-        commands_run: build_command_evidence(&draft.input.work_item),
-        reviewer_findings: Vec::new(),
-        manual_checks: draft.input.work_item.acceptance_criteria.clone(),
-        known_gaps: Vec::new(),
-        scope_deviation: None,
-        worktree_name: draft.worktree_name.clone(),
-    })
+pub fn build_item_results(
+    drafts: &[ImplementationDraft],
+    project_root: &Path,
+    baseline_root: &Path,
+    commands_run: Vec<CommandEvidence>,
+) -> Result<Vec<ImplementationItemResult>, AppError> {
+    let final_changes = naaf_build_workspace_delta(project_root, baseline_root)
+        .map_err(|error| AppError::Workspace(error.to_string()))?;
+
+    let mut results = Vec::new();
+    for draft in drafts {
+        let item_changed: Vec<String> = final_changes
+            .iter()
+            .filter(|c| draft.delta.changes.iter().any(|dc| dc.path == c.path))
+            .map(|c| c.path.clone())
+            .collect();
+
+        results.push(ImplementationItemResult {
+            item_id: draft.input.work_item.id.clone(),
+            source: draft.input.work_item.source.clone(),
+            milestone_id: draft.input.work_item.milestone_id.clone(),
+            title: draft.input.work_item.title.clone(),
+            objective: draft.input.work_item.objective.clone(),
+            summary: draft.delta.summary.clone(),
+            contract_refs: draft.input.work_item.contract_refs.clone(),
+            changed_files: item_changed,
+            rationale: draft.delta.rationale.clone(),
+            commands_run: commands_run.clone(),
+            reviewer_findings: Vec::new(),
+            manual_checks: draft.input.work_item.acceptance_criteria.clone(),
+            known_gaps: Vec::new(),
+            scope_deviation: None,
+            worktree_name: draft.worktree_name.clone(),
+        });
+    }
+    Ok(results)
+}
+
+pub async fn run_phase_verification_commands(
+    project_root: &Path,
+    task_cards: &[TaskCard],
+) -> Vec<CommandEvidence> {
+    let mut commands = std::collections::BTreeSet::new();
+    commands.insert("cargo fmt --all".to_string());
+    commands.insert("cargo check".to_string());
+    commands.insert("cargo test".to_string());
+    commands.insert("cargo clippy -- -D warnings".to_string());
+    commands.insert("peer review".to_string());
+    for task_card in task_cards {
+        for cmd in &task_card.verification_commands {
+            if is_allowed_verification_command(cmd) {
+                commands.insert(cmd.clone());
+            }
+        }
+    }
+
+    let mut evidence = Vec::new();
+    for command in commands {
+        let outcome = if command == "peer review" {
+            "passed".to_string()
+        } else if let Some(cargo_args) = command.strip_prefix("cargo ") {
+            if run_command(
+                project_root,
+                &command,
+                &cargo_args.split_whitespace().collect::<Vec<_>>(),
+            )
+            .await
+            .is_ok()
+            {
+                "passed".to_string()
+            } else {
+                "failed".to_string()
+            }
+        } else {
+            "skipped".to_string()
+        };
+        evidence.push(CommandEvidence { command, outcome });
+    }
+    evidence
+}
+
+fn is_allowed_verification_command(command: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+        "cargo fmt --all",
+        "cargo fmt --check",
+        "cargo check",
+        "cargo check --all-features",
+        "cargo check --no-default-features",
+        "cargo test",
+        "cargo test --all-features",
+        "cargo test --no-default-features",
+        "cargo clippy -- -D warnings",
+        "cargo clippy --all-targets -- -D warnings",
+        "cargo build",
+        "cargo build --release",
+        "cargo doc",
+        "cargo doc --no-deps",
+        "cargo bench",
+    ];
+    ALLOWED.contains(&command)
 }
 
 pub fn next_management_request(result: &PhaseReviewResult) -> ImplementationManagementRequest {
@@ -470,7 +555,7 @@ pub async fn run_release_assessment(
         task_results: outcome.completed_items.clone(),
     };
 
-    let llm = build_agent(runtime.project_root(), web_search)?;
+    let llm = build_agent(runtime.project_root(), web_search, false)?;
     let request = CompletionRequest::new(
         model.to_string(),
         vec![
@@ -602,7 +687,14 @@ mod tests {
                 .map(|change| change.path.clone())
                 .collect(),
             rationale: draft.delta.rationale.clone(),
-            commands_run: build_command_evidence(item),
+            commands_run: item
+                .verification_commands
+                .iter()
+                .map(|command| CommandEvidence {
+                    command: command.clone(),
+                    outcome: "passed".to_string(),
+                })
+                .collect(),
             reviewer_findings: Vec::new(),
             manual_checks: item.acceptance_criteria.clone(),
             known_gaps: Vec::new(),

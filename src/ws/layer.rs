@@ -132,20 +132,17 @@ where
                         match action {
                             span::action::RUN_START => {
                                 self.send(FrontendEvent::StepStarted {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                 });
                             }
                             span::action::ATTEMPT_START => {
                                 self.send(FrontendEvent::StepAttemptStarted {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                     attempt: attempt.unwrap_or(0) as usize,
                                 });
                             }
                             span::action::ATTEMPT_VALIDATED => {
                                 self.send(FrontendEvent::StepAttemptValidated {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                     attempt: attempt.unwrap_or(0) as usize,
                                     accepted: accepted.unwrap_or(false),
@@ -154,21 +151,18 @@ where
                             }
                             span::action::ATTEMPT_REPAIR_START => {
                                 self.send(FrontendEvent::StepRepairStarted {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                     attempt: attempt.unwrap_or(0) as usize,
                                 });
                             }
                             span::action::RUN_COMPLETE => {
                                 self.send(FrontendEvent::StepCompleted {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                     attempts: attempt.unwrap_or(1) as usize,
                                 });
                             }
                             span::action::RUN_REJECTED => {
                                 self.send(FrontendEvent::StepRejected {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                     attempts: attempt.unwrap_or(0) as usize,
                                     reason: reason.unwrap_or_else(|| "unknown".to_string()),
@@ -176,7 +170,6 @@ where
                             }
                             span::action::RUN_ERROR => {
                                 self.send(FrontendEvent::StepFailed {
-                                    task_name: task_name.clone(),
                                     task_label: task_label.clone(),
                                     stage: stage.unwrap_or_else(|| "unknown".to_string()),
                                 });
@@ -218,7 +211,6 @@ where
                     if !message.is_empty() {
                         self.send(FrontendEvent::Log {
                             level: *event.metadata().level(),
-                            target: event.metadata().target().to_string(),
                             message,
                         });
                     }
@@ -227,7 +219,6 @@ where
         } else if !message.is_empty() {
             self.send(FrontendEvent::Log {
                 level: *event.metadata().level(),
-                target: event.metadata().target().to_string(),
                 message,
             });
         }

@@ -31,8 +31,9 @@ use crate::{
 pub fn build_agent(
     project_root: &Path,
     web_search: Option<WebSearchConfig>,
+    allow_question: bool,
 ) -> Result<AppAgent, AppError> {
-    super::execution::build_agent(project_root, web_search)
+    super::execution::build_agent(project_root, web_search, allow_question)
 }
 
 pub fn build_implementation_step(
@@ -59,7 +60,7 @@ pub fn build_implementation_step(
             Box::pin(async move {
                 let worktree_root =
                     prepare_worktree(runtime.project_root(), &input.worktree_name).await?;
-                let llm = build_agent(&worktree_root, web_search)?;
+                let llm = build_agent(&worktree_root, web_search, false)?;
                 let request = CompletionRequest::new(
                     model,
                     vec![
@@ -151,6 +152,7 @@ pub fn build_implementation_step(
             let llm = build_agent(
                 mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 web_search,
+                false,
             )?;
             let request = CompletionRequest::new(
                 model,
@@ -180,6 +182,7 @@ pub fn build_implementation_step(
             let llm = build_agent(
                 mmat_worktree_path(runtime.project_root(), &draft.worktree_name).as_path(),
                 web_search,
+                false,
             )?;
             let request = CompletionRequest::new(
                 model,
@@ -247,7 +250,7 @@ pub fn build_managed_phase_step(
     Step<AppRuntime, ImplementationManagementRequest, ManagedPhase, NeverFinding, AppError>,
     AppError,
 > {
-    let llm = Rc::new(build_agent(project_root, web_search)?);
+    let llm = Rc::new(build_agent(project_root, web_search, false)?);
     let model = model.to_string();
     let system_prompt = implementation_management_system_prompt(web_search_enabled);
     let task = task_fn(
@@ -292,9 +295,10 @@ pub fn build_phase_review_step(
     use naaf_workspace::{
         create_baseline_snapshot as naaf_create_baseline_snapshot,
         remove_directory_if_exists as naaf_remove_directory_if_exists,
+        sync_workspace_state as naaf_sync_workspace_state,
     };
 
-    let llm = Rc::new(build_agent(project_root, web_search)?);
+    let llm = Rc::new(build_agent(project_root, web_search, false)?);
     let model = model.to_string();
     let system_prompt = final_review_system_prompt(web_search_enabled);
     let task = task_fn(move |runtime: &AppRuntime, input: PhaseExecutionInput| {
@@ -307,62 +311,106 @@ pub fn build_phase_review_step(
                 &format!("baseline-{}", input.phase.request.phase.replace('_', "-")),
             )
             .map_err(|error| AppError::Workspace(error.to_string()))?;
-            let mut completed_items = input.phase.request.completed_items.clone();
-            let mut current_results = Vec::new();
-            for draft in &input.drafts {
-                current_results.push(
-                    super::execution::merge_item_worktree(runtime.project_root(), &baseline_root, draft).await?,
-                );
-            }
-            for result in &current_results {
-                super::logging::log_implementation_result(runtime, result)?;
-                runtime.persist_task_result(result)?;
-            }
-            completed_items.extend(current_results);
-            runtime.persist_artifact(
-                RunArtifact::EvidenceLog,
-                &crate::models::EvidenceLog {
-                    task_results: completed_items.clone(),
-                },
-            )?;
-            naaf_remove_directory_if_exists(&baseline_root)
-                .map_err(|error| AppError::Workspace(error.to_string()))?;
 
-            let review = execute_json_stage::<FinalReview>(
-                llm.as_ref(),
-                runtime,
-                CompletionRequest::new(
-                    model,
-                    vec![
-                        Message::system(system_prompt),
-                        Message::user(final_review_user_prompt(&FinalReviewInput {
-                            approved: input.phase.request.approved.clone(),
-                            plan: input.phase.request.plan.clone(),
-                            completed_items: completed_items.clone(),
-                        })?),
-                    ],
-                ),
-                "final review",
-            )
-            .await?;
-            super::logging::log_final_review_summary(runtime, &review)?;
-            match super::execution::phase_review_action(input.phase.request.pass_index, &review) {
-                super::PhaseReviewAction::Remediate => runtime.log_warn(
-                    "Final review requested remediation. Spawning another implementation management phase.",
-                )?,
-                super::PhaseReviewAction::Halt if review.remediation_items.is_empty() => runtime.log_warn(
-                    "Final review is not yet ready but did not provide remediation items. Stopping the workflow.",
-                )?,
-                super::PhaseReviewAction::Halt => runtime.log_warn(
-                    "Maximum remediation passes reached. Stopping the workflow.",
-                )?,
-                super::PhaseReviewAction::Complete => {}
+            let cleanup_root = baseline_root.clone();
+            let project_root = runtime.project_root().to_path_buf();
+            let result = async {
+                for draft in &input.drafts {
+                    super::execution::merge_item_worktree(runtime.project_root(), &baseline_root, draft).await?;
+                }
+
+                let task_cards: Vec<_> = input
+                    .drafts
+                    .iter()
+                    .map(|d| d.input.work_item.clone())
+                    .collect();
+                let commands_run =
+                    super::execution::run_phase_verification_commands(runtime.project_root(), &task_cards).await;
+
+                let mut completed_items = input.phase.request.completed_items.clone();
+                let current_results = super::execution::build_item_results(
+                    &input.drafts,
+                    runtime.project_root(),
+                    &baseline_root,
+                    commands_run,
+                )?;
+
+                for result in &current_results {
+                    super::logging::log_implementation_result(runtime, result)?;
+                    runtime.persist_task_result(result)?;
+                }
+                completed_items.extend(current_results);
+                runtime.persist_artifact(
+                    RunArtifact::EvidenceLog,
+                    &crate::models::EvidenceLog {
+                        task_results: completed_items.clone(),
+                    },
+                )?;
+
+                let review = execute_json_stage::<FinalReview>(
+                    llm.as_ref(),
+                    runtime,
+                    CompletionRequest::new(
+                        model,
+                        vec![
+                            Message::system(system_prompt),
+                            Message::user(final_review_user_prompt(&FinalReviewInput {
+                                approved: input.phase.request.approved.clone(),
+                                plan: input.phase.request.plan.clone(),
+                                completed_items: completed_items.clone(),
+                            })?),
+                        ],
+                    ),
+                    "final review",
+                )
+                .await?;
+                super::logging::log_final_review_summary(runtime, &review)?;
+                match super::execution::phase_review_action(input.phase.request.pass_index, &review) {
+                    super::PhaseReviewAction::Remediate => runtime.log_warn(
+                        "Final review requested remediation. Spawning another implementation management phase.",
+                    )?,
+                    super::PhaseReviewAction::Halt if review.remediation_items.is_empty() => runtime.log_warn(
+                        "Final review is not yet ready but did not provide remediation items. Stopping the workflow.",
+                    )?,
+                    super::PhaseReviewAction::Halt => runtime.log_warn(
+                        "Maximum remediation passes reached. Stopping the workflow.",
+                    )?,
+                    super::PhaseReviewAction::Complete => {}
+                }
+                Ok::<_, AppError>(PhaseReviewResult {
+                    phase: input.phase,
+                    completed_items,
+                    review,
+                })
             }
-            Ok::<_, AppError>(PhaseReviewResult {
-                phase: input.phase,
-                completed_items,
-                review,
-            })
+            .await;
+
+            let mut errors = Vec::new();
+            if result.is_err()
+                && let Err(error) = naaf_sync_workspace_state(&cleanup_root, &project_root)
+            {
+                errors.push(format!("workspace rollback failed: {error}"));
+            }
+            if let Err(error) = naaf_remove_directory_if_exists(&cleanup_root) {
+                errors.push(format!("baseline cleanup failed: {error}"));
+            }
+
+            if errors.is_empty() {
+                result
+            } else {
+                let context = if result.is_ok() {
+                    "phase review succeeded but recovery failed".to_string()
+                } else {
+                    match &result {
+                        Ok(_) => unreachable!(),
+                        Err(e) => format!("phase review failed; {e}"),
+                    }
+                };
+                Err(AppError::Workspace(format!(
+                    "{context}; recovery errors: {}",
+                    errors.join("; ")
+                )))
+            }
         })
     })
     .observed_as("phase_review");

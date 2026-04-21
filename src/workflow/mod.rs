@@ -103,43 +103,61 @@ pub(crate) async fn run_mmat(
         )?;
     }
 
-    let llm = steps::build_agent(runtime.project_root(), web_search.clone())?;
-    let discovery_step = Step::builder(tasks::build_discovery_task(&llm, &model, search_enabled))
-        .with_findings::<NeverFinding>()
-        .build();
+    let llm_interactive = steps::build_agent(runtime.project_root(), web_search.clone(), true)?;
+    let llm_quiet = steps::build_agent(runtime.project_root(), web_search.clone(), false)?;
+    let discovery_step = Step::builder(tasks::build_discovery_task(
+        &llm_interactive,
+        &model,
+        search_enabled,
+    ))
+    .with_findings::<NeverFinding>()
+    .build();
     let [conservative_branch, recommended_branch, ambitious_branch] =
         crate::models::SolutionBranch::default_set();
     let conservative =
-        tasks::build_solution_branch(&llm, &model, conservative_branch, search_enabled);
+        tasks::build_solution_branch(&llm_quiet, &model, conservative_branch, search_enabled);
     let recommended =
-        tasks::build_solution_branch(&llm, &model, recommended_branch, search_enabled);
-    let ambitious = tasks::build_solution_branch(&llm, &model, ambitious_branch, search_enabled);
+        tasks::build_solution_branch(&llm_quiet, &model, recommended_branch, search_enabled);
+    let ambitious =
+        tasks::build_solution_branch(&llm_quiet, &model, ambitious_branch, search_enabled);
     let solutions_workflow = conservative
         .join(recommended)
         .reconcile_task(tasks::collect_solution_pair_task("collect_default_pair"))
         .join(ambitious)
         .reconcile_task(tasks::push_solution_task("add_ambitious_solution"));
-    let reconcile_step = Step::builder(tasks::build_reconcile_task(&llm, &model))
+    let reconcile_step = Step::builder(tasks::build_reconcile_task(&llm_interactive, &model))
         .with_findings::<NeverFinding>()
         .build();
-    let approval_step = Step::builder(tasks::build_approval_task(&llm, &model))
+    let approval_step = Step::builder(tasks::build_approval_task(&llm_interactive, &model))
         .with_findings::<NeverFinding>()
         .build();
-    let contract_step = Step::builder(tasks::build_contract_task(&llm, &model, search_enabled))
-        .with_findings::<NeverFinding>()
-        .build();
-    let contract_approval_step = Step::builder(tasks::build_contract_approval_task(&llm, &model))
-        .with_findings::<NeverFinding>()
-        .build();
+    let contract_step = Step::builder(tasks::build_contract_task(
+        &llm_quiet,
+        &model,
+        search_enabled,
+    ))
+    .with_findings::<NeverFinding>()
+    .build();
+    let contract_approval_step = Step::builder(tasks::build_contract_approval_task(
+        &llm_interactive,
+        &model,
+    ))
+    .with_findings::<NeverFinding>()
+    .build();
 
-    let planning_step = Step::builder(tasks::build_planning_task(&llm, &model, search_enabled))
-        .with_findings::<NeverFinding>()
-        .build();
-    let architect_review_step = Step::builder(tasks::build_architect_review_task(&llm, &model))
-        .with_findings::<NeverFinding>()
-        .build();
+    let planning_step = Step::builder(tasks::build_planning_task(
+        &llm_quiet,
+        &model,
+        search_enabled,
+    ))
+    .with_findings::<NeverFinding>()
+    .build();
+    let architect_review_step =
+        Step::builder(tasks::build_architect_review_task(&llm_quiet, &model))
+            .with_findings::<NeverFinding>()
+            .build();
     let knowledge_step = Step::builder(tasks::build_knowledge_compilation_task(
-        &llm,
+        &llm_quiet,
         &model,
         search_enabled,
     ))

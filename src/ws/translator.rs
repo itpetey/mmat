@@ -10,39 +10,23 @@ pub fn spawn_event_translator(
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
-                FrontendEvent::StepStarted {
-                    task_name,
-                    task_label,
-                } => {
-                    if task_name == "planning" {
+                FrontendEvent::StepStarted { task_label } => {
+                    if task_label.to_lowercase().contains("planning") {
                         ui_state.set_planning_started();
                     }
-                    ui_state.push_event(UiEvent::StepStarted {
-                        task_name,
-                        task_label,
-                    });
+                    ui_state.push_event(UiEvent::StepStarted { task_label });
                 }
                 FrontendEvent::StepCompleted {
-                    task_name,
                     task_label,
                     attempts,
                 } => {
                     ui_state.push_event(UiEvent::StepCompleted {
-                        task_name,
                         task_label,
                         attempts,
                     });
                 }
-                FrontendEvent::StepFailed {
-                    task_name,
-                    task_label,
-                    stage,
-                } => {
-                    ui_state.push_event(UiEvent::StepFailed {
-                        task_name,
-                        task_label,
-                        stage,
-                    });
+                FrontendEvent::StepFailed { task_label, stage } => {
+                    ui_state.push_event(UiEvent::StepFailed { task_label, stage });
                 }
                 FrontendEvent::ComponentStarted { component, name } => {
                     ui_state.push_event(UiEvent::ComponentStarted { component, name });
@@ -53,14 +37,9 @@ pub fn spawn_event_translator(
                 FrontendEvent::ComponentFailed { component, name } => {
                     ui_state.push_event(UiEvent::ComponentFailed { component, name });
                 }
-                FrontendEvent::Log {
-                    level,
-                    target,
-                    message,
-                } => {
+                FrontendEvent::Log { level, message, .. } => {
                     ui_state.push_event(UiEvent::Log {
                         level: level.to_string(),
-                        target,
                         message,
                     });
                 }
