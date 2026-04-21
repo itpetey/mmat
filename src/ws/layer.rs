@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use naaf_core::span;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Subscriber;
 use tracing_subscriber::Layer;
 
 use crate::ws::event::FrontendEvent;
-use naaf_core::span;
 
 pub struct WsLayer {
     tx: mpsc::UnboundedSender<FrontendEvent>,
@@ -20,6 +20,22 @@ struct SpanInfo {
     component: Option<String>,
     task_name: Option<String>,
     task_label: Option<String>,
+}
+
+struct SpanFieldVisitor<'a> {
+    component: &'a mut Option<String>,
+    task_name: &'a mut Option<String>,
+    task_label: &'a mut Option<String>,
+}
+
+struct EventFieldVisitor<'a> {
+    action: &'a mut Option<String>,
+    attempt: &'a mut Option<u64>,
+    accepted: &'a mut Option<bool>,
+    finding_count: &'a mut Option<u64>,
+    reason: &'a mut Option<String>,
+    stage: &'a mut Option<String>,
+    message: &'a mut String,
 }
 
 impl WsLayer {
@@ -223,12 +239,6 @@ where
     }
 }
 
-struct SpanFieldVisitor<'a> {
-    component: &'a mut Option<String>,
-    task_name: &'a mut Option<String>,
-    task_label: &'a mut Option<String>,
-}
-
 impl tracing::field::Visit for SpanFieldVisitor<'_> {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         match field.name() {
@@ -242,16 +252,6 @@ impl tracing::field::Visit for SpanFieldVisitor<'_> {
     }
 
     fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
-}
-
-struct EventFieldVisitor<'a> {
-    action: &'a mut Option<String>,
-    attempt: &'a mut Option<u64>,
-    accepted: &'a mut Option<bool>,
-    finding_count: &'a mut Option<u64>,
-    reason: &'a mut Option<String>,
-    stage: &'a mut Option<String>,
-    message: &'a mut String,
 }
 
 impl tracing::field::Visit for EventFieldVisitor<'_> {

@@ -1,9 +1,3 @@
-mod execution;
-mod graph;
-mod logging;
-mod steps;
-mod tasks;
-
 use std::env;
 
 use naaf_core::{NeverFinding, Step};
@@ -21,13 +15,19 @@ use crate::{
     runtime::{AppRuntime, WebSearchConfig},
 };
 
+mod execution;
+mod graph;
+mod logging;
+mod steps;
+mod tasks;
+
 type LlmStageError =
     naaf_llm::AdapterError<AppError, naaf_llm::OpenAiError, AppError, serde_json::Error>;
 
-const DEFAULT_MODEL: &str = "essentialai/rnj-1";
+const DEFAULT_MODEL: &str = "qwen/qwen3.6-35b-a3b";
 const IMPLEMENTATION_RETRY_LIMIT: usize = 3;
-const MAX_FINAL_REVIEW_PASSES: usize = 3;
 const MAX_DISCOVERY_CLARIFICATION_PASSES: usize = 2;
+const MAX_FINAL_REVIEW_PASSES: usize = 3;
 const WORKFLOW_MAX_CONCURRENCY: usize = 4;
 const WORKTREE_DIR: &str = ".mmat-worktrees";
 

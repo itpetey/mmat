@@ -1,4 +1,5 @@
 use super::{AppError, AppRuntime};
+
 use crate::models::{
     ApprovalOutcome, ExecutionPlan, FinalReview, ImplementationItemResult, ImplementationWorklist,
     KnowledgeArtifact, ProjectContract, ReconciledProposal, ReleaseAssessment, StageReview,
@@ -47,18 +48,6 @@ pub fn log_contract_summary(
     runtime.log_info(format!(
         "Contract acceptance criteria: {}",
         contract.acceptance_criteria.len()
-    ))?;
-    Ok(())
-}
-
-pub fn log_knowledge_summary(
-    runtime: &AppRuntime,
-    knowledge: &KnowledgeArtifact,
-) -> Result<(), AppError> {
-    runtime.log_info(format!(
-        "Knowledge compilation complete: {} entries in '{}' channel.",
-        knowledge.entries.len(),
-        knowledge.channel
     ))?;
     Ok(())
 }
@@ -135,6 +124,18 @@ pub fn log_implementation_result(
     Ok(())
 }
 
+pub fn log_knowledge_summary(
+    runtime: &AppRuntime,
+    knowledge: &KnowledgeArtifact,
+) -> Result<(), AppError> {
+    runtime.log_info(format!(
+        "Knowledge compilation complete: {} entries in '{}' channel.",
+        knowledge.entries.len(),
+        knowledge.channel
+    ))?;
+    Ok(())
+}
+
 pub fn log_planning_summary(runtime: &AppRuntime, plan: &ExecutionPlan) -> Result<(), AppError> {
     runtime.log_info("Planning complete.")?;
     runtime.log_info(format!("Plan summary: {}", plan.summary))?;
@@ -154,6 +155,34 @@ pub fn log_reconciled_summary(
         runtime.log_info(format!(
             "Open questions: {}",
             proposal.open_questions.join(" | ")
+        ))?;
+    }
+    Ok(())
+}
+
+pub fn log_release_assessment_summary(
+    runtime: &AppRuntime,
+    assessment: &ReleaseAssessment,
+) -> Result<(), AppError> {
+    runtime.log_info("Release assessment complete.")?;
+    runtime.log_info(format!("Releasable: {}", assessment.releasable))?;
+    runtime.log_info(format!("Summary: {}", assessment.summary))?;
+    if !assessment.contract_items_incomplete.is_empty() {
+        runtime.log_warn(format!(
+            "Incomplete contract items: {}",
+            assessment.contract_items_incomplete.join(" | ")
+        ))?;
+    }
+    if !assessment.claimed_but_not_proven.is_empty() {
+        runtime.log_warn(format!(
+            "Claimed but not proven: {}",
+            assessment.claimed_but_not_proven.join(" | ")
+        ))?;
+    }
+    if !assessment.residual_risks.is_empty() {
+        runtime.log_warn(format!(
+            "Residual risks: {}",
+            assessment.residual_risks.join(" | ")
         ))?;
     }
     Ok(())
@@ -211,33 +240,5 @@ pub fn log_worklist_summary(
         "Task cards in this phase: {}",
         worklist.items.len()
     ))?;
-    Ok(())
-}
-
-pub fn log_release_assessment_summary(
-    runtime: &AppRuntime,
-    assessment: &ReleaseAssessment,
-) -> Result<(), AppError> {
-    runtime.log_info("Release assessment complete.")?;
-    runtime.log_info(format!("Releasable: {}", assessment.releasable))?;
-    runtime.log_info(format!("Summary: {}", assessment.summary))?;
-    if !assessment.contract_items_incomplete.is_empty() {
-        runtime.log_warn(format!(
-            "Incomplete contract items: {}",
-            assessment.contract_items_incomplete.join(" | ")
-        ))?;
-    }
-    if !assessment.claimed_but_not_proven.is_empty() {
-        runtime.log_warn(format!(
-            "Claimed but not proven: {}",
-            assessment.claimed_but_not_proven.join(" | ")
-        ))?;
-    }
-    if !assessment.residual_risks.is_empty() {
-        runtime.log_warn(format!(
-            "Residual risks: {}",
-            assessment.residual_risks.join(" | ")
-        ))?;
-    }
     Ok(())
 }

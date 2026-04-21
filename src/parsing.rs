@@ -55,11 +55,26 @@ where
     parse_json_candidate(trimmed)
 }
 
-fn parse_json_candidate<T>(content: &str) -> Result<T, serde_json::Error>
+pub(crate) fn strip_code_fence(content: &str) -> Option<&str> {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("```") {
+        return None;
+    }
+
+    let body = trimmed.strip_prefix("```")?;
+    let body = body
+        .strip_prefix("json")
+        .or_else(|| body.strip_prefix("JSON"))
+        .unwrap_or(body);
+    let body = body.trim_start_matches('\n');
+    body.strip_suffix("```").map(str::trim)
+}
+
+pub(crate) fn to_pretty_json<T>(value: &T) -> Result<String, AppError>
 where
-    T: DeserializeOwned,
+    T: Serialize + ?Sized,
 {
-    serde_json::from_str(content).map_err(|error| augment_json_error(content, error))
+    Ok(serde_json::to_string_pretty(value)?)
 }
 
 fn augment_json_error(content: &str, error: serde_json::Error) -> serde_json::Error {
@@ -90,26 +105,11 @@ fn describe_text_encoded_tool_call(content: &str) -> Option<String> {
     Some(message)
 }
 
-pub(crate) fn strip_code_fence(content: &str) -> Option<&str> {
-    let trimmed = content.trim();
-    if !trimmed.starts_with("```") {
-        return None;
-    }
-
-    let body = trimmed.strip_prefix("```")?;
-    let body = body
-        .strip_prefix("json")
-        .or_else(|| body.strip_prefix("JSON"))
-        .unwrap_or(body);
-    let body = body.trim_start_matches('\n');
-    body.strip_suffix("```").map(str::trim)
-}
-
-pub(crate) fn to_pretty_json<T>(value: &T) -> Result<String, AppError>
+fn parse_json_candidate<T>(content: &str) -> Result<T, serde_json::Error>
 where
-    T: Serialize + ?Sized,
+    T: DeserializeOwned,
 {
-    Ok(serde_json::to_string_pretty(value)?)
+    serde_json::from_str(content).map_err(|error| augment_json_error(content, error))
 }
 
 #[cfg(test)]

@@ -1,5 +1,9 @@
 use std::{path::Path, rc::Rc};
 
+use super::{
+    AppError, AppRuntime, ImplementationDraft, ImplementationExecutionInput, ManagedPhase,
+    PhaseExecutionInput, PhaseReviewResult,
+};
 use naaf_core::{
     Attempt, CheckExt, MaterialiserExt, NeverFinding, RepairPlannerExt, RetryPolicy, Step, TaskExt,
     check_fn, materialiser_fn, repair_fn, task_fn,
@@ -8,10 +12,6 @@ use naaf_llm::{CompletionRequest, Message};
 use naaf_workspace::prepare_worktree as naaf_prepare_worktree;
 use serde::de::DeserializeOwned;
 
-use super::{
-    AppError, AppRuntime, ImplementationDraft, ImplementationExecutionInput, ManagedPhase,
-    PhaseExecutionInput, PhaseReviewResult,
-};
 use crate::{
     models::{
         FinalReview, FinalReviewInput, ImplementationDelta, ImplementationManagementRequest,
@@ -25,40 +25,14 @@ use crate::{
         peer_review_system_prompt, peer_review_user_prompt,
     },
     runtime::WebSearchConfig,
+    workflow::execution::AppAgent,
 };
-
-pub type AppAgent = super::execution::AppAgent;
 
 pub fn build_agent(
     project_root: &Path,
     web_search: Option<WebSearchConfig>,
 ) -> Result<AppAgent, AppError> {
     super::execution::build_agent(project_root, web_search)
-}
-
-async fn execute_json_stage<T>(
-    llm: &AppAgent,
-    runtime: &AppRuntime,
-    request: CompletionRequest,
-    stage: &str,
-) -> Result<T, AppError>
-where
-    T: DeserializeOwned,
-{
-    super::execution::execute_json_stage(llm, runtime, request, stage).await
-}
-
-async fn prepare_worktree(
-    project_root: &Path,
-    worktree_name: &str,
-) -> Result<std::path::PathBuf, AppError> {
-    naaf_prepare_worktree(project_root, worktree_name)
-        .await
-        .map_err(|error| AppError::Workspace(error.to_string()))
-}
-
-fn mmat_worktree_path(project_root: &Path, worktree_name: &str) -> std::path::PathBuf {
-    project_root.join(super::WORKTREE_DIR).join(worktree_name)
 }
 
 pub fn build_implementation_step(
@@ -394,4 +368,29 @@ pub fn build_phase_review_step(
     .observed_as("phase_review");
 
     Ok(Step::builder(task).with_findings::<NeverFinding>().build())
+}
+
+async fn execute_json_stage<T>(
+    llm: &AppAgent,
+    runtime: &AppRuntime,
+    request: CompletionRequest,
+    stage: &str,
+) -> Result<T, AppError>
+where
+    T: DeserializeOwned,
+{
+    super::execution::execute_json_stage(llm, runtime, request, stage).await
+}
+
+fn mmat_worktree_path(project_root: &Path, worktree_name: &str) -> std::path::PathBuf {
+    project_root.join(super::WORKTREE_DIR).join(worktree_name)
+}
+
+async fn prepare_worktree(
+    project_root: &Path,
+    worktree_name: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    naaf_prepare_worktree(project_root, worktree_name)
+        .await
+        .map_err(|error| AppError::Workspace(error.to_string()))
 }

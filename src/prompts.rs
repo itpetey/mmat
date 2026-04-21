@@ -60,6 +60,21 @@ pub(crate) fn contract_user_prompt(input: &ContractDraftInput) -> Result<String,
     ))
 }
 
+pub(crate) fn contract_validation_system_prompt() -> String {
+    "You are the contract validation validator for one implementation subtask. Check whether the proposed changes actually satisfy the task card's acceptance criteria and contract references, not just compile. Flag any stubs, placeholders, TODO comments, mock implementations, or incomplete behaviour. Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"findings\": [{\n    \"severity\": string,\n    \"category\": string,\n    \"message\": string\n  }]\n}. Use an empty findings array only when the implementation genuinely satisfies the contract.".to_string()
+}
+
+pub(crate) fn contract_validation_user_prompt(
+    input: &ImplementationTaskInput,
+    delta: &ImplementationDelta,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "Validate this implementation against the task card contract and return JSON only:\nTask card context:\n{}\n\nProposed delta:\n{}",
+        to_pretty_json(input)?,
+        to_pretty_json(delta)?,
+    ))
+}
+
 pub(crate) fn discovery_system_prompt(web_search_enabled: bool) -> String {
     format!(
         "You are the intent stage in a NAAF workflow for complex, unstructured work. Turn the user's prompt into a best-guess intent brief that preserves momentum while making uncertainty explicit. Ask only the highest-value clarification questions. When details are missing, record explicit default assumptions so downstream stages can still proceed. Set `ready_for_solution` to true when the brief is specific enough for solution design or when the remaining ambiguity can be handled safely through recorded defaults. {} Return raw JSON only with this shape: {{\n  \"ready_for_solution\": boolean,\n  \"problem_statement\": string,\n  \"user_goals\": string[],\n  \"non_goals\": string[],\n  \"assumptions\": string[],\n  \"default_assumptions\": string[],\n  \"constraints\": string[],\n  \"ambiguities\": string[],\n  \"risks\": string[],\n  \"acceptance_criteria\": string[],\n  \"clarification_summary\": string[],\n  \"research_notes\": string[],\n  \"recommended_path\": string,\n  \"clarification_questions\": string[]\n}}",
@@ -79,20 +94,6 @@ pub(crate) fn discovery_user_prompt(
     )
 }
 
-pub(crate) fn knowledge_compilation_system_prompt(_web_search_enabled: bool) -> String {
-    format!(
-        "You are the knowledge compilation stage. Extract structured knowledge from the intent brief and the current repository context. Organise findings into three channels: repository (facts about the codebase, architecture, conventions, commands), project_memory (decisions, constraints, unresolved questions from the intent brief), and external_evidence (relevant API docs, specs, or third-party constraints). Return raw JSON only with this shape: {{\n  \"channel\": string,\n  \"entries\": [{{\n    \"key\": string,\n    \"content\": string,\n    \"provenance\": string\n  }}]\n}}{}",
-        ""
-    )
-}
-
-pub(crate) fn knowledge_compilation_user_prompt(intent: &IntentBrief) -> Result<String, AppError> {
-    Ok(format!(
-        "Intent brief:\n{}\n\nCompile knowledge artifacts now. Return JSON only.",
-        to_pretty_json(intent)?,
-    ))
-}
-
 pub(crate) fn final_review_system_prompt(web_search_enabled: bool) -> String {
     [
         "You are the final integration review stage. Assess the finished solution for completion, adherence to the approved specification, code quality, code structure, and any remaining risks. ".to_string(),
@@ -105,19 +106,6 @@ pub(crate) fn final_review_system_prompt(web_search_enabled: bool) -> String {
 pub(crate) fn final_review_user_prompt(input: &FinalReviewInput) -> Result<String, AppError> {
     Ok(format!(
         "Final review context:\n{}\n\nReview the finished solution now and return JSON only.",
-        to_pretty_json(input)?,
-    ))
-}
-
-pub(crate) fn release_assessment_system_prompt() -> String {
-    "You are the adversarial release judge. Your job is to break the illusion of done. Compare the completed work against the frozen project contract and the evidence log. Identify what was claimed but not proven, what remains incomplete, and whether the result is actually releasable. Be adversarial, not agreeable. Return raw JSON only with this shape: {\n  \"contract_items_satisfied\": string[],\n  \"contract_items_incomplete\": string[],\n  \"claimed_but_not_proven\": string[],\n  \"known_gaps\": string[],\n  \"residual_risks\": string[],\n  \"releasable\": boolean,\n  \"summary\": string\n}".to_string()
-}
-
-pub(crate) fn release_assessment_user_prompt(
-    input: &ReleaseAssessmentInput,
-) -> Result<String, AppError> {
-    Ok(format!(
-        "Release judgment context:\n{}\n\nRender your verdict now. Return JSON only.",
         to_pretty_json(input)?,
     ))
 }
@@ -156,6 +144,20 @@ pub(crate) fn implementation_task_user_prompt(
     ))
 }
 
+pub(crate) fn knowledge_compilation_system_prompt(_web_search_enabled: bool) -> String {
+    format!(
+        "You are the knowledge compilation stage. Extract structured knowledge from the intent brief and the current repository context. Organise findings into three channels: repository (facts about the codebase, architecture, conventions, commands), project_memory (decisions, constraints, unresolved questions from the intent brief), and external_evidence (relevant API docs, specs, or third-party constraints). Return raw JSON only with this shape: {{\n  \"channel\": string,\n  \"entries\": [{{\n    \"key\": string,\n    \"content\": string,\n    \"provenance\": string\n  }}]\n}}{}",
+        ""
+    )
+}
+
+pub(crate) fn knowledge_compilation_user_prompt(intent: &IntentBrief) -> Result<String, AppError> {
+    Ok(format!(
+        "Intent brief:\n{}\n\nCompile knowledge artifacts now. Return JSON only.",
+        to_pretty_json(intent)?,
+    ))
+}
+
 pub(crate) fn peer_review_system_prompt() -> String {
     "You are the peer review validator for one implementation subtask. Review the proposed file deltas for correctness, specification adherence, code quality, and code structure. Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"findings\": [{\n    \"severity\": string,\n    \"category\": string,\n    \"message\": string\n  }]\n}. Use an empty findings array only when the subtask is ready to materialise.".to_string()
 }
@@ -166,21 +168,6 @@ pub(crate) fn peer_review_user_prompt(
 ) -> Result<String, AppError> {
     Ok(format!(
         "Review this implementation proposal and return JSON only:\n{}\n\nDelta:\n{}",
-        to_pretty_json(input)?,
-        to_pretty_json(delta)?,
-    ))
-}
-
-pub(crate) fn contract_validation_system_prompt() -> String {
-    "You are the contract validation validator for one implementation subtask. Check whether the proposed changes actually satisfy the task card's acceptance criteria and contract references, not just compile. Flag any stubs, placeholders, TODO comments, mock implementations, or incomplete behaviour. Return raw JSON only with this shape: {\n  \"summary\": string,\n  \"findings\": [{\n    \"severity\": string,\n    \"category\": string,\n    \"message\": string\n  }]\n}. Use an empty findings array only when the implementation genuinely satisfies the contract.".to_string()
-}
-
-pub(crate) fn contract_validation_user_prompt(
-    input: &ImplementationTaskInput,
-    delta: &ImplementationDelta,
-) -> Result<String, AppError> {
-    Ok(format!(
-        "Validate this implementation against the task card contract and return JSON only:\nTask card context:\n{}\n\nProposed delta:\n{}",
         to_pretty_json(input)?,
         to_pretty_json(delta)?,
     ))
@@ -205,29 +192,6 @@ pub(crate) fn planning_user_prompt(approved: &ApprovedContract) -> Result<String
     ))
 }
 
-fn task_card_schema_lines(indent: usize) -> String {
-    let prefix = " ".repeat(indent);
-    let fields = [
-        "\"id\": string,",
-        "\"source\": string,",
-        "\"milestone_id\": string | null,",
-        "\"title\": string,",
-        "\"objective\": string,",
-        "\"contract_refs\": string[],",
-        "\"acceptance_criteria\": string[],",
-        "\"expected_files\": string[],",
-        "\"verification_commands\": string[],",
-        "\"dependencies\": string[],",
-        "\"rollback_notes\": string[]",
-    ];
-
-    fields
-        .into_iter()
-        .map(|field| format!("{prefix}{field}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 pub(crate) fn reconcile_system_prompt() -> String {
     "You are the reconcile stage. Combine the strongest ideas from the candidate solutions into one proposal for the user. Balance conservative delivery, the recommended professional default, and ambitious upside. Return raw JSON only with this shape: {\n  \"title\": string,\n  \"executive_summary\": string,\n  \"recommended_direction\": string,\n  \"why_this_plan\": string,\n  \"adopted_ideas\": [{\n    \"source_branch\": string,\n    \"idea\": string,\n    \"reason\": string\n  }],\n  \"deferred_ideas\": [{\n    \"source_branch\": string,\n    \"idea\": string,\n    \"reason\": string\n  }],\n  \"scope\": string,\n  \"architecture\": string[],\n  \"delivery_plan\": string[],\n  \"technologies\": string[],\n  \"major_risks\": string[],\n  \"open_questions\": string[]\n}".to_string()
 }
@@ -236,6 +200,19 @@ pub(crate) fn reconcile_user_prompt(solutions: &[ValidatedSolution]) -> Result<S
     Ok(format!(
         "Candidate validated solutions:\n{}\n\nReconcile these into the best overall proposal. Return JSON only.",
         to_pretty_json(solutions)?,
+    ))
+}
+
+pub(crate) fn release_assessment_system_prompt() -> String {
+    "You are the adversarial release judge. Your job is to break the illusion of done. Compare the completed work against the frozen project contract and the evidence log. Identify what was claimed but not proven, what remains incomplete, and whether the result is actually releasable. Be adversarial, not agreeable. Return raw JSON only with this shape: {\n  \"contract_items_satisfied\": string[],\n  \"contract_items_incomplete\": string[],\n  \"claimed_but_not_proven\": string[],\n  \"known_gaps\": string[],\n  \"residual_risks\": string[],\n  \"releasable\": boolean,\n  \"summary\": string\n}".to_string()
+}
+
+pub(crate) fn release_assessment_user_prompt(
+    input: &ReleaseAssessmentInput,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "Release judgment context:\n{}\n\nRender your verdict now. Return JSON only.",
+        to_pretty_json(input)?,
     ))
 }
 
@@ -273,6 +250,29 @@ pub(crate) fn solution_validation_user_prompt(
         "Validate this proposal and return JSON only:\n{}",
         to_pretty_json(proposal)?,
     ))
+}
+
+fn task_card_schema_lines(indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    let fields = [
+        "\"id\": string,",
+        "\"source\": string,",
+        "\"milestone_id\": string | null,",
+        "\"title\": string,",
+        "\"objective\": string,",
+        "\"contract_refs\": string[],",
+        "\"acceptance_criteria\": string[],",
+        "\"expected_files\": string[],",
+        "\"verification_commands\": string[],",
+        "\"dependencies\": string[],",
+        "\"rollback_notes\": string[]",
+    ];
+
+    fields
+        .into_iter()
+        .map(|field| format!("{prefix}{field}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn tool_guidance(web_search_enabled: bool, ask_user_allowed: bool) -> String {

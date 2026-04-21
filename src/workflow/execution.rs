@@ -17,10 +17,6 @@ use naaf_workspace::{
 use serde::de::DeserializeOwned;
 use tokio::process::Command;
 
-use super::{
-    AppError, AppRuntime, ImplementationDraft, ImplementationItemResult, MAX_FINAL_REVIEW_PASSES,
-    PhaseReviewAction, PhaseReviewResult, WORKFLOW_MAX_CONCURRENCY, WORKTREE_DIR, WorkflowOutcome,
-};
 use crate::{
     models::{
         ApprovedContract, CommandEvidence, EvidenceLog, ExecutionPlan, FinalReview,
@@ -28,6 +24,11 @@ use crate::{
         ReleaseAssessmentInput, RunSummary, StageFinding, StageReview, TaskCard,
     },
     parsing::decode_json_output,
+    workflow::{
+        AppError, AppRuntime, ImplementationDraft, ImplementationItemResult,
+        MAX_FINAL_REVIEW_PASSES, PhaseReviewAction, PhaseReviewResult, WORKFLOW_MAX_CONCURRENCY,
+        WORKTREE_DIR, WorkflowOutcome,
+    },
 };
 
 pub type AppAgent = LlmAgent<OpenAiClient<AppRuntime>, AppRuntime, AppError>;
@@ -35,6 +36,48 @@ pub type AppAgent = LlmAgent<OpenAiClient<AppRuntime>, AppRuntime, AppError>;
 const DEFAULT_API_KEY: &str = "lm-studio";
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 pub const EXECUTOR_TURNS: usize = 12;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalReviewDisposition {
+    Complete,
+    Remediate,
+    Halt,
+}
+
+pub fn append_user_guidance(prompt: &str, heading: &str, response: &str) -> String {
+    let response = response.trim();
+    if response.is_empty() {
+        return prompt.to_string();
+    }
+
+    format!("{prompt}\n\n{heading}:\n{response}")
+}
+
+pub fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), AppError> {
+    let naaf_delta = NaafFileDeltaSet {
+        summary: delta.summary.clone(),
+        rationale: delta.rationale.clone(),
+        changes: delta
+            .changes
+            .iter()
+            .map(|c| NaafFileDelta {
+                path: c.path.clone(),
+                action: c.action.clone(),
+                content: c.content.clone(),
+            })
+            .collect(),
+    };
+    naaf_apply_file_deltas(root, &naaf_delta)
+        .map_err(|error| AppError::Workspace(error.to_string()))
+}
+
+pub fn approval_granted(approval: &crate::models::ApprovalOutcome) -> bool {
+    let decision = approval.decision.trim().to_ascii_lowercase();
+    matches!(
+        decision.as_str(),
+        "approve" | "approved" | "accept" | "accepted"
+    )
+}
 
 pub fn build_agent(
     project_root: &Path,
@@ -64,16 +107,26 @@ pub fn build_agent(
     Ok(LlmAgent::with_executor(executor))
 }
 
-fn register_tool<T>(
-    tools: ToolRegistry<AppRuntime, AppError>,
-    tool: T,
-) -> Result<ToolRegistry<AppRuntime, AppError>, AppError>
-where
-    T: Tool<Runtime = AppRuntime, Error = AppError> + 'static,
-{
-    tools
-        .with_tool(tool)
-        .map_err(|error: RegisterToolError| AppError::Config(error.to_string()))
+pub fn build_command_evidence(task_card: &TaskCard) -> Vec<CommandEvidence> {
+    let mut commands = std::collections::BTreeSet::new();
+    commands.insert("cargo fmt --all".to_string());
+    commands.insert("cargo check".to_string());
+    commands.insert("cargo test".to_string());
+    commands.insert("cargo clippy -- -D warnings".to_string());
+    commands.insert("peer review".to_string());
+    commands.extend(task_card.verification_commands.iter().cloned());
+
+    commands
+        .into_iter()
+        .map(|command| CommandEvidence {
+            command,
+            outcome: "passed".to_string(),
+        })
+        .collect()
+}
+
+pub fn discovery_ready_for_solution(discovery: &crate::models::IntentBrief) -> bool {
+    discovery.ready_for_solution
 }
 
 pub async fn execute_json_stage<T>(
@@ -93,61 +146,18 @@ where
     decode_json_output(outcome).map_err(AppError::from)
 }
 
-pub fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), AppError> {
-    let naaf_delta = NaafFileDeltaSet {
-        summary: delta.summary.clone(),
-        rationale: delta.rationale.clone(),
-        changes: delta
-            .changes
-            .iter()
-            .map(|c| NaafFileDelta {
-                path: c.path.clone(),
-                action: c.action.clone(),
-                content: c.content.clone(),
-            })
-            .collect(),
-    };
-    naaf_apply_file_deltas(root, &naaf_delta)
-        .map_err(|error| AppError::Workspace(error.to_string()))
-}
-
-pub fn approval_granted(approval: &crate::models::ApprovalOutcome) -> bool {
-    let decision = approval.decision.trim().to_ascii_lowercase();
-    matches!(
-        decision.as_str(),
-        "approve" | "approved" | "accept" | "accepted"
-    )
-}
-
-pub fn append_user_guidance(prompt: &str, heading: &str, response: &str) -> String {
-    let response = response.trim();
-    if response.is_empty() {
-        return prompt.to_string();
+pub fn final_review_disposition(review: &FinalReview) -> FinalReviewDisposition {
+    if review.ready {
+        FinalReviewDisposition::Complete
+    } else if review.remediation_items.is_empty() {
+        FinalReviewDisposition::Halt
+    } else {
+        FinalReviewDisposition::Remediate
     }
-
-    format!("{prompt}\n\n{heading}:\n{response}")
 }
 
-pub fn discovery_ready_for_solution(discovery: &crate::models::IntentBrief) -> bool {
-    discovery.ready_for_solution
-}
-
-pub fn build_command_evidence(task_card: &TaskCard) -> Vec<CommandEvidence> {
-    let mut commands = std::collections::BTreeSet::new();
-    commands.insert("cargo fmt --all".to_string());
-    commands.insert("cargo check".to_string());
-    commands.insert("cargo test".to_string());
-    commands.insert("cargo clippy -- -D warnings".to_string());
-    commands.insert("peer review".to_string());
-    commands.extend(task_card.verification_commands.iter().cloned());
-
-    commands
-        .into_iter()
-        .map(|command| CommandEvidence {
-            command,
-            outcome: "passed".to_string(),
-        })
-        .collect()
+pub fn implementation_node_name(pass_index: usize, item_id: &str) -> String {
+    format!("implement_item_{pass_index}_{item_id}")
 }
 
 pub fn initial_management_request(
@@ -166,69 +176,8 @@ pub fn initial_management_request(
     }
 }
 
-pub fn phase_label(pass_index: usize) -> String {
-    if pass_index == 0 {
-        "initial_implementation".to_string()
-    } else {
-        format!("remediation_pass_{pass_index}")
-    }
-}
-
-pub fn phase_review_action(pass_index: usize, review: &FinalReview) -> PhaseReviewAction {
-    match final_review_disposition(review) {
-        FinalReviewDisposition::Complete => PhaseReviewAction::Complete,
-        FinalReviewDisposition::Halt => PhaseReviewAction::Halt,
-        FinalReviewDisposition::Remediate if pass_index + 1 < MAX_FINAL_REVIEW_PASSES => {
-            PhaseReviewAction::Remediate
-        }
-        FinalReviewDisposition::Remediate => PhaseReviewAction::Halt,
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FinalReviewDisposition {
-    Complete,
-    Remediate,
-    Halt,
-}
-
-pub fn final_review_disposition(review: &FinalReview) -> FinalReviewDisposition {
-    if review.ready {
-        FinalReviewDisposition::Complete
-    } else if review.remediation_items.is_empty() {
-        FinalReviewDisposition::Halt
-    } else {
-        FinalReviewDisposition::Remediate
-    }
-}
-
-pub fn implementation_node_name(pass_index: usize, item_id: &str) -> String {
-    format!("implement_item_{pass_index}_{item_id}")
-}
-
 pub fn management_node_name(pass_index: usize) -> String {
     format!("implementation_management_{pass_index}")
-}
-
-pub fn next_management_request(result: &PhaseReviewResult) -> ImplementationManagementRequest {
-    let next_pass = result.phase.request.pass_index + 1;
-    ImplementationManagementRequest {
-        pass_index: next_pass,
-        phase: phase_label(next_pass),
-        approved: result.phase.request.approved.clone(),
-        plan: result.phase.request.plan.clone(),
-        architect_review: result.phase.request.architect_review.clone(),
-        completed_items: result.completed_items.clone(),
-        remediation_items: result.review.remediation_items.clone(),
-    }
-}
-
-pub fn outcome_node_name() -> String {
-    "workflow_outcome".to_string()
-}
-
-pub fn review_node_name(pass_index: usize) -> String {
-    format!("phase_review_{pass_index}")
 }
 
 pub async fn merge_item_worktree(
@@ -283,8 +232,170 @@ pub async fn merge_item_worktree(
     })
 }
 
-fn mmat_worktree_path(project_root: &Path, worktree_name: &str) -> std::path::PathBuf {
-    project_root.join(WORKTREE_DIR).join(worktree_name)
+pub fn next_management_request(result: &PhaseReviewResult) -> ImplementationManagementRequest {
+    let next_pass = result.phase.request.pass_index + 1;
+    ImplementationManagementRequest {
+        pass_index: next_pass,
+        phase: phase_label(next_pass),
+        approved: result.phase.request.approved.clone(),
+        plan: result.phase.request.plan.clone(),
+        architect_review: result.phase.request.architect_review.clone(),
+        completed_items: result.completed_items.clone(),
+        remediation_items: result.review.remediation_items.clone(),
+    }
+}
+
+pub fn outcome_node_name() -> String {
+    "workflow_outcome".to_string()
+}
+
+pub fn persist_task_cards(runtime: &AppRuntime, task_cards: &[TaskCard]) -> Result<(), AppError> {
+    for task_card in task_cards {
+        runtime.persist_task_card(task_card)?;
+    }
+    Ok(())
+}
+
+pub fn phase_label(pass_index: usize) -> String {
+    if pass_index == 0 {
+        "initial_implementation".to_string()
+    } else {
+        format!("remediation_pass_{pass_index}")
+    }
+}
+
+pub fn phase_review_action(pass_index: usize, review: &FinalReview) -> PhaseReviewAction {
+    match final_review_disposition(review) {
+        FinalReviewDisposition::Complete => PhaseReviewAction::Complete,
+        FinalReviewDisposition::Halt => PhaseReviewAction::Halt,
+        FinalReviewDisposition::Remediate if pass_index + 1 < MAX_FINAL_REVIEW_PASSES => {
+            PhaseReviewAction::Remediate
+        }
+        FinalReviewDisposition::Remediate => PhaseReviewAction::Halt,
+    }
+}
+
+pub async fn prompt_for_approval(
+    runtime: &AppRuntime,
+    proposal: &crate::models::ReconciledProposal,
+) -> Result<String, AppError> {
+    let mut prompt = vec![
+        "Please review the proposal before implementation starts.".to_string(),
+        String::new(),
+        format!("Title: {}", proposal.title),
+    ];
+
+    if !proposal.executive_summary.trim().is_empty() {
+        prompt.push(format!("Summary: {}", proposal.executive_summary.trim()));
+    }
+
+    prompt.push(String::new());
+    prompt.push(
+        "Reply with `approve` to continue, or describe the revisions or constraints you want."
+            .to_string(),
+    );
+
+    if !proposal.open_questions.is_empty() {
+        prompt.push(String::new());
+        prompt.push("Open questions still worth considering:".to_string());
+        prompt.extend(
+            proposal
+                .open_questions
+                .iter()
+                .map(|question| format!("- {question}")),
+        );
+    }
+
+    Ok(runtime
+        .ask(HumanQuestion {
+            question: prompt.join("\n"),
+            choices: None,
+        })
+        .await?
+        .content)
+}
+
+pub async fn prompt_for_contract_approval(
+    runtime: &AppRuntime,
+    contract: &crate::models::ProjectContract,
+) -> Result<String, AppError> {
+    let mut prompt = vec![
+        "Please review the project contract before planning starts.".to_string(),
+        String::new(),
+        format!("Problem statement: {}", contract.problem_statement),
+    ];
+
+    if !contract.user_goals.is_empty() {
+        prompt.push(format!("User goals: {}", contract.user_goals.join(" | ")));
+    }
+
+    if !contract.acceptance_criteria.is_empty() {
+        prompt.push(format!(
+            "Acceptance criteria: {}",
+            contract.acceptance_criteria.join(" | ")
+        ));
+    }
+
+    prompt.push(String::new());
+    prompt.push(
+        "Reply with `approve` to freeze the contract, or describe the revisions or constraints you want."
+            .to_string(),
+    );
+
+    Ok(runtime
+        .ask(HumanQuestion {
+            question: prompt.join("\n"),
+            choices: None,
+        })
+        .await?
+        .content)
+}
+
+pub async fn prompt_for_discovery_clarification(
+    runtime: &AppRuntime,
+    discovery: &crate::models::IntentBrief,
+) -> Result<String, AppError> {
+    let mut prompt = vec![
+        "Intent capture still has unresolved ambiguities before solution generation.".to_string(),
+    ];
+
+    if !discovery.problem_statement.trim().is_empty() {
+        prompt.push(format!(
+            "Current understanding: {}",
+            discovery.problem_statement.trim()
+        ));
+    }
+
+    if !discovery.default_assumptions.is_empty() {
+        prompt.push(format!(
+            "Current defaults if unanswered: {}",
+            discovery.default_assumptions.join(" | ")
+        ));
+    }
+
+    if !discovery.clarification_questions.is_empty() {
+        prompt.push("Please answer these points in one reply:".to_string());
+        for question in &discovery.clarification_questions {
+            prompt.push(format!("- {question}"));
+        }
+    } else {
+        prompt.push(
+            "Please provide the missing problem statement, intended outcome, and any constraints in one reply."
+                .to_string(),
+        );
+    }
+
+    Ok(runtime
+        .ask(HumanQuestion {
+            question: prompt.join("\n"),
+            choices: None,
+        })
+        .await?
+        .content)
+}
+
+pub fn review_node_name(pass_index: usize) -> String {
+    format!("phase_review_{pass_index}")
 }
 
 pub async fn run_command(root: &Path, label: &str, args: &[&str]) -> Result<(), AppError> {
@@ -447,130 +558,20 @@ pub fn write_run_summary(
     })
 }
 
-pub fn persist_task_cards(runtime: &AppRuntime, task_cards: &[TaskCard]) -> Result<(), AppError> {
-    for task_card in task_cards {
-        runtime.persist_task_card(task_card)?;
-    }
-    Ok(())
+fn mmat_worktree_path(project_root: &Path, worktree_name: &str) -> std::path::PathBuf {
+    project_root.join(WORKTREE_DIR).join(worktree_name)
 }
 
-pub async fn prompt_for_approval(
-    runtime: &AppRuntime,
-    proposal: &crate::models::ReconciledProposal,
-) -> Result<String, AppError> {
-    let mut prompt = vec![
-        "Please review the proposal before implementation starts.".to_string(),
-        String::new(),
-        format!("Title: {}", proposal.title),
-    ];
-
-    if !proposal.executive_summary.trim().is_empty() {
-        prompt.push(format!("Summary: {}", proposal.executive_summary.trim()));
-    }
-
-    prompt.push(String::new());
-    prompt.push(
-        "Reply with `approve` to continue, or describe the revisions or constraints you want."
-            .to_string(),
-    );
-
-    if !proposal.open_questions.is_empty() {
-        prompt.push(String::new());
-        prompt.push("Open questions still worth considering:".to_string());
-        prompt.extend(
-            proposal
-                .open_questions
-                .iter()
-                .map(|question| format!("- {question}")),
-        );
-    }
-
-    Ok(runtime
-        .ask(HumanQuestion {
-            question: prompt.join("\n"),
-            choices: None,
-        })
-        .await?
-        .content)
-}
-
-pub async fn prompt_for_contract_approval(
-    runtime: &AppRuntime,
-    contract: &crate::models::ProjectContract,
-) -> Result<String, AppError> {
-    let mut prompt = vec![
-        "Please review the project contract before planning starts.".to_string(),
-        String::new(),
-        format!("Problem statement: {}", contract.problem_statement),
-    ];
-
-    if !contract.user_goals.is_empty() {
-        prompt.push(format!("User goals: {}", contract.user_goals.join(" | ")));
-    }
-
-    if !contract.acceptance_criteria.is_empty() {
-        prompt.push(format!(
-            "Acceptance criteria: {}",
-            contract.acceptance_criteria.join(" | ")
-        ));
-    }
-
-    prompt.push(String::new());
-    prompt.push(
-        "Reply with `approve` to freeze the contract, or describe the revisions or constraints you want."
-            .to_string(),
-    );
-
-    Ok(runtime
-        .ask(HumanQuestion {
-            question: prompt.join("\n"),
-            choices: None,
-        })
-        .await?
-        .content)
-}
-
-pub async fn prompt_for_discovery_clarification(
-    runtime: &AppRuntime,
-    discovery: &crate::models::IntentBrief,
-) -> Result<String, AppError> {
-    let mut prompt = vec![
-        "Intent capture still has unresolved ambiguities before solution generation.".to_string(),
-    ];
-
-    if !discovery.problem_statement.trim().is_empty() {
-        prompt.push(format!(
-            "Current understanding: {}",
-            discovery.problem_statement.trim()
-        ));
-    }
-
-    if !discovery.default_assumptions.is_empty() {
-        prompt.push(format!(
-            "Current defaults if unanswered: {}",
-            discovery.default_assumptions.join(" | ")
-        ));
-    }
-
-    if !discovery.clarification_questions.is_empty() {
-        prompt.push("Please answer these points in one reply:".to_string());
-        for question in &discovery.clarification_questions {
-            prompt.push(format!("- {question}"));
-        }
-    } else {
-        prompt.push(
-            "Please provide the missing problem statement, intended outcome, and any constraints in one reply."
-                .to_string(),
-        );
-    }
-
-    Ok(runtime
-        .ask(HumanQuestion {
-            question: prompt.join("\n"),
-            choices: None,
-        })
-        .await?
-        .content)
+fn register_tool<T>(
+    tools: ToolRegistry<AppRuntime, AppError>,
+    tool: T,
+) -> Result<ToolRegistry<AppRuntime, AppError>, AppError>
+where
+    T: Tool<Runtime = AppRuntime, Error = AppError> + 'static,
+{
+    tools
+        .with_tool(tool)
+        .map_err(|error: RegisterToolError| AppError::Config(error.to_string()))
 }
 
 #[cfg(test)]
@@ -772,9 +773,8 @@ mod tests {
     fn next_management_request_increments_pass_and_carries_completed_items() {
         use super::super::{ManagedPhase, PhaseReviewResult};
         use crate::models::{
-            ApprovalOutcome, ApprovedContract, ApprovedProposal, ExecutionMilestone,
-            ExecutionPlan, ImplementationManagementRequest, ProjectContract, ReconciledProposal,
-            StageReview,
+            ApprovalOutcome, ApprovedContract, ApprovedProposal, ExecutionMilestone, ExecutionPlan,
+            ImplementationManagementRequest, ProjectContract, ReconciledProposal, StageReview,
         };
 
         fn sample_management_request(pass_index: usize) -> ImplementationManagementRequest {

@@ -1,8 +1,8 @@
 use naaf_core::{NeverFinding, Step, Task, TaskExt, task_fn};
 use naaf_llm::{CompletionRequest, Message};
 
-use super::{AppError, AppRuntime, LlmStageError, steps::AppAgent};
 use crate::{
+    error::AppError,
     models::{
         ApprovalOutcome, ApprovalRequest, ApprovedContract, ContractApprovalRequest,
         ContractDraftInput, ExecutionPlan, IntentBrief, KnowledgeArtifact, ProjectContract,
@@ -19,6 +19,8 @@ use crate::{
         solution_generation_user_prompt, solution_validation_system_prompt,
         solution_validation_user_prompt,
     },
+    runtime::AppRuntime,
+    workflow::{LlmStageError, execution::AppAgent},
 };
 
 pub fn build_approval_task(
@@ -117,26 +119,6 @@ pub fn build_discovery_task(
     )
 }
 
-pub fn build_planning_task(
-    llm: &AppAgent,
-    model: &str,
-    web_search_enabled: bool,
-) -> impl Task<
-    Runtime = AppRuntime,
-    Input = ApprovedContract,
-    Output = ExecutionPlan,
-    Error = LlmStageError,
-> + use<> {
-    let system_prompt = planning_system_prompt(web_search_enabled);
-    llm.json_task(
-        model.to_string(),
-        system_prompt,
-        |approved: ApprovedContract| planning_user_prompt(&approved),
-        decode_json_output::<ExecutionPlan>,
-        "planning".to_string(),
-    )
-}
-
 pub fn build_knowledge_compilation_task(
     llm: &AppAgent,
     model: &str,
@@ -154,6 +136,26 @@ pub fn build_knowledge_compilation_task(
         |intent: IntentBrief| knowledge_compilation_user_prompt(&intent),
         decode_json_output::<KnowledgeArtifact>,
         "knowledge_compilation".to_string(),
+    )
+}
+
+pub fn build_planning_task(
+    llm: &AppAgent,
+    model: &str,
+    web_search_enabled: bool,
+) -> impl Task<
+    Runtime = AppRuntime,
+    Input = ApprovedContract,
+    Output = ExecutionPlan,
+    Error = LlmStageError,
+> + use<> {
+    let system_prompt = planning_system_prompt(web_search_enabled);
+    llm.json_task(
+        model.to_string(),
+        system_prompt,
+        |approved: ApprovedContract| planning_user_prompt(&approved),
+        decode_json_output::<ExecutionPlan>,
+        "planning".to_string(),
     )
 }
 

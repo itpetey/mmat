@@ -2,7 +2,7 @@
 
 MMAT, short for **Make Me A Thing**, is an interactive planning and implementation tool for repository-based software work.
 
-It opens a TUI, asks what you want to build, explores several solution directions with an LLM, asks you to approve the recommended approach, then plans and executes the work in isolated git worktrees before merging validated changes back into your checkout.
+It opens a browser-based chat UI, asks what you want to build, explores several solution directions with an LLM, asks you to approve the recommended approach, then plans and executes the work in isolated git worktrees before merging validated changes back into your checkout.
 
 Today the execution pipeline is opinionated toward Rust projects because the built-in validation steps run Cargo commands.
 
@@ -63,28 +63,33 @@ MMAT uses the **current working directory** as the project root it will inspect 
 
 If you run `cargo run` inside this repository, MMAT will operate on this repository. If you want to use MMAT on another project, run the built binary from inside that other repository.
 
-During development, the simplest way to launch it is:
+### Interactive mode (default)
 
 ```bash
 cargo run
 ```
 
-To capture TUI debug logging, pass a log path after the Cargo separator:
+This starts a local server and prints a URL to stdout. Open that URL in your browser to interact with MMAT through a chat interface. The server stays running until you press `Ctrl+C`.
+
+To bypass the browser prompt and start a workflow immediately:
 
 ```bash
-cargo run -- --debug-log target/tui-debug.log
+cargo run -- --prompt "Add a CLI flag to export the generated plan as JSON."
 ```
 
-The TUI will open with the prompt:
+### Non-interactive mode
 
-```text
-What are we building?
+Use `--prompt` to start a workflow without the browser UI, or `--resume` to continue a previous run:
+
+```bash
+cargo run -- --prompt "Your prompt here"
+cargo run -- --resume .mmat/runs/run-123
 ```
 
-Enter a request such as:
+To print all run artefact paths after completion:
 
-```text
-Add a CLI flag to export the generated plan as JSON.
+```bash
+cargo run -- --prompt "Your prompt" --export-artifacts
 ```
 
 From there MMAT will:
@@ -101,7 +106,7 @@ From there MMAT will:
 - MMAT creates temporary worktrees in `.mmat-worktrees` while it is implementing tasks.
 - It copies the current workspace state into those worktrees, so uncommitted local changes are part of the working context.
 - The implementation pipeline assumes Cargo is available and that `cargo fmt`, `cargo check`, `cargo test`, and `cargo clippy` are meaningful for the target repository.
-- The interface is currently TUI-only. The only CLI flag today is `--debug-log <PATH>` for low-level TUI event logging; there are still no flags for passing the prompt or selecting a target directory.
+- The interactive interface is browser-based via a local LiveView server. Use `--prompt` to skip the browser step.
 
 ## Development Checks
 

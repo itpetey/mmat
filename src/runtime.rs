@@ -1,4 +1,4 @@
-use std::{env, io::BufRead, path::Path};
+use std::{env, io::BufRead, path::Path, sync::Arc};
 
 use futures::future::LocalBoxFuture;
 use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion, Tool, ToolSpec, WebSearchTool, repository};
@@ -12,7 +12,7 @@ use crate::{
     error::AppError,
     models::{ImplementationItemResult, RunSummary, TaskCard},
     run_store::RunStore,
-    ws::{EventSender, FrontendEvent},
+    ws::{EventSender, FrontendEvent, UiState},
 };
 
 pub(crate) struct AppWebSearchTool {
@@ -32,16 +32,16 @@ pub(crate) struct AppSearchFilesTool {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum RuntimeMode {
-    Interactive(EventSender),
-    NonInteractive,
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct AppRuntime {
     mode: RuntimeMode,
     project_root: std::path::PathBuf,
     run_store: RunStore,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RuntimeMode {
+    Interactive(EventSender, Arc<UiState>),
+    NonInteractive,
 }
 
 #[derive(Clone, Debug)]
@@ -87,11 +87,12 @@ impl AppSearchFilesTool {
 impl AppRuntime {
     pub(crate) fn new(
         event_sender: EventSender,
+        ui_state: Arc<UiState>,
         project_root: std::path::PathBuf,
     ) -> Result<Self, AppError> {
         let run_store = RunStore::create(&project_root)?;
         Ok(Self {
-            mode: RuntimeMode::Interactive(event_sender),
+            mode: RuntimeMode::Interactive(event_sender, ui_state),
             project_root,
             run_store,
         })
@@ -108,7 +109,9 @@ impl AppRuntime {
 
     fn send_event(&self, event: FrontendEvent) -> Result<(), AppError> {
         match &self.mode {
-            RuntimeMode::Interactive(sender) => sender.send(event).map_err(|_| AppError::WsClosed),
+            RuntimeMode::Interactive(sender, _ui_state) => {
+                sender.send(event).map_err(|_| AppError::WsClosed)
+            }
             RuntimeMode::NonInteractive => {
                 if let FrontendEvent::Log {
                     level,
@@ -173,6 +176,10 @@ impl AppRuntime {
     }
 
     pub(crate) fn persist_run_summary(&self, summary: &RunSummary) -> Result<(), AppError> {
+        if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
+            let mut run_summary = ui_state.run_summary.lock();
+            *run_summary = Some(summary.clone());
+        }
         self.persist_artifact(RunArtifact::RunSummary, summary)
     }
 
@@ -198,7 +205,7 @@ impl HumanIO for AppRuntime {
     ) -> LocalBoxFuture<'a, Result<HumanAnswer, Self::Error>> {
         Box::pin(async move {
             match &self.mode {
-                RuntimeMode::Interactive(sender) => {
+                RuntimeMode::Interactive(sender, _ui_state) => {
                     let (reply_tx, reply_rx) = oneshot::channel();
                     sender
                         .send(FrontendEvent::HumanPrompt {

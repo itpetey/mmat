@@ -1,11 +1,13 @@
 use naaf_core::TaskExt;
 use naaf_core::{EdgeSpec, GraphPatch, NeverFinding, NodeId, NodeInput, NodeSpec, Step, StepNode};
 
-use super::{
-    AppError, AppRuntime, ExecutionGraphSteps, ImplementationExecutionInput, ManagedPhase,
-    PhaseExecutionInput, PhaseReviewAction, PhaseReviewResult, WorkflowOutcome,
+use crate::{
+    models::{ImplementationManagementRequest, ImplementationTaskInput},
+    workflow::{
+        AppError, AppRuntime, ExecutionGraphSteps, ImplementationExecutionInput, ManagedPhase,
+        PhaseExecutionInput, PhaseReviewAction, PhaseReviewResult, WorkflowOutcome,
+    },
 };
-use crate::models::{ImplementationManagementRequest, ImplementationTaskInput};
 
 pub fn build_outcome_patch(
     parent_id: NodeId,
@@ -141,6 +143,27 @@ pub fn build_review_patch(
     }
 }
 
+pub fn root_management_node_spec(
+    request: ImplementationManagementRequest,
+    execution_steps: ExecutionGraphSteps,
+) -> Result<NodeSpec<AppRuntime, AppError>, AppError> {
+    NodeSpec::new(
+        super::execution::management_node_name(request.pass_index),
+        StepNode::without_findings(
+            execution_steps.managed_phase.clone(),
+            |input: &NodeInput| input.seed_as::<ImplementationManagementRequest>(),
+        )
+        .spawn_with({
+            let execution_steps = execution_steps.clone();
+            move |context, phase| {
+                build_phase_patch(context.node_id(), phase, execution_steps.clone())
+            }
+        }),
+    )
+    .with_seed(request)
+    .map_err(AppError::from)
+}
+
 fn remediation_management_node_name() -> String {
     "implementation_management_remediation".to_string()
 }
@@ -166,27 +189,6 @@ fn remediation_management_node_spec(
         }),
     )
     .with_parent(review_id)
-}
-
-pub fn root_management_node_spec(
-    request: ImplementationManagementRequest,
-    execution_steps: ExecutionGraphSteps,
-) -> Result<NodeSpec<AppRuntime, AppError>, AppError> {
-    NodeSpec::new(
-        super::execution::management_node_name(request.pass_index),
-        StepNode::without_findings(
-            execution_steps.managed_phase.clone(),
-            |input: &NodeInput| input.seed_as::<ImplementationManagementRequest>(),
-        )
-        .spawn_with({
-            let execution_steps = execution_steps.clone();
-            move |context, phase| {
-                build_phase_patch(context.node_id(), phase, execution_steps.clone())
-            }
-        }),
-    )
-    .with_seed(request)
-    .map_err(AppError::from)
 }
 
 #[cfg(test)]

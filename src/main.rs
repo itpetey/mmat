@@ -1,10 +1,10 @@
-use std::{env, net::SocketAddr, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use error::AppError;
 use runtime::AppRuntime;
 use workflow::run_mmat;
-use ws::{WsAppBuilder, WsLayer};
+use ws::{UiState, WsAppBuilder, WsLayer, spawn_event_translator};
 
 mod artifacts;
 mod error;
@@ -17,13 +17,16 @@ mod workflow;
 mod ws;
 
 #[derive(Debug, Parser)]
-#[command(name = "mmat", about = "Make Me A Thing")]
+#[command(
+    name = "mmat",
+    about = "Make Me A Thing — interactive planning and implementation via browser UI"
+)]
 struct Cli {
     /// Write WS debug events and state snapshots to this log file
     #[arg(long, value_name = "PATH")]
     debug_log: Option<PathBuf>,
 
-    /// Project prompt to start immediately (bypasses the WS input screen)
+    /// Project prompt to start immediately (bypasses the browser input screen)
     #[arg(long, value_name = "PROMPT")]
     prompt: Option<String>,
 
@@ -59,6 +62,72 @@ async fn main() -> Result<(), AppError> {
     } else {
         run_interactive(&cli, project_root).await
     }
+}
+
+async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
+    let ui_state = Arc::new(UiState::new());
+
+    let builder = WsAppBuilder::default()
+        .addr(cli.ws_addr)
+        .with_ui_state(ui_state.clone());
+
+    let (sender, handle, instruction_rx, event_rx) = builder
+        .spawn_with_input()
+        .map_err(|error| AppError::Config(format!("failed to start server: {error}")))?;
+
+    let layer = WsLayer::new(sender.clone());
+    let translator = spawn_event_translator(event_rx, ui_state.clone());
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry().with(layer).init();
+
+    let runtime = AppRuntime::new(sender.clone(), ui_state.clone(), project_root)?;
+    runtime.log_info(format!(
+        "Run `{}` artifacts will be written to `{}`.",
+        runtime.run_id(),
+        runtime.run_root().display()
+    ))?;
+    runtime.log_info(format!(
+        "MMAT is ready. Open http://{addr} in your browser to begin.",
+        addr = cli.ws_addr
+    ))?;
+
+    let result = async {
+        let instruction = instruction_rx.await.map_err(|_| AppError::PromptClosed)?;
+        runtime.log_info("Prompt received. Starting discovery.")?;
+        run_mmat(&runtime, instruction).await
+    }
+    .await;
+
+    let show_completion_hint = match result {
+        Ok(outcome) => {
+            runtime.log_info(format!(
+                "Workflow status: {}. {}",
+                outcome.status, outcome.next_step
+            ))?;
+            true
+        }
+        Err(AppError::PromptClosed) => false,
+        Err(error) => {
+            runtime.log_error(format!("Workflow failed: {error}"))?;
+            true
+        }
+    };
+
+    if show_completion_hint {
+        runtime.log_info("Workflow complete. The server will remain active until Ctrl+C.")?;
+    }
+
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| AppError::Config(format!("failed to listen for shutdown: {error}")))?;
+
+    let _ = sender.send(ws::FrontendEvent::Quit);
+    translator.abort();
+    handle
+        .shutdown()
+        .await
+        .map_err(|error| AppError::Config(format!("failed to shut down server: {error}")))?;
+    Ok(())
 }
 
 async fn run_non_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
@@ -102,60 +171,6 @@ async fn run_non_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), App
         }
     }
 
-    Ok(())
-}
-
-async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppError> {
-    let builder = WsAppBuilder::default()
-        .addr(cli.ws_addr)
-        .with_input_screen("What are we building?");
-
-    let (sender, handle, instruction_rx) = builder
-        .spawn_with_input()
-        .map_err(|error| AppError::Config(format!("failed to start WS server: {error}")))?;
-
-    let layer = WsLayer::new(sender.clone());
-    use tracing_subscriber::prelude::*;
-    tracing_subscriber::registry().with(layer).init();
-
-    let runtime = AppRuntime::new(sender, project_root)?;
-    runtime.log_info(format!(
-        "Run `{}` artifacts will be written to `{}`.",
-        runtime.run_id(),
-        runtime.run_root().display()
-    ))?;
-    runtime.log_info("MMAT is ready. Enter a project prompt to begin.")?;
-
-    let result = async {
-        let instruction = instruction_rx.await.map_err(|_| AppError::PromptClosed)?;
-        runtime.log_info("Prompt received. Starting discovery.")?;
-        run_mmat(&runtime, instruction).await
-    }
-    .await;
-
-    let show_completion_hint = match result {
-        Ok(outcome) => {
-            runtime.log_info(format!(
-                "Workflow status: {}. {}",
-                outcome.status, outcome.next_step
-            ))?;
-            true
-        }
-        Err(AppError::PromptClosed) => false,
-        Err(error) => {
-            runtime.log_error(format!("Workflow failed: {error}"))?;
-            true
-        }
-    };
-
-    if show_completion_hint {
-        runtime.log_info("Workflow complete. The WS server will remain active.")?;
-    }
-
-    handle
-        .shutdown()
-        .await
-        .map_err(|error| AppError::Config(format!("failed to shut down WS server: {error}")))?;
     Ok(())
 }
 
