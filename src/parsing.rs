@@ -8,13 +8,21 @@ pub(crate) fn decode_json_output<T>(outcome: ExecutionOutcome) -> Result<T, serd
 where
     T: DeserializeOwned,
 {
-    let content = outcome
-        .final_message()
-        .content
-        .as_deref()
-        .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing model output")))?;
+    let content = outcome.final_message().content.as_deref().ok_or_else(|| {
+        serde_json::Error::io(std::io::Error::other(blank_model_output_message()))
+    })?;
+
+    if content.trim().is_empty() {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            blank_model_output_message(),
+        )));
+    }
 
     parse_json_payload(content)
+}
+
+fn blank_model_output_message() -> &'static str {
+    "model returned blank assistant content instead of JSON. This often means the model/backend emitted only hidden reasoning or non-structured tool-call text that MMAT cannot consume"
 }
 
 pub(crate) fn extract_json_fragment(content: &str) -> Option<&str> {
@@ -78,10 +86,18 @@ where
 }
 
 fn augment_json_error(content: &str, error: serde_json::Error) -> serde_json::Error {
-    match describe_text_encoded_tool_call(content) {
-        Some(message) => serde_json::Error::io(std::io::Error::other(message)),
-        None => error,
+    describe_non_json_output(content)
+        .map(|message| serde_json::Error::io(std::io::Error::other(message)))
+        .unwrap_or(error)
+}
+
+fn describe_non_json_output(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Some(blank_model_output_message().to_string());
     }
+
+    describe_text_encoded_tool_call(trimmed).or_else(|| describe_markup_tool_call(trimmed))
 }
 
 fn describe_text_encoded_tool_call(content: &str) -> Option<String> {
@@ -105,6 +121,24 @@ fn describe_text_encoded_tool_call(content: &str) -> Option<String> {
     Some(message)
 }
 
+fn describe_markup_tool_call(content: &str) -> Option<String> {
+    if !content.contains("<tool_call>") || !content.contains("<function=") {
+        return None;
+    }
+
+    let name = extract_markup_tool_name(content).unwrap_or("unknown_tool");
+    Some(format!(
+        "model returned text-encoded tool call markup for `{name}` instead of a structured `tool_calls` response. This model/backend is not exposing OpenAI-compatible tool calls for MMAT."
+    ))
+}
+
+fn extract_markup_tool_name(content: &str) -> Option<&str> {
+    let marker = "<function=";
+    let start = content.find(marker)? + marker.len();
+    let end = content[start..].find('>')?;
+    Some(&content[start..start + end])
+}
+
 fn parse_json_candidate<T>(content: &str) -> Result<T, serde_json::Error>
 where
     T: DeserializeOwned,
@@ -115,10 +149,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_text_encoded_tool_call, extract_json_fragment, parse_json_payload,
-        strip_code_fence,
+        describe_non_json_output, describe_text_encoded_tool_call, extract_json_fragment,
+        parse_json_payload, strip_code_fence,
     };
     use crate::models::ApprovalOutcome;
+    use naaf_llm::{AssistantMessage, CompletionResponse, ExecutionOutcome};
 
     #[test]
     fn strips_json_code_fence() {
@@ -169,5 +204,35 @@ mod tests {
                 .to_string()
                 .contains("model returned a text-encoded tool call")
         );
+    }
+
+    #[test]
+    fn reports_clear_error_for_markup_tool_call_output() {
+        let content = r#"<tool_call>
+<function=glob_paths>
+<parameter=pattern>
+**/*
+</parameter>
+</function>
+</tool_call>"#;
+
+        let message =
+            describe_non_json_output(content).expect("markup tool call should be detected");
+
+        assert!(message.contains("text-encoded tool call markup"));
+        assert!(message.contains("glob_paths"));
+    }
+
+    #[test]
+    fn decode_json_output_reports_blank_content_clearly() {
+        let outcome = ExecutionOutcome::new(
+            Vec::new(),
+            vec![CompletionResponse::new(AssistantMessage::from_text("   "))],
+        );
+
+        let error = super::decode_json_output::<ApprovalOutcome>(outcome)
+            .expect_err("blank output should fail clearly");
+
+        assert!(error.to_string().contains("blank assistant content"));
     }
 }
