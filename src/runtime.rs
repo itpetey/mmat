@@ -1,4 +1,9 @@
-use std::{env, io::BufRead, path::Path, sync::Arc};
+use std::{
+    env,
+    io::BufRead,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use futures::future::LocalBoxFuture;
 use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion, Tool, ToolSpec, WebSearchTool, repository};
@@ -15,43 +20,43 @@ use crate::{
     ws::{EventSender, FrontendEvent, UiState},
 };
 
-pub(crate) struct AppWebSearchTool {
+pub struct AppWebSearchTool {
     inner: WebSearchTool<AppRuntime>,
 }
 
-pub(crate) struct AppReadFileTool {
+pub struct AppReadFileTool {
     inner: repository::ReadFileTool<AppRuntime>,
 }
 
-pub(crate) struct AppGlobPathsTool {
+pub struct AppGlobPathsTool {
     inner: repository::GlobPathsTool<AppRuntime>,
 }
 
-pub(crate) struct AppSearchFilesTool {
+pub struct AppSearchFilesTool {
     inner: repository::SearchFilesTool<AppRuntime>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct AppRuntime {
+pub struct AppRuntime {
     mode: RuntimeMode,
-    project_root: std::path::PathBuf,
+    project_root: PathBuf,
     run_store: RunStore,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum RuntimeMode {
+pub enum RuntimeMode {
     Interactive(EventSender, Arc<UiState>),
     NonInteractive,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct WebSearchConfig {
-    pub(crate) url: String,
-    pub(crate) api_key: Option<String>,
+pub struct WebSearchConfig {
+    pub url: String,
+    pub api_key: Option<String>,
 }
 
 impl AppWebSearchTool {
-    pub(crate) fn new(config: &WebSearchConfig) -> Self {
+    pub fn new(config: &WebSearchConfig) -> Self {
         let mut inner = WebSearchTool::new(config.url.clone());
         if let Some(api_key) = &config.api_key {
             inner = inner.with_api_key(api_key.clone());
@@ -61,7 +66,7 @@ impl AppWebSearchTool {
 }
 
 impl AppReadFileTool {
-    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+    pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             inner: repository::ReadFileTool::new(root),
         }
@@ -69,7 +74,7 @@ impl AppReadFileTool {
 }
 
 impl AppGlobPathsTool {
-    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+    pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             inner: repository::GlobPathsTool::new(root),
         }
@@ -77,7 +82,7 @@ impl AppGlobPathsTool {
 }
 
 impl AppSearchFilesTool {
-    pub(crate) fn new(root: std::path::PathBuf) -> Self {
+    pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             inner: repository::SearchFilesTool::new(root),
         }
@@ -85,7 +90,7 @@ impl AppSearchFilesTool {
 }
 
 impl AppRuntime {
-    pub(crate) fn new(
+    pub fn new(
         event_sender: EventSender,
         ui_state: Arc<UiState>,
         project_root: std::path::PathBuf,
@@ -98,7 +103,7 @@ impl AppRuntime {
         })
     }
 
-    pub(crate) fn new_non_interactive(project_root: std::path::PathBuf) -> Result<Self, AppError> {
+    pub fn new_non_interactive(project_root: std::path::PathBuf) -> Result<Self, AppError> {
         let run_store = RunStore::create(&project_root)?;
         Ok(Self {
             mode: RuntimeMode::NonInteractive,
@@ -135,42 +140,38 @@ impl AppRuntime {
         })
     }
 
-    pub(crate) fn log_info(&self, message: impl Into<String>) -> Result<(), AppError> {
+    pub fn log_info(&self, message: impl Into<String>) -> Result<(), AppError> {
         self.log(Level::INFO, message)
     }
 
-    pub(crate) fn log_warn(&self, message: impl Into<String>) -> Result<(), AppError> {
+    pub fn log_warn(&self, message: impl Into<String>) -> Result<(), AppError> {
         self.log(Level::WARN, message)
     }
 
-    pub(crate) fn log_error(&self, message: impl Into<String>) -> Result<(), AppError> {
+    pub fn log_error(&self, message: impl Into<String>) -> Result<(), AppError> {
         self.log(Level::ERROR, message)
     }
 
-    pub(crate) fn project_root(&self) -> &Path {
+    pub fn project_root(&self) -> &Path {
         &self.project_root
     }
 
-    pub(crate) fn run_id(&self) -> &str {
+    pub fn run_id(&self) -> &str {
         self.run_store.run_id()
     }
 
-    pub(crate) fn run_root(&self) -> &Path {
+    pub fn run_root(&self) -> &Path {
         self.run_store.run_root()
     }
 
-    pub(crate) fn persist_artifact<T>(
-        &self,
-        artifact: RunArtifact,
-        value: &T,
-    ) -> Result<(), AppError>
+    pub fn persist_artifact<T>(&self, artifact: RunArtifact, value: &T) -> Result<(), AppError>
     where
         T: Serialize + ?Sized,
     {
         self.run_store.write_json(artifact, value)
     }
 
-    pub(crate) fn persist_run_summary(&self, summary: &RunSummary) -> Result<(), AppError> {
+    pub fn persist_run_summary(&self, summary: &RunSummary) -> Result<(), AppError> {
         if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
             let mut run_summary = ui_state.run_summary.lock();
             *run_summary = Some(summary.clone());
@@ -180,11 +181,11 @@ impl AppRuntime {
         self.persist_artifact(RunArtifact::RunSummary, summary)
     }
 
-    pub(crate) fn persist_task_card(&self, task_card: &TaskCard) -> Result<(), AppError> {
+    pub fn persist_task_card(&self, task_card: &TaskCard) -> Result<(), AppError> {
         self.run_store.write_task_card(&task_card.id, task_card)
     }
 
-    pub(crate) fn persist_task_result(
+    pub fn persist_task_result(
         &self,
         task_result: &ImplementationItemResult,
     ) -> Result<(), AppError> {
@@ -192,25 +193,25 @@ impl AppRuntime {
             .write_task_result(&task_result.item_id, task_result)
     }
 
-    pub(crate) fn record_assistant_message_delta(&self, delta: &str) {
+    pub fn record_assistant_message_delta(&self, delta: &str) {
         if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
             ui_state.record_assistant_message_delta(delta);
         }
     }
 
-    pub(crate) fn record_assistant_reasoning_delta(&self, delta: &str) {
+    pub fn record_assistant_reasoning_delta(&self, delta: &str) {
         if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
             ui_state.record_assistant_reasoning_delta(delta);
         }
     }
 
-    pub(crate) fn finish_assistant_reasoning(&self) {
+    pub fn finish_assistant_reasoning(&self) {
         if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
             ui_state.finish_assistant_reasoning();
         }
     }
 
-    pub(crate) fn record_assistant_message(&self, text: String) {
+    pub fn record_assistant_message(&self, text: String) {
         if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
             ui_state.record_assistant_message(text);
         }
@@ -256,7 +257,7 @@ impl HumanIO for AppRuntime {
 }
 
 impl WebSearchConfig {
-    pub(crate) fn from_env() -> Option<Self> {
+    pub fn from_env() -> Option<Self> {
         let url = env::var("MMAT_WEB_SEARCH_URL")
             .ok()
             .or_else(|| env::var("WEB_SEARCH_URL").ok())?;

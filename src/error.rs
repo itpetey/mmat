@@ -2,7 +2,7 @@ use naaf_llm::{OpenAiError, WebSearchError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum AppError {
+pub enum AppError {
     #[error("configuration error: {0}")]
     Config(String),
     #[error("the WS channel closed")]

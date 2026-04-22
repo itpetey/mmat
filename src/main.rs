@@ -8,6 +8,7 @@ use std::{
 use clap::Parser;
 use error::AppError;
 use runtime::AppRuntime;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use workflow::run_mmat;
 use ws::{UiState, WsAppBuilder, WsLayer, spawn_event_translator};
 
@@ -83,7 +84,6 @@ async fn run_interactive(cli: &Cli, project_root: PathBuf) -> Result<(), AppErro
 
     let layer = WsLayer::new(sender.clone());
     let translator = spawn_event_translator(event_rx, ui_state.clone());
-    use tracing_subscriber::prelude::*;
     let subscriber = tracing_subscriber::registry().with(layer);
 
     if let Some(debug_log) = &cli.debug_log {
