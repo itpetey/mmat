@@ -46,6 +46,7 @@ pub enum FrontendEvent {
     },
     Log {
         level: tracing::Level,
+        target: String,
         message: String,
     },
     HumanPrompt {
@@ -102,7 +103,7 @@ impl fmt::Display for FrontendEvent {
                 write!(f, "{component} completed: {name}")
             }
             Self::ComponentFailed { component, name } => write!(f, "{component} failed: {name}"),
-            Self::Log { level, message } => write!(f, "[{level}] {message}"),
+            Self::Log { level, message, .. } => write!(f, "[{level}] {message}"),
             Self::HumanPrompt { question, .. } => write!(f, "? {question}"),
             Self::Quit => write!(f, "quit"),
         }

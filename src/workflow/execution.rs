@@ -1,9 +1,12 @@
 use std::{env, path::Path};
 
+use std::sync::Arc;
+
 use naaf_core::{GraphPatch, RunnerRegistry, Workflow};
 use naaf_llm::{
-    CompletionRequest, Executor, ExecutorConfig, HumanIO, HumanQuestion, LlmAgent, Message,
-    OpenAiClient, OpenAiConfig, QuestionTool, RegisterToolError, Tool, ToolRegistry,
+    AssistantMessage, CompletionRequest, Executor, ExecutorConfig, HumanIO, HumanQuestion,
+    LlmAgent, Message, OpenAiClient, OpenAiConfig, OpenAiStreamObserver, QuestionTool,
+    RegisterToolError, Tool, ToolRegistry,
 };
 use naaf_persistence_fs::FsCheckpointer;
 use naaf_workspace::{
@@ -127,10 +130,42 @@ pub fn build_agent(
         config = config.with_organisation(org);
     }
 
-    let client = OpenAiClient::new(config);
+    let client = OpenAiClient::new(config).with_stream_observer(Arc::new(ChatStreamObserver));
     let executor =
         Executor::with_tools(client, tools).with_config(ExecutorConfig::new(EXECUTOR_TURNS));
     Ok(LlmAgent::with_executor(executor))
+}
+
+struct ChatStreamObserver;
+
+impl OpenAiStreamObserver<AppRuntime> for ChatStreamObserver {
+    fn on_content_delta(&self, runtime: &AppRuntime, delta: &str) {
+        runtime.record_assistant_message_delta(delta);
+    }
+
+    fn on_reasoning_delta(&self, runtime: &AppRuntime, delta: &str) {
+        runtime.record_assistant_reasoning_delta(delta);
+    }
+
+    fn on_response_complete(&self, runtime: &AppRuntime, message: &AssistantMessage) {
+        if let Some(content) = visible_assistant_content(message) {
+            runtime.record_assistant_message(content);
+        }
+        runtime.finish_assistant_reasoning();
+    }
+}
+
+fn visible_assistant_content(message: &AssistantMessage) -> Option<String> {
+    let content = message.content.as_deref()?.trim();
+    if content.is_empty() {
+        return None;
+    }
+
+    if content.starts_with('{') || content.starts_with('[') {
+        return None;
+    }
+
+    Some(content.to_string())
 }
 
 pub fn discovery_ready_for_solution(discovery: &crate::models::IntentBrief) -> bool {

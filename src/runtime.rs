@@ -113,7 +113,7 @@ impl AppRuntime {
                 sender.send(event).map_err(|_| AppError::WsClosed)
             }
             RuntimeMode::NonInteractive => {
-                if let FrontendEvent::Log { level, message } = event {
+                if let FrontendEvent::Log { level, message, .. } = event {
                     let level_str = match level {
                         Level::ERROR => "ERROR",
                         Level::WARN => "WARN ",
@@ -130,6 +130,7 @@ impl AppRuntime {
     fn log(&self, level: Level, message: impl Into<String>) -> Result<(), AppError> {
         self.send_event(FrontendEvent::Log {
             level,
+            target: "mmat::runtime".to_string(),
             message: message.into(),
         })
     }
@@ -189,6 +190,30 @@ impl AppRuntime {
     ) -> Result<(), AppError> {
         self.run_store
             .write_task_result(&task_result.item_id, task_result)
+    }
+
+    pub(crate) fn record_assistant_message_delta(&self, delta: &str) {
+        if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
+            ui_state.record_assistant_message_delta(delta);
+        }
+    }
+
+    pub(crate) fn record_assistant_reasoning_delta(&self, delta: &str) {
+        if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
+            ui_state.record_assistant_reasoning_delta(delta);
+        }
+    }
+
+    pub(crate) fn finish_assistant_reasoning(&self) {
+        if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
+            ui_state.finish_assistant_reasoning();
+        }
+    }
+
+    pub(crate) fn record_assistant_message(&self, text: String) {
+        if let RuntimeMode::Interactive(_, ui_state) = &self.mode {
+            ui_state.record_assistant_message(text);
+        }
     }
 }
 

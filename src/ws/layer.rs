@@ -57,6 +57,19 @@ impl WsLayer {
     ) -> Option<SpanInfo> {
         spans.get(&id.into_u64()).cloned()
     }
+
+    fn should_forward_target(target: &str) -> bool {
+        target == env!("CARGO_CRATE_NAME")
+            || target.starts_with(concat!(env!("CARGO_CRATE_NAME"), "::"))
+    }
+
+    fn should_forward_metadata(metadata: &tracing::Metadata<'_>) -> bool {
+        Self::should_forward_target(metadata.target())
+            || matches!(
+                *metadata.level(),
+                tracing::Level::WARN | tracing::Level::ERROR
+            )
+    }
 }
 
 impl<S> Layer<S> for WsLayer
@@ -69,6 +82,10 @@ where
         id: &tracing::span::Id,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
+        if !Self::should_forward_metadata(attrs.metadata()) {
+            return;
+        }
+
         let mut component = None;
         let mut task_name = None;
         let mut task_label = None;
@@ -95,6 +112,10 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        if !Self::should_forward_metadata(event.metadata()) {
+            return;
+        }
+
         let mut action = None;
         let mut attempt: Option<u64> = None;
         let mut accepted = None;
@@ -181,6 +202,7 @@ where
                     if !message.is_empty() {
                         self.send(FrontendEvent::Log {
                             level: *event.metadata().level(),
+                            target: event.metadata().target().to_string(),
                             message,
                         });
                     }
@@ -217,6 +239,7 @@ where
                     if !message.is_empty() {
                         self.send(FrontendEvent::Log {
                             level: *event.metadata().level(),
+                            target: event.metadata().target().to_string(),
                             message,
                         });
                     }
@@ -225,6 +248,7 @@ where
                     if !message.is_empty() {
                         self.send(FrontendEvent::Log {
                             level: *event.metadata().level(),
+                            target: event.metadata().target().to_string(),
                             message,
                         });
                     }
@@ -233,6 +257,7 @@ where
         } else if !message.is_empty() {
             self.send(FrontendEvent::Log {
                 level: *event.metadata().level(),
+                target: event.metadata().target().to_string(),
                 message,
             });
         }
