@@ -1,47 +1,71 @@
 # MMAT
 
-MMAT, short for **Make Me A Thing**, is an interactive planning and implementation tool for repository-based software work.
+MMAT, short for **Make Me A Thing**, is a repository-oriented workflow engine for turning an open-ended software prompt into a structured delivery path.
 
-It opens a browser-based chat UI, asks what you want to build, explores several solution directions with an LLM, asks you to approve the recommended approach, then plans and executes the work in isolated git worktrees before merging validated changes back into your checkout.
+This repository is a rewrite of the previous implementation in `../main/`. The rewrite keeps the broad workflow shape, but changes the architecture substantially:
 
-Today the execution pipeline is opinionated toward Rust projects because the built-in validation steps run Cargo commands.
+- workflow code is grouped by subject under `src/workflow/`, not by generic artefact type,
+- discovery is explicitly live and recursive,
+- knowledge is planned and materialised as first-class workflow state,
+- downstream stages receive only the knowledge groups they actually need.
 
-## What MMAT does
+## Workflow Shape
 
-- Starts with a free-form prompt such as a feature request, refactor, or product idea.
-- Runs a discovery stage over the current repository and, optionally, external web research.
-- Generates three candidate solution branches by default: conservative, recommended, and ambitious.
-- Reconciles those branches into one proposal and asks you to approve it or request revisions.
-- Builds an implementation plan and runs an architect-style review over that plan.
-- Executes implementation items in isolated git worktrees under `.mmat-worktrees`.
-- Validates each item with `cargo fmt --all`, `cargo check`, `cargo test`, and `cargo clippy -- -D warnings`.
-- Runs a final review and, when needed, schedules remediation passes before finishing.
+The rewritten workflow is organised as these stages:
+
+1. Discovery
+2. Knowledge Planning
+3. Knowledge Materialisation
+4. Solution Branch Fan-out
+5. Solution Collect + Recommend + User Choice
+6. Software Architect
+7. Implementation Planning
+8. Execution
+
+The current codebase implements the workflow foundation through the architect handoff boundary.
+
+## Current Implementation
+
+The workflow foundation is implemented as subject-owned modules:
+
+- `src/workflow/discovery/`
+  Live recursive discovery, prompt construction, and per-turn NAAF step building.
+- `src/workflow/knowledge/`
+  Knowledge planning, SQLite-backed metadata persistence, deterministic materialisation, and stage-scoped knowledge sessions.
+- `src/workflow/solutions/`
+  Concurrent conservative, recommended, and ambitious branch generation, collection/recommendation, and live user choice.
+- `src/workflow/architect/`
+  Downstream Software Architect handoff and planning-ready output.
+- `src/runtime/`
+  Runtime interfaces for live human questions and stage prompt scoping without coupling workflow modules to a particular UI transport.
+
+The browser UI and the full execution pipeline are still being rebuilt on top of these contracts.
+
+## Scoped Knowledge
+
+MMAT treats knowledge as explicit workflow state instead of one global prompt attachment.
+
+- Discovery produces a structured handoff.
+- A separate knowledge-planning stage proposes zero or more useful knowledge groups.
+- A deterministic materialisation stage persists knowledge-group metadata via SQLite using `naaf-persistence-sqlite::SqliteKnowledgeGroupStore`.
+- Each downstream stage receives only the materialised groups selected for that stage.
+
+This keeps prompts narrower and makes evidence flow visible across the workflow.
+
+## Upstream NAAF Follow-Ups
+
+This rewrite intentionally records platform-level gaps as upstream NAAF work instead of embedding permanent MMAT-specific workarounds.
+
+- Add first-class web and paper acquisition helpers to `naaf-knowledge`.
+- Add duplicate and near-duplicate detection to `naaf-knowledge` linting and ingestion flows.
 
 ## Requirements
 
 - Rust toolchain
 - Git repository with a valid `HEAD`
-- An OpenAI-compatible API endpoint
 - A sibling checkout of the NAAF repository at `../naaf/main`
 
 MMAT uses path dependencies from `../naaf/main`, so this repository is not currently self-contained.
-
-## Configuration
-
-MMAT reads these environment variables:
-
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `OPENAI_API_KEY` | API key for the LLM endpoint | `lm-studio` |
-| `OPENAI_BASE_URL` | Base URL for an OpenAI-compatible API | `http://127.0.0.1:1234/v1` |
-| `OPENAI_MODEL` | Model name used for all workflow stages | `essentialai/rnj-1` |
-| `OPENAI_ORG_ID` | Optional OpenAI organisation id | unset |
-| `MMAT_WEB_SEARCH_URL` | Optional web search endpoint | unset |
-| `MMAT_WEB_SEARCH_API_KEY` | Optional API key for the web search endpoint | unset |
-| `WEB_SEARCH_URL` | Fallback for `MMAT_WEB_SEARCH_URL` | unset |
-| `WEB_SEARCH_API_KEY` | Fallback for `MMAT_WEB_SEARCH_API_KEY` | unset |
-
-If no web search URL is configured, MMAT still runs, but external research is disabled.
 
 ## Build
 
@@ -59,54 +83,13 @@ cargo build --release
 
 ## Usage
 
-MMAT uses the **current working directory** as the project root it will inspect and modify.
+The current rewrite is primarily exercised through the Rust modules and unit tests in this repository.
 
-If you run `cargo run` inside this repository, MMAT will operate on this repository. If you want to use MMAT on another project, run the built binary from inside that other repository.
-
-### Interactive mode (default)
+To verify the implemented workflow foundation:
 
 ```bash
-cargo run
+cargo test
 ```
-
-This starts a local server and prints a URL to stdout. Open that URL in your browser to interact with MMAT through a chat interface. The server stays running until you press `Ctrl+C`.
-
-To bypass the browser prompt and start a workflow immediately:
-
-```bash
-cargo run -- --prompt "Add a CLI flag to export the generated plan as JSON."
-```
-
-### Non-interactive mode
-
-Use `--prompt` to start a workflow without the browser UI, or `--resume` to continue a previous run:
-
-```bash
-cargo run -- --prompt "Your prompt here"
-cargo run -- --resume .mmat/runs/run-123
-```
-
-To print all run artefact paths after completion:
-
-```bash
-cargo run -- --prompt "Your prompt" --export-artifacts
-```
-
-From there MMAT will:
-
-1. Inspect the repository and build a discovery brief.
-2. Explore three solution branches by default.
-3. Present a reconciled proposal and ask for approval or revisions.
-4. Plan the implementation.
-5. Execute validated changes.
-6. Leave the merged result in your working tree.
-
-## Operational Notes
-
-- MMAT creates temporary worktrees in `.mmat-worktrees` while it is implementing tasks.
-- It copies the current workspace state into those worktrees, so uncommitted local changes are part of the working context.
-- The implementation pipeline assumes Cargo is available and that `cargo fmt`, `cargo check`, `cargo test`, and `cargo clippy` are meaningful for the target repository.
-- The interactive interface is browser-based via a local LiveView server. Use `--prompt` to skip the browser step.
 
 ## Development Checks
 
@@ -117,10 +100,3 @@ cargo fmt --all
 cargo clippy -- -D warnings
 cargo test
 ```
-
-## Horizon
-
-- Track ideas and bugs over time
-- Allow injecting ideas ad hoc with a constant development loop
-- Ability to feed in resources over time - research articles, code snippets etc.
-- Ability to automatically parallelise development using worktrees with a reconcile step to rebase back onto active branch

@@ -1,420 +1,645 @@
-use std::env;
+use std::{fmt::Display, sync::Arc};
 
-use naaf_core::{NeverFinding, Step};
+use naaf_core::Step;
+use naaf_llm::HumanIO;
+use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::{
-    artifacts::RunArtifact,
-    error::AppError,
-    models::{
-        ApprovalRequest, ApprovedContract, ApprovedProposal, ContractApprovalRequest,
-        ContractDraftInput, FinalReview, ImplementationDraft, ImplementationItemResult,
-        ImplementationManagementRequest, ImplementationTaskInput, ImplementationWorklist,
-        ProjectPrompt, StageFinding, ValidationFinding, WorkflowOutcome,
+use self::{
+    architect::{ArchitectAgent, ArchitectInput, ArchitectPlan},
+    discovery::{
+        DiscoveryInput, DiscoveryOutcome, DiscoveryState, DiscoveryTurnAgent, build_turn_step,
+        run_live_discovery,
     },
-    runtime::{AppRuntime, WebSearchConfig},
+    knowledge::{
+        KnowledgeBackend, KnowledgePlan, KnowledgePlanningAgent, KnowledgePlanningInput,
+        MaterialisedKnowledgeGroup, build_knowledge_planning_step, build_materialisation_step,
+        build_stage_knowledge_session,
+    },
+    solutions::{
+        SelectedSolution, SolutionBranchAgent, SolutionCollectAgent, SolutionCollection,
+        SolutionInput, SolutionUserChoice, build_choice_step, build_collect_step,
+        build_solution_generation_step,
+    },
 };
+use crate::runtime::WorkflowRuntime;
 
-mod execution;
-mod graph;
-mod logging;
-mod steps;
-mod tasks;
+pub mod architect;
+pub mod discovery;
+pub mod knowledge;
+pub mod solutions;
 
-type LlmStageError =
-    naaf_llm::AdapterError<AppError, naaf_llm::OpenAiError, AppError, serde_json::Error>;
-
-const DEFAULT_MODEL: &str = "qwen/qwen3.6-35b-a3b";
-const IMPLEMENTATION_RETRY_LIMIT: usize = 3;
-const MAX_DISCOVERY_CLARIFICATION_PASSES: usize = 2;
-const MAX_FINAL_REVIEW_PASSES: usize = 3;
-const WORKFLOW_MAX_CONCURRENCY: usize = 4;
-const WORKTREE_DIR: &str = ".mmat-worktrees";
-
-#[derive(Clone)]
-pub(crate) struct ExecutionGraphSteps {
-    managed_phase:
-        Step<AppRuntime, ImplementationManagementRequest, ManagedPhase, NeverFinding, AppError>,
-    implementation:
-        Step<AppRuntime, ImplementationExecutionInput, ImplementationDraft, StageFinding, AppError>,
-    phase_review: Step<AppRuntime, PhaseExecutionInput, PhaseReviewResult, NeverFinding, AppError>,
-    outcome: Step<AppRuntime, WorkflowOutcome, WorkflowOutcome, NeverFinding, AppError>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowRunResult {
+    ReadyForPlanning {
+        planning: Box<PlanningBoundaryInput>,
+        collected_solutions: SolutionCollection,
+    },
+    NeedsRevision {
+        collected_solutions: SolutionCollection,
+        feedback: String,
+    },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PhaseExecutionInput {
-    phase: ManagedPhase,
-    drafts: Vec<ImplementationDraft>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum WorkflowStageId {
+    Discovery,
+    KnowledgePlanning,
+    KnowledgeMaterialisation,
+    Solutions,
+    SolutionSelection,
+    SoftwareArchitect,
+    ImplementationPlanning,
+    Execution,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PhaseReviewResult {
-    phase: ManagedPhase,
-    completed_items: Vec<ImplementationItemResult>,
-    review: FinalReview,
+#[derive(Debug, Error)]
+pub enum WorkflowError {
+    #[error("human interaction failed: {0}")]
+    Human(String),
+    #[error("discovery failed: {0}")]
+    Discovery(String),
+    #[error("knowledge failed: {0}")]
+    Knowledge(String),
+    #[error("solution failed: {0}")]
+    Solution(String),
+    #[error("architect failed: {0}")]
+    Architect(String),
+    #[error("invalid user choice: {0}")]
+    InvalidChoice(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("serialisation error: {0}")]
+    Serialisation(#[from] serde_json::Error),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PhaseReviewAction {
-    Complete,
-    Remediate,
-    Halt,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunInput {
+    pub prompt: String,
+    pub max_discovery_turns: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ManagedPhase {
-    request: ImplementationManagementRequest,
-    worklist: ImplementationWorklist,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningBoundaryInput {
+    pub discovery: DiscoveryOutcome,
+    pub knowledge_plan: KnowledgePlan,
+    pub materialised_knowledge: Vec<MaterialisedKnowledgeGroup>,
+    pub selected_solution: SelectedSolution,
+    pub architect_plan: ArchitectPlan,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct ImplementationExecutionInput {
-    task: ImplementationTaskInput,
-    worktree_name: String,
+pub struct SubjectWorkflow<R, B> {
+    discovery_step: Step<R, DiscoveryInput, DiscoveryState, (), WorkflowError>,
+    knowledge_planning_step: Step<R, KnowledgePlanningInput, KnowledgePlan, (), WorkflowError>,
+    knowledge_materialisation_step:
+        Step<R, KnowledgePlan, Vec<MaterialisedKnowledgeGroup>, (), WorkflowError>,
+    solution_generation_step:
+        Step<R, SolutionInput, Vec<solutions::SolutionDraft>, (), WorkflowError>,
+    solution_collect_step:
+        Step<R, Vec<solutions::SolutionDraft>, SolutionCollection, (), WorkflowError>,
+    solution_choice_step: Step<R, SolutionCollection, SolutionUserChoice, (), WorkflowError>,
+    architect_step: Step<R, ArchitectInput, ArchitectPlan, (), WorkflowError>,
+    max_discovery_turns: usize,
+    _backend: Arc<B>,
 }
 
-impl From<ValidationFinding> for StageFinding {
-    fn from(value: ValidationFinding) -> Self {
+pub struct SubjectWorkflowDependencies<D, K, S, C, A, B> {
+    pub discovery_agent: Arc<D>,
+    pub knowledge_planner: Arc<K>,
+    pub knowledge_store: Arc<SqliteKnowledgeGroupStore>,
+    pub knowledge_backend: Arc<B>,
+    pub solution_agent: Arc<S>,
+    pub collect_agent: Arc<C>,
+    pub architect_agent: Arc<A>,
+    pub max_discovery_turns: usize,
+}
+
+impl WorkflowStageId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovery => "discovery",
+            Self::KnowledgePlanning => "knowledge-planning",
+            Self::KnowledgeMaterialisation => "knowledge-materialisation",
+            Self::Solutions => "solutions",
+            Self::SolutionSelection => "solution-selection",
+            Self::SoftwareArchitect => "software-architect",
+            Self::ImplementationPlanning => "implementation-planning",
+            Self::Execution => "execution",
+        }
+    }
+
+    pub fn default_system_prompt(self) -> String {
+        match self {
+            Self::Discovery => "You are the discovery stage for MMAT.".to_string(),
+            Self::KnowledgePlanning => "You are the knowledge planning stage for MMAT.".to_string(),
+            Self::KnowledgeMaterialisation => {
+                "You are the knowledge materialisation stage for MMAT.".to_string()
+            }
+            Self::Solutions => "You are the solution generation stage for MMAT.".to_string(),
+            Self::SolutionSelection => "You are the solution selection stage for MMAT.".to_string(),
+            Self::SoftwareArchitect => {
+                "You are the downstream Software Architect stage for MMAT.".to_string()
+            }
+            Self::ImplementationPlanning => {
+                "You are the implementation planning stage for MMAT.".to_string()
+            }
+            Self::Execution => "You are the execution stage for MMAT.".to_string(),
+        }
+    }
+}
+
+impl Display for WorkflowStageId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for WorkflowError {
+    fn from(error: Box<dyn std::error::Error + Send + Sync + 'static>) -> Self {
+        Self::Knowledge(error.to_string())
+    }
+}
+
+impl RunInput {
+    pub fn new(prompt: impl Into<String>) -> Self {
         Self {
-            severity: value.severity,
-            category: value.category,
-            message: value.message,
+            prompt: prompt.into(),
+            max_discovery_turns: 6,
         }
     }
 }
 
-pub(crate) async fn run_mmat(
-    runtime: &AppRuntime,
-    prompt: String,
-) -> Result<WorkflowOutcome, AppError> {
-    let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
-    let web_search = WebSearchConfig::from_env();
-    let search_enabled = web_search.is_some();
-
-    let base_url =
-        env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:1234/v1".to_string());
-
-    runtime.log_info(format!("Using model `{model}` via `{base_url}`."))?;
-    if search_enabled {
-        runtime.log_info("External web research is enabled for this run.")?;
-    } else {
-        runtime.log_warn(
-            "External web research is disabled. Set MMAT_WEB_SEARCH_URL to enable the web_search tool.",
-        )?;
-    }
-
-    let llm_interactive = steps::build_agent(runtime.project_root(), web_search.clone(), true)?;
-    let llm_quiet = steps::build_agent(runtime.project_root(), web_search.clone(), false)?;
-    let discovery_step = Step::builder(tasks::build_discovery_task(
-        &llm_interactive,
-        &model,
-        search_enabled,
-    ))
-    .with_findings::<NeverFinding>()
-    .build();
-    let [conservative_branch, recommended_branch, ambitious_branch] =
-        crate::models::SolutionBranch::default_set();
-    let conservative =
-        tasks::build_solution_branch(&llm_quiet, &model, conservative_branch, search_enabled);
-    let recommended =
-        tasks::build_solution_branch(&llm_quiet, &model, recommended_branch, search_enabled);
-    let ambitious =
-        tasks::build_solution_branch(&llm_quiet, &model, ambitious_branch, search_enabled);
-    let solutions_workflow = conservative
-        .join(recommended)
-        .reconcile_task(tasks::collect_solution_pair_task("collect_default_pair"))
-        .join(ambitious)
-        .reconcile_task(tasks::push_solution_task("add_ambitious_solution"));
-    let reconcile_step = Step::builder(tasks::build_reconcile_task(&llm_interactive, &model))
-        .with_findings::<NeverFinding>()
-        .build();
-    let approval_step = Step::builder(tasks::build_approval_task(&llm_interactive, &model))
-        .with_findings::<NeverFinding>()
-        .build();
-    let contract_step = Step::builder(tasks::build_contract_task(
-        &llm_quiet,
-        &model,
-        search_enabled,
-    ))
-    .with_findings::<NeverFinding>()
-    .build();
-    let contract_approval_step = Step::builder(tasks::build_contract_approval_task(
-        &llm_interactive,
-        &model,
-    ))
-    .with_findings::<NeverFinding>()
-    .build();
-
-    let planning_step = Step::builder(tasks::build_planning_task(
-        &llm_quiet,
-        &model,
-        search_enabled,
-    ))
-    .with_findings::<NeverFinding>()
-    .build();
-    let architect_review_step =
-        Step::builder(tasks::build_architect_review_task(&llm_quiet, &model))
-            .with_findings::<NeverFinding>()
-            .build();
-    let knowledge_step = Step::builder(tasks::build_knowledge_compilation_task(
-        &llm_quiet,
-        &model,
-        search_enabled,
-    ))
-    .with_findings::<NeverFinding>()
-    .build();
-    let execution_steps = ExecutionGraphSteps {
-        implementation: steps::build_implementation_step(&model, web_search.clone())?,
-        managed_phase: steps::build_managed_phase_step(
-            runtime.project_root(),
-            &model,
-            search_enabled,
-            web_search.clone(),
-        )?,
-        phase_review: steps::build_phase_review_step(
-            runtime.project_root(),
-            &model,
-            search_enabled,
-            web_search.clone(),
-        )?,
-        outcome: graph::build_outcome_step(),
-    };
-
-    let mut prompt_context = prompt;
-    let mut clarification_attempt = 0usize;
-
-    loop {
-        execution::write_run_summary(runtime, &prompt_context, "running", "discovery", None)?;
-        let discovery = discovery_step
-            .run(
-                runtime,
-                ProjectPrompt {
-                    raw: prompt_context.clone(),
-                    clarification_attempt,
-                    clarification_limit: MAX_DISCOVERY_CLARIFICATION_PASSES,
-                },
-            )
-            .await
-            .map_err(|error| AppError::Workflow(format!("discovery stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::IntentBrief, &discovery)?;
-        logging::log_discovery_summary(runtime, &discovery)?;
-
-        if !execution::discovery_ready_for_solution(&discovery)
-            && clarification_attempt < MAX_DISCOVERY_CLARIFICATION_PASSES
-        {
-            execution::write_run_summary(
-                runtime,
-                &prompt_context,
-                "awaiting_clarification",
-                "discovery",
-                Some("user clarification"),
-            )?;
-            let clarification =
-                execution::prompt_for_discovery_clarification(runtime, &discovery).await?;
-            prompt_context = execution::append_user_guidance(
-                &prompt_context,
-                "User clarification after discovery",
-                &clarification,
-            );
-            clarification_attempt += 1;
-            continue;
-        }
-
-        if !execution::discovery_ready_for_solution(&discovery) {
-            runtime.log_warn(
-                "Clarification budget exhausted. Proceeding with the recorded best-guess intent brief and defaults.",
-            )?;
-        }
-
-        execution::write_run_summary(
+impl<R, B> SubjectWorkflow<R, B>
+where
+    R: WorkflowRuntime + HumanIO<Error = WorkflowError> + 'static,
+    B: KnowledgeBackend,
+{
+    pub async fn run(
+        &self,
+        runtime: &R,
+        input: RunInput,
+    ) -> Result<WorkflowRunResult, WorkflowError> {
+        let discovery = run_live_discovery(
             runtime,
-            &prompt_context,
-            "running",
-            "knowledge_compilation",
-            None,
-        )?;
-        let repository_knowledge = knowledge_step
-            .run(runtime, discovery.clone())
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!("knowledge compilation failed: {error}"))
-            })?;
-        runtime.persist_artifact(RunArtifact::KnowledgeArtifact, &repository_knowledge)?;
-        logging::log_knowledge_summary(runtime, &repository_knowledge)?;
-
-        execution::write_run_summary(
-            runtime,
-            &prompt_context,
-            "running",
-            "solution_generation",
-            None,
-        )?;
-        let solutions = solutions_workflow
-            .run(runtime, discovery.clone())
-            .await
-            .map_err(|error| AppError::Workflow(format!("solution generation failed: {error}")))?;
-        logging::log_solution_summaries(runtime, &solutions)?;
-
-        let reconciled = reconcile_step
-            .run(runtime, solutions)
-            .await
-            .map_err(|error| AppError::Workflow(format!("reconcile stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ReconciledProposal, &reconciled)?;
-        logging::log_reconciled_summary(runtime, &reconciled)?;
-
-        runtime.log_info(
-            "The next prompt will collect approval, revision notes, or any final constraints.",
-        )?;
-
-        execution::write_run_summary(
-            runtime,
-            &prompt_context,
-            "awaiting_approval",
-            "approval",
-            None,
-        )?;
-        let approval_response = execution::prompt_for_approval(runtime, &reconciled).await?;
-        let approval = approval_step
-            .run(
-                runtime,
-                ApprovalRequest {
-                    proposal: reconciled.clone(),
-                    user_response: approval_response.clone(),
-                },
-            )
-            .await
-            .map_err(|error| AppError::Workflow(format!("approval stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ApprovalOutcome, &approval)?;
-        logging::log_approval_summary(runtime, &approval)?;
-
-        if !execution::approval_granted(&approval) {
-            runtime.log_info(
-                "Revision requested. Returning to discovery with the user's latest guidance.",
-            )?;
-            prompt_context = execution::append_user_guidance(
-                &prompt_context,
-                "User revision after proposal review",
-                &approval_response,
-            );
-            execution::write_run_summary(runtime, &prompt_context, "revising", "discovery", None)?;
-            continue;
-        }
-
-        let approved = ApprovedProposal {
-            proposal: reconciled,
-            approval: approval.clone(),
-        };
-        runtime.log_info("Proposal approved. Forming the project contract.")?;
-
-        execution::write_run_summary(runtime, &prompt_context, "running", "contract", None)?;
-        let contract = contract_step
-            .run(
-                runtime,
-                ContractDraftInput {
-                    intent: discovery.clone(),
-                    approved: approved.clone(),
-                },
-            )
-            .await
-            .map_err(|error| AppError::Workflow(format!("contract stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ProjectContract, &contract)?;
-        logging::log_contract_summary(runtime, &contract)?;
-
-        execution::write_run_summary(
-            runtime,
-            &prompt_context,
-            "awaiting_contract_approval",
-            "contract",
-            None,
-        )?;
-        let contract_response = execution::prompt_for_contract_approval(runtime, &contract).await?;
-        let contract_approval = contract_approval_step
-            .run(
-                runtime,
-                ContractApprovalRequest {
-                    contract: contract.clone(),
-                    user_response: contract_response.clone(),
-                },
-            )
-            .await
-            .map_err(|error| AppError::Workflow(format!("contract approval failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ContractApprovalOutcome, &contract_approval)?;
-        logging::log_contract_approval_summary(runtime, &contract_approval)?;
-
-        if !execution::approval_granted(&contract_approval) {
-            runtime.log_info(
-                "Contract revisions requested. Returning to discovery with the user's latest guidance.",
-            )?;
-            prompt_context = execution::append_user_guidance(
-                &prompt_context,
-                "User revision after contract review",
-                &contract_response,
-            );
-            execution::write_run_summary(runtime, &prompt_context, "revising", "discovery", None)?;
-            continue;
-        }
-
-        let approved_contract = ApprovedContract {
-            approved,
-            contract: contract.clone(),
-            contract_approval: contract_approval.clone(),
-        };
-        runtime.log_info("Contract approved. Starting planning and execution.")?;
-
-        execution::write_run_summary(runtime, &prompt_context, "running", "planning", None)?;
-        let plan = planning_step
-            .run(runtime, approved_contract.clone())
-            .await
-            .map_err(|error| AppError::Workflow(format!("planning stage failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ExecutionPlan, &plan)?;
-        execution::persist_task_cards(runtime, &plan.task_cards)?;
-        logging::log_planning_summary(runtime, &plan)?;
-
-        execution::write_run_summary(
-            runtime,
-            &prompt_context,
-            "running",
-            "architect_review",
-            None,
-        )?;
-        let architect_review = architect_review_step
-            .run(runtime, plan.clone())
-            .await
-            .map_err(|error| AppError::Workflow(format!("architect review failed: {error}")))?;
-        runtime.persist_artifact(RunArtifact::ArchitectReview, &architect_review)?;
-        logging::log_stage_review(runtime, "Architect review", &architect_review)?;
-
-        execution::write_run_summary(runtime, &prompt_context, "running", "implementation", None)?;
-        let outcome = execution::run_dynamic_implementation_workflow(
-            runtime,
-            approved_contract,
-            plan,
-            architect_review,
-            execution_steps.clone(),
+            &self.discovery_step,
+            input.prompt,
+            input.max_discovery_turns.min(self.max_discovery_turns),
         )
         .await?;
 
-        if let Some(final_review) = &outcome.final_review {
-            runtime.persist_artifact(RunArtifact::FinalReview, final_review)?;
+        let knowledge_plan = self
+            .knowledge_planning_step
+            .run(
+                runtime,
+                KnowledgePlanningInput {
+                    discovery: discovery.clone(),
+                },
+            )
+            .await
+            .map_err(|error| {
+                WorkflowError::Knowledge(format!("knowledge planning failed: {error}"))
+            })?;
+
+        let materialised_knowledge = self
+            .knowledge_materialisation_step
+            .run(runtime, knowledge_plan.clone())
+            .await
+            .map_err(|error| {
+                WorkflowError::Knowledge(format!("knowledge materialisation failed: {error}"))
+            })?;
+
+        let solutions_session = build_stage_knowledge_session(
+            runtime,
+            WorkflowStageId::Solutions,
+            &materialised_knowledge,
+        );
+        let solution_input = SolutionInput {
+            discovery: discovery.clone(),
+            knowledge: solutions_session,
+        };
+
+        let drafts = self
+            .solution_generation_step
+            .run(runtime, solution_input)
+            .await
+            .map_err(|error| {
+                WorkflowError::Solution(format!("solution generation failed: {error}"))
+            })?;
+
+        let collected_solutions = self
+            .solution_collect_step
+            .run(runtime, drafts)
+            .await
+            .map_err(|error| {
+                WorkflowError::Solution(format!("solution collection failed: {error}"))
+            })?;
+
+        let user_choice = self
+            .solution_choice_step
+            .run(runtime, collected_solutions.clone())
+            .await
+            .map_err(|error| WorkflowError::Solution(format!("solution choice failed: {error}")))?;
+
+        let selected_solution = match user_choice {
+            SolutionUserChoice::Selected(selected_solution) => selected_solution,
+            SolutionUserChoice::Revise { feedback } => {
+                return Ok(WorkflowRunResult::NeedsRevision {
+                    collected_solutions,
+                    feedback,
+                });
+            }
+        };
+
+        let architect_knowledge = build_stage_knowledge_session(
+            runtime,
+            WorkflowStageId::SoftwareArchitect,
+            &materialised_knowledge,
+        );
+        let architect_plan = self
+            .architect_step
+            .run(
+                runtime,
+                ArchitectInput {
+                    discovery: discovery.clone(),
+                    selected_solution: selected_solution.clone(),
+                    knowledge: architect_knowledge,
+                },
+            )
+            .await
+            .map_err(|error| {
+                WorkflowError::Architect(format!("architect stage failed: {error}"))
+            })?;
+
+        Ok(WorkflowRunResult::ReadyForPlanning {
+            planning: Box::new(PlanningBoundaryInput {
+                discovery,
+                knowledge_plan,
+                materialised_knowledge,
+                selected_solution,
+                architect_plan,
+            }),
+            collected_solutions,
+        })
+    }
+}
+
+pub fn build_subject_workflow<R, D, K, S, C, A, B>(
+    dependencies: SubjectWorkflowDependencies<D, K, S, C, A, B>,
+) -> SubjectWorkflow<R, B>
+where
+    R: WorkflowRuntime + HumanIO<Error = WorkflowError> + 'static,
+    D: DiscoveryTurnAgent<R>,
+    K: KnowledgePlanningAgent<R>,
+    S: SolutionBranchAgent<R>,
+    C: SolutionCollectAgent<R>,
+    A: ArchitectAgent<R>,
+    B: KnowledgeBackend,
+{
+    SubjectWorkflow {
+        discovery_step: build_turn_step(dependencies.discovery_agent),
+        knowledge_planning_step: build_knowledge_planning_step(dependencies.knowledge_planner),
+        knowledge_materialisation_step: build_materialisation_step(
+            dependencies.knowledge_store,
+            dependencies.knowledge_backend.clone(),
+        ),
+        solution_generation_step: build_solution_generation_step(dependencies.solution_agent),
+        solution_collect_step: build_collect_step(dependencies.collect_agent),
+        solution_choice_step: build_choice_step::<R>(),
+        architect_step: architect::build_architect_step(dependencies.architect_agent),
+        max_discovery_turns: dependencies.max_discovery_turns,
+        _backend: dependencies.knowledge_backend,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::VecDeque, sync::Arc};
+
+    use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
+    use parking_lot::Mutex;
+
+    use crate::runtime::ScriptedRuntime;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct StubDiscoveryAgent {
+        states: Mutex<VecDeque<discovery::DiscoveryState>>,
+    }
+
+    impl StubDiscoveryAgent {
+        fn new(states: Vec<discovery::DiscoveryState>) -> Self {
+            Self {
+                states: Mutex::new(states.into()),
+            }
+        }
+    }
+
+    impl discovery::DiscoveryTurnAgent<ScriptedRuntime> for StubDiscoveryAgent {
+        fn run_turn<'a>(
+            &'a self,
+            _runtime: &'a ScriptedRuntime,
+            _input: discovery::DiscoveryInput,
+            _prompt: String,
+        ) -> futures::future::LocalBoxFuture<'a, Result<discovery::DiscoveryState, WorkflowError>>
+        {
+            let state = self
+                .states
+                .lock()
+                .pop_front()
+                .expect("discovery state should exist");
+            Box::pin(async move { Ok(state) })
+        }
+    }
+
+    #[derive(Default)]
+    struct StubKnowledgePlanner;
+
+    impl knowledge::KnowledgePlanningAgent<ScriptedRuntime> for StubKnowledgePlanner {
+        fn plan<'a>(
+            &'a self,
+            _runtime: &'a ScriptedRuntime,
+            _input: knowledge::KnowledgePlanningInput,
+            _prompt: String,
+        ) -> futures::future::LocalBoxFuture<'a, Result<knowledge::KnowledgePlan, WorkflowError>>
+        {
+            Box::pin(async move {
+                Ok(knowledge::KnowledgePlan {
+                    groups: vec![knowledge::KnowledgeGroupPlan {
+                        template: knowledge::KnowledgeGroupTemplate::DiscoveryTranscript,
+                        instance_name: "rewrite".to_string(),
+                        description: "Discovery answers".to_string(),
+                        tags: vec!["rewrite".to_string()],
+                        query_hints: vec!["Use the user's answers".to_string()],
+                        stages: vec![
+                            WorkflowStageId::Solutions,
+                            WorkflowStageId::SoftwareArchitect,
+                        ],
+                        sources: vec![knowledge::KnowledgeSource::discovery_transcript(
+                            "Discovery transcript",
+                            "Use SQLite for metadata.",
+                        )],
+                    }],
+                    upstream_follow_ups: knowledge::UPSTREAM_NAAF_FOLLOW_UPS
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                })
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct StubKnowledgeBackend;
+
+    impl knowledge::KnowledgeBackend for StubKnowledgeBackend {
+        fn initialise_group<'a>(
+            &'a self,
+            _group: &'a knowledge::MaterialisedKnowledgeGroup,
+        ) -> futures::future::LocalBoxFuture<'a, Result<(), WorkflowError>> {
+            Box::pin(async move { Ok(()) })
         }
 
-        let release_assessment =
-            execution::run_release_assessment(runtime, &model, &outcome, web_search.clone())
-                .await?;
-        runtime.persist_artifact(RunArtifact::ReleaseAssessment, &release_assessment)?;
-        logging::log_release_assessment_summary(runtime, &release_assessment)?;
+        fn ingest_source<'a>(
+            &'a self,
+            _group: &'a knowledge::MaterialisedKnowledgeGroup,
+            _source: &'a knowledge::KnowledgeSource,
+        ) -> futures::future::LocalBoxFuture<'a, Result<(), WorkflowError>> {
+            Box::pin(async move { Ok(()) })
+        }
+    }
 
-        let mut final_outcome = outcome;
-        final_outcome.release_assessment = Some(release_assessment);
-        runtime.persist_artifact(RunArtifact::WorkflowOutcome, &final_outcome)?;
-        execution::write_run_summary(
-            runtime,
-            &prompt_context,
-            &final_outcome.status,
-            "completed",
-            Some(&final_outcome.next_step),
-        )?;
+    #[derive(Default)]
+    struct StubSolutionAgent;
 
-        return Ok(final_outcome);
+    impl solutions::SolutionBranchAgent<ScriptedRuntime> for StubSolutionAgent {
+        fn generate<'a>(
+            &'a self,
+            _runtime: &'a ScriptedRuntime,
+            branch: solutions::SolutionBranch,
+            _input: solutions::SolutionInput,
+            _prompt: String,
+        ) -> futures::future::LocalBoxFuture<'a, Result<solutions::SolutionDraft, WorkflowError>>
+        {
+            Box::pin(async move {
+                Ok(solutions::SolutionDraft {
+                    branch,
+                    title: format!("{} path", branch.slug()),
+                    summary: format!("{} summary", branch.slug()),
+                    scope: format!("{} scope", branch.slug()),
+                    architecture: vec![format!("{} architecture", branch.slug())],
+                    delivery_plan: vec![format!("{} plan", branch.slug())],
+                    technologies: vec!["Rust".to_string()],
+                    rationale: format!("{} rationale", branch.slug()),
+                    risks: vec![format!("{} risk", branch.slug())],
+                })
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct StubCollectAgent;
+
+    impl solutions::SolutionCollectAgent<ScriptedRuntime> for StubCollectAgent {
+        fn collect<'a>(
+            &'a self,
+            _runtime: &'a ScriptedRuntime,
+            drafts: Vec<solutions::SolutionDraft>,
+            _prompt: String,
+        ) -> futures::future::LocalBoxFuture<'a, Result<SolutionCollection, WorkflowError>>
+        {
+            Box::pin(async move {
+                Ok(SolutionCollection {
+                    drafts,
+                    recommendation: solutions::SolutionRecommendation {
+                        recommended_branch: Some(solutions::SolutionBranch::Recommended),
+                        recommended_hybrid: None,
+                        rationale: "recommended is the best default".to_string(),
+                    },
+                })
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct StubArchitectAgent;
+
+    impl architect::ArchitectAgent<ScriptedRuntime> for StubArchitectAgent {
+        fn design<'a>(
+            &'a self,
+            _runtime: &'a ScriptedRuntime,
+            _input: architect::ArchitectInput,
+            _prompt: String,
+        ) -> futures::future::LocalBoxFuture<'a, Result<architect::ArchitectPlan, WorkflowError>>
+        {
+            Box::pin(async move {
+                Ok(architect::ArchitectPlan {
+                    summary: "Architect output".to_string(),
+                    architecture_decisions: vec!["Keep stage ownership local".to_string()],
+                    implementation_guidance: vec!["Start with discovery".to_string()],
+                    planning_notes: vec!["Planning-ready".to_string()],
+                    risks: vec!["NAAF follow-up work remains".to_string()],
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_returns_planning_boundary_when_user_selects_a_branch() {
+        let runtime = ScriptedRuntime::new(["Use SQLite", "recommended"])
+            .with_stage_prompt(WorkflowStageId::Solutions, "Solutions prompt")
+            .with_stage_prompt(WorkflowStageId::SoftwareArchitect, "Architect prompt");
+        let store = Arc::new(
+            SqliteKnowledgeGroupStore::open_in_memory().expect("SQLite store should open"),
+        );
+        let workflow = build_subject_workflow(SubjectWorkflowDependencies {
+            discovery_agent: Arc::new(StubDiscoveryAgent::new(vec![
+                discovery::DiscoveryState {
+                    ready_for_solution: false,
+                    problem_statement: "Rewrite MMAT".to_string(),
+                    goals: vec!["Keep workflow shape".to_string()],
+                    constraints: vec![],
+                    assumptions: vec![],
+                    risks: vec!["Architecture drift".to_string()],
+                    notes: vec![],
+                    recommended_path: "Clarify persistence".to_string(),
+                    open_questions: vec![discovery::DiscoveryQuestion {
+                        prompt: "What should store knowledge metadata?".to_string(),
+                        choices: vec!["SQLite".to_string(), "Filesystem".to_string()],
+                    }],
+                },
+                discovery::DiscoveryState {
+                    ready_for_solution: true,
+                    problem_statement: "Rewrite MMAT".to_string(),
+                    goals: vec!["Keep workflow shape".to_string()],
+                    constraints: vec!["SQLite metadata".to_string()],
+                    assumptions: vec!["Live-only questions are acceptable".to_string()],
+                    risks: vec!["NAAF gaps remain".to_string()],
+                    notes: vec![],
+                    recommended_path: "Generate branches".to_string(),
+                    open_questions: vec![],
+                },
+            ])),
+            knowledge_planner: Arc::new(StubKnowledgePlanner),
+            knowledge_store: store,
+            knowledge_backend: Arc::new(StubKnowledgeBackend),
+            solution_agent: Arc::new(StubSolutionAgent),
+            collect_agent: Arc::new(StubCollectAgent),
+            architect_agent: Arc::new(StubArchitectAgent),
+            max_discovery_turns: 4,
+        });
+
+        let result = workflow
+            .run(&runtime, RunInput::new("Rewrite MMAT"))
+            .await
+            .expect("workflow should succeed");
+
+        match result {
+            WorkflowRunResult::ReadyForPlanning { planning, .. } => {
+                assert_eq!(planning.selected_solution.choice_label, "recommended");
+                assert_eq!(planning.materialised_knowledge.len(), 1);
+                assert_eq!(planning.architect_plan.summary, "Architect output");
+            }
+            other => panic!("expected planning boundary, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_routes_revision_feedback_without_running_architect() {
+        let runtime = ScriptedRuntime::new(["Use SQLite", "revise: keep the solution smaller"]);
+        let store = Arc::new(
+            SqliteKnowledgeGroupStore::open_in_memory().expect("SQLite store should open"),
+        );
+        let workflow = build_subject_workflow(SubjectWorkflowDependencies {
+            discovery_agent: Arc::new(StubDiscoveryAgent::new(vec![
+                discovery::DiscoveryState {
+                    ready_for_solution: false,
+                    problem_statement: "Rewrite MMAT".to_string(),
+                    goals: vec![],
+                    constraints: vec![],
+                    assumptions: vec![],
+                    risks: vec![],
+                    notes: vec![],
+                    recommended_path: "Clarify persistence".to_string(),
+                    open_questions: vec![discovery::DiscoveryQuestion {
+                        prompt: "What should store knowledge metadata?".to_string(),
+                        choices: vec!["SQLite".to_string(), "Filesystem".to_string()],
+                    }],
+                },
+                discovery::DiscoveryState {
+                    ready_for_solution: true,
+                    problem_statement: "Rewrite MMAT".to_string(),
+                    goals: vec![],
+                    constraints: vec!["SQLite metadata".to_string()],
+                    assumptions: vec![],
+                    risks: vec![],
+                    notes: vec![],
+                    recommended_path: "Generate branches".to_string(),
+                    open_questions: vec![],
+                },
+            ])),
+            knowledge_planner: Arc::new(StubKnowledgePlanner),
+            knowledge_store: store,
+            knowledge_backend: Arc::new(StubKnowledgeBackend),
+            solution_agent: Arc::new(StubSolutionAgent),
+            collect_agent: Arc::new(StubCollectAgent),
+            architect_agent: Arc::new(StubArchitectAgent),
+            max_discovery_turns: 4,
+        });
+
+        let result = workflow
+            .run(&runtime, RunInput::new("Rewrite MMAT"))
+            .await
+            .expect("workflow should succeed");
+
+        assert_eq!(
+            result,
+            WorkflowRunResult::NeedsRevision {
+                collected_solutions: SolutionCollection {
+                    drafts: vec![
+                        solutions::SolutionDraft {
+                            branch: solutions::SolutionBranch::Conservative,
+                            title: "conservative path".to_string(),
+                            summary: "conservative summary".to_string(),
+                            scope: "conservative scope".to_string(),
+                            architecture: vec!["conservative architecture".to_string()],
+                            delivery_plan: vec!["conservative plan".to_string()],
+                            technologies: vec!["Rust".to_string()],
+                            rationale: "conservative rationale".to_string(),
+                            risks: vec!["conservative risk".to_string()],
+                        },
+                        solutions::SolutionDraft {
+                            branch: solutions::SolutionBranch::Recommended,
+                            title: "recommended path".to_string(),
+                            summary: "recommended summary".to_string(),
+                            scope: "recommended scope".to_string(),
+                            architecture: vec!["recommended architecture".to_string()],
+                            delivery_plan: vec!["recommended plan".to_string()],
+                            technologies: vec!["Rust".to_string()],
+                            rationale: "recommended rationale".to_string(),
+                            risks: vec!["recommended risk".to_string()],
+                        },
+                        solutions::SolutionDraft {
+                            branch: solutions::SolutionBranch::Ambitious,
+                            title: "ambitious path".to_string(),
+                            summary: "ambitious summary".to_string(),
+                            scope: "ambitious scope".to_string(),
+                            architecture: vec!["ambitious architecture".to_string()],
+                            delivery_plan: vec!["ambitious plan".to_string()],
+                            technologies: vec!["Rust".to_string()],
+                            rationale: "ambitious rationale".to_string(),
+                            risks: vec!["ambitious risk".to_string()],
+                        },
+                    ],
+                    recommendation: solutions::SolutionRecommendation {
+                        recommended_branch: Some(solutions::SolutionBranch::Recommended),
+                        recommended_hybrid: None,
+                        rationale: "recommended is the best default".to_string(),
+                    },
+                },
+                feedback: "revise: keep the solution smaller".to_string(),
+            }
+        );
     }
 }
