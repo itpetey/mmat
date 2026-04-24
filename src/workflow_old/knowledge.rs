@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::future::LocalBoxFuture;
-use naaf_core::{Step, TaskExt, task_fn};
+use naaf_core::{Attempt, RetryPolicy, Step, TaskExt, check_fn, repair_fn, task_fn};
 use naaf_knowledge::ingest::{ingest_content, ingest_directory, ingest_file};
 use naaf_knowledge::{
     KnowledgeGroup, KnowledgeGroupStore, KnowledgePromptConfig, SourceInfo, SourceType,
@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::{
     runtime::StagePromptProvider,
-    workflow::{WorkflowError, WorkflowStageId, discovery::DiscoveryOutcome},
+    workflow_old::{WorkflowError, WorkflowStageId, discovery::DiscoveryOutcome},
 };
 
 pub const UPSTREAM_NAAF_FOLLOW_UPS: &[&str] = &[
@@ -105,6 +105,9 @@ pub enum KnowledgeSourceKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KnowledgePlanningInput {
     pub discovery: DiscoveryOutcome,
+    pub turn: usize,
+    pub findings: Vec<KnowledgePlanningFinding>,
+    pub prior_plan: Option<KnowledgePlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +115,22 @@ pub struct StageKnowledgeSession {
     pub stage: WorkflowStageId,
     pub system_prompt: String,
     pub group_collections: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgePlanningTurn {
+    pub input: KnowledgePlanningInput,
+    pub plan: KnowledgePlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KnowledgePlanningFinding {
+    EmptyPlan,
+    DuplicateCollectionName(String),
+    GroupWithoutStages(String),
+    GroupWithoutSources(String),
+    MissingDiscoveryTranscript,
+    MissingStageCoverage(WorkflowStageId),
 }
 
 #[allow(dead_code)]
@@ -170,6 +189,41 @@ impl KnowledgeGroupTemplate {
             Self::DiscoveryTranscript => "Clarifications and intent captured during discovery.",
             Self::WebResearch => "Externally gathered web research relevant to the change.",
             Self::Papers => "Paper and long-form research material relevant to the change.",
+        }
+    }
+}
+
+impl KnowledgePlanningInput {
+    pub fn new(discovery: DiscoveryOutcome) -> Self {
+        Self {
+            discovery,
+            turn: 0,
+            findings: Vec::new(),
+            prior_plan: None,
+        }
+    }
+}
+
+impl KnowledgePlanningFinding {
+    pub fn description(&self) -> String {
+        match self {
+            Self::EmptyPlan => "knowledge plan produced no groups".to_string(),
+            Self::DuplicateCollectionName(collection) => {
+                format!("knowledge plan generated a colliding collection name `{collection}`")
+            }
+            Self::GroupWithoutStages(group) => {
+                format!("knowledge group `{group}` is not scoped to any downstream stage")
+            }
+            Self::GroupWithoutSources(group) => {
+                format!("knowledge group `{group}` has no sources")
+            }
+            Self::MissingDiscoveryTranscript => {
+                "knowledge plan omitted a discovery transcript despite discovery answers being present"
+                    .to_string()
+            }
+            Self::MissingStageCoverage(stage) => {
+                format!("knowledge plan does not cover the `{stage}` stage")
+            }
         }
     }
 }
@@ -372,6 +426,7 @@ pub fn build_knowledge_planning_prompt(input: &KnowledgePlanningInput) -> String
     let state = &input.discovery.state;
     let mut lines = vec![
         "Plan the minimum useful knowledge groups for downstream MMAT stages.".to_string(),
+        format!("Planning turn: {}", input.turn + 1),
         format!("Problem statement: {}", state.problem_statement),
         format!("Recommended path: {}", state.recommended_path),
     ];
@@ -395,6 +450,41 @@ pub fn build_knowledge_planning_prompt(input: &KnowledgePlanningInput) -> String
         );
     }
 
+    if let Some(prior_plan) = &input.prior_plan {
+        lines.push(String::new());
+        lines.push("Prior knowledge plan:".to_string());
+        lines.extend(prior_plan.groups.iter().map(|group| {
+            format!(
+                "- {} / {} => stages: {} ; sources: {}",
+                group.template.slug(),
+                group.instance_name,
+                group
+                    .stages
+                    .iter()
+                    .map(|stage| stage.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                group
+                    .sources
+                    .iter()
+                    .map(|source| source.label.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }));
+    }
+
+    if !input.findings.is_empty() {
+        lines.push(String::new());
+        lines.push("Validation findings to address:".to_string());
+        lines.extend(
+            input
+                .findings
+                .iter()
+                .map(|finding| format!("- {}", finding.description())),
+        );
+    }
+
     lines.push(
         "Only propose knowledge groups that a later stage will actually need, and record any platform-level NAAF follow-up work explicitly."
             .to_string(),
@@ -402,9 +492,85 @@ pub fn build_knowledge_planning_prompt(input: &KnowledgePlanningInput) -> String
     lines.join("\n")
 }
 
+fn validate_knowledge_plan(turn: &KnowledgePlanningTurn) -> Vec<KnowledgePlanningFinding> {
+    let mut findings = Vec::new();
+    let plan = &turn.plan;
+
+    if plan.groups.is_empty() {
+        findings.push(KnowledgePlanningFinding::EmptyPlan);
+    }
+
+    let mut seen_collections = BTreeSet::new();
+    let mut covered_stages = BTreeSet::new();
+    let has_discovery_transcript = plan
+        .groups
+        .iter()
+        .flat_map(|group| group.sources.iter())
+        .any(|source| matches!(source.kind, KnowledgeSourceKind::DiscoveryTranscript));
+
+    for group in &plan.groups {
+        let collection = sanitise_collection_name(group.template.slug(), &group.instance_name);
+        if !seen_collections.insert(collection.clone()) {
+            findings.push(KnowledgePlanningFinding::DuplicateCollectionName(
+                collection,
+            ));
+        }
+
+        if group.stages.is_empty() {
+            findings.push(KnowledgePlanningFinding::GroupWithoutStages(
+                group.instance_name.clone(),
+            ));
+        } else {
+            covered_stages.extend(group.stages.iter().copied());
+        }
+
+        if group.sources.is_empty() {
+            findings.push(KnowledgePlanningFinding::GroupWithoutSources(
+                group.instance_name.clone(),
+            ));
+        }
+    }
+
+    if !turn.input.discovery.answers.is_empty() && !has_discovery_transcript {
+        findings.push(KnowledgePlanningFinding::MissingDiscoveryTranscript);
+    }
+
+    for stage in [
+        WorkflowStageId::Solutions,
+        WorkflowStageId::SoftwareArchitect,
+    ] {
+        if !covered_stages.contains(&stage) {
+            findings.push(KnowledgePlanningFinding::MissingStageCoverage(stage));
+        }
+    }
+
+    findings
+}
+
+fn plan_next_knowledge_input<R>(
+    _runtime: &R,
+    attempts: Vec<Attempt<KnowledgePlanningInput, KnowledgePlanningTurn, KnowledgePlanningFinding>>,
+) -> LocalBoxFuture<'_, Result<KnowledgePlanningInput, WorkflowError>>
+where
+    R: 'static,
+{
+    Box::pin(async move {
+        let latest_attempt = attempts
+            .last()
+            .expect("knowledge planning repair requires an attempt");
+        Ok(KnowledgePlanningInput {
+            discovery: latest_attempt.artefact.input.discovery.clone(),
+            turn: latest_attempt.artefact.input.turn + 1,
+            findings: latest_attempt.findings.clone(),
+            prior_plan: Some(latest_attempt.artefact.plan.clone()),
+        })
+    })
+}
+
 pub fn build_knowledge_planning_step<R: 'static, A>(
     agent: Arc<A>,
-) -> Step<R, KnowledgePlanningInput, KnowledgePlan, (), WorkflowError>
+    retry_policy: RetryPolicy,
+) -> Step<R, KnowledgePlanningInput, KnowledgePlanningTurn, KnowledgePlanningFinding, WorkflowError>
 where
     A: KnowledgePlanningAgent<R>,
 {
@@ -412,11 +578,20 @@ where
         task_fn(move |runtime: &R, input: KnowledgePlanningInput| {
             let prompt = build_knowledge_planning_prompt(&input);
             let agent = agent.clone();
-            Box::pin(async move { agent.plan(runtime, input, prompt).await })
+            Box::pin(async move {
+                let plan = agent.plan(runtime, input.clone(), prompt).await?;
+                Ok(KnowledgePlanningTurn { input, plan })
+            })
         })
         .observed_as("knowledge_planning"),
     )
-    .with_findings::<()>()
+    .validate(check_fn(|_runtime: &R, turn: KnowledgePlanningTurn| {
+        Box::pin(async move { Ok(validate_knowledge_plan(&turn)) })
+    }))
+    .repair_with(repair_fn(|runtime: &R, attempts| {
+        plan_next_knowledge_input(runtime, attempts)
+    }))
+    .retry_policy(retry_policy)
     .build()
 }
 
@@ -639,6 +814,8 @@ fn sanitise_collection_name(template_slug: &str, instance_name: &str) -> String 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use parking_lot::Mutex;
 
     use crate::runtime::ScriptedRuntime;
@@ -682,9 +859,44 @@ mod tests {
         }
     }
 
+    struct StubKnowledgePlanner {
+        plans: Mutex<VecDeque<KnowledgePlan>>,
+        prompts: Mutex<Vec<String>>,
+    }
+
+    impl StubKnowledgePlanner {
+        fn new(plans: Vec<KnowledgePlan>) -> Self {
+            Self {
+                plans: Mutex::new(plans.into()),
+                prompts: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.prompts.lock().clone()
+        }
+    }
+
+    impl KnowledgePlanningAgent<ScriptedRuntime> for StubKnowledgePlanner {
+        fn plan<'a>(
+            &'a self,
+            _runtime: &'a ScriptedRuntime,
+            _input: KnowledgePlanningInput,
+            prompt: String,
+        ) -> LocalBoxFuture<'a, Result<KnowledgePlan, WorkflowError>> {
+            self.prompts.lock().push(prompt);
+            let plan = self
+                .plans
+                .lock()
+                .pop_front()
+                .expect("stub knowledge plan should exist");
+            Box::pin(async move { Ok(plan) })
+        }
+    }
+
     fn sample_discovery() -> DiscoveryOutcome {
         DiscoveryOutcome {
-            state: crate::workflow::discovery::DiscoveryState {
+            state: crate::workflow_old::discovery::DiscoveryState {
                 ready_for_solution: true,
                 problem_statement: "Rewrite MMAT".to_string(),
                 goals: vec!["Keep stages readable".to_string()],
@@ -695,10 +907,42 @@ mod tests {
                 recommended_path: "Plan knowledge, then branch".to_string(),
                 open_questions: Vec::new(),
             },
-            answers: vec![crate::workflow::discovery::DiscoveryAnswer {
+            answers: vec![crate::workflow_old::discovery::DiscoveryAnswer {
                 question: "How should knowledge metadata be stored?".to_string(),
                 answer: "SQLite".to_string(),
             }],
+        }
+    }
+
+    fn valid_knowledge_plan() -> KnowledgePlan {
+        KnowledgePlan {
+            groups: vec![
+                KnowledgeGroupPlan {
+                    template: KnowledgeGroupTemplate::DiscoveryTranscript,
+                    instance_name: "rewrite-answers".to_string(),
+                    description: "Discovery clarifications for the rewrite".to_string(),
+                    tags: vec!["rewrite".to_string()],
+                    query_hints: vec!["Use the user's constraints directly".to_string()],
+                    stages: vec![WorkflowStageId::Solutions],
+                    sources: vec![KnowledgeSource::discovery_transcript(
+                        "Discovery transcript",
+                        "User chose SQLite for metadata.",
+                    )],
+                },
+                KnowledgeGroupPlan {
+                    template: KnowledgeGroupTemplate::WorkspaceCode,
+                    instance_name: "repo".to_string(),
+                    description: "Repository code for architect follow-through".to_string(),
+                    tags: vec!["code".to_string()],
+                    query_hints: vec!["Use the repository structure".to_string()],
+                    stages: vec![WorkflowStageId::SoftwareArchitect],
+                    sources: vec![KnowledgeSource::inline_markdown(
+                        "Repo summary",
+                        "Workflow code facts",
+                    )],
+                },
+            ],
+            upstream_follow_ups: Vec::new(),
         }
     }
 
@@ -814,13 +1058,58 @@ mod tests {
 
     #[test]
     fn knowledge_planning_prompt_records_discovery_context() {
-        let prompt = build_knowledge_planning_prompt(&KnowledgePlanningInput {
-            discovery: sample_discovery(),
-        });
+        let prompt =
+            build_knowledge_planning_prompt(&KnowledgePlanningInput::new(sample_discovery()));
 
         assert!(prompt.contains("Rewrite MMAT"));
         assert!(prompt.contains("Use SQLite"));
         assert!(prompt.contains("How should knowledge metadata be stored? => SQLite"));
+    }
+
+    #[tokio::test]
+    async fn knowledge_planning_step_retries_with_validation_findings() {
+        let runtime = ScriptedRuntime::new(std::iter::empty::<String>());
+        let planner = Arc::new(StubKnowledgePlanner::new(vec![
+            KnowledgePlan {
+                groups: vec![KnowledgeGroupPlan {
+                    template: KnowledgeGroupTemplate::WorkspaceCode,
+                    instance_name: "repo".to_string(),
+                    description: String::new(),
+                    tags: vec!["code".to_string()],
+                    query_hints: vec![],
+                    stages: vec![WorkflowStageId::Solutions],
+                    sources: vec![KnowledgeSource::inline_markdown(
+                        "Repo summary",
+                        "Workflow code facts",
+                    )],
+                }],
+                upstream_follow_ups: Vec::new(),
+            },
+            valid_knowledge_plan(),
+        ]));
+        let step = build_knowledge_planning_step(planner.clone(), RetryPolicy::new(3));
+
+        let traced = step
+            .run_traced(&runtime, KnowledgePlanningInput::new(sample_discovery()))
+            .await
+            .expect("knowledge planning should recover");
+
+        assert_eq!(traced.report().attempt_count(), 2);
+        assert_eq!(
+            traced.report().attempts()[0].findings,
+            vec![
+                KnowledgePlanningFinding::MissingDiscoveryTranscript,
+                KnowledgePlanningFinding::MissingStageCoverage(WorkflowStageId::SoftwareArchitect,),
+            ]
+        );
+        assert!(traced.report().attempts()[1].accepted());
+        assert!(
+            planner
+                .prompts()
+                .last()
+                .expect("second planning prompt should exist")
+                .contains("knowledge plan omitted a discovery transcript")
+        );
     }
 
     #[tokio::test]

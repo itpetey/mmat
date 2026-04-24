@@ -1,37 +1,22 @@
-use std::sync::Arc;
+use std::fmt::Display;
 
-use futures::future::LocalBoxFuture;
-use naaf_core::{Step, TaskExt, task_fn};
+use naaf_core::Attempt;
 use naaf_llm::{HumanIO, HumanQuestion};
 use serde::{Deserialize, Serialize};
 
-use crate::workflow::WorkflowError;
-
-pub trait DiscoveryTurnAgent<R>: Send + Sync + 'static {
-    fn run_turn<'a>(
-        &'a self,
-        runtime: &'a R,
-        input: DiscoveryInput,
-        prompt: String,
-    ) -> LocalBoxFuture<'a, Result<DiscoveryState, WorkflowError>>;
-}
+pub const MODEL: &str = "gpt-5.5";
+pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryInput {
-    pub initial_prompt: String,
-    pub turn: usize,
-    pub answers: Vec<DiscoveryAnswer>,
-    pub prior_state: Option<DiscoveryState>,
+    initial_prompt: String,
+    answers: Vec<DiscoveryAnswer>,
+    findings: Vec<DiscoveryFinding>,
+    last_output: Option<DiscoveryOutput>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryOutcome {
-    pub state: DiscoveryState,
-    pub answers: Vec<DiscoveryAnswer>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryState {
+pub struct DiscoveryOutput {
     pub ready_for_solution: bool,
     pub problem_statement: String,
     pub goals: Vec<String>,
@@ -44,36 +29,44 @@ pub struct DiscoveryState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryQuestion {
+    pub prompt: String,
+    pub choices: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryAnswer {
     pub question: String,
     pub answer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryQuestion {
-    pub prompt: String,
-    pub choices: Vec<String>,
+pub enum DiscoveryFinding {
+    MissingProblemStatement,
+    MissingGoals,
+    MissingConstraints,
+    UnresolvedBlockingAmbiguity,
+    NoClarificationQuestions,
 }
 
-impl DiscoveryInput {
-    pub fn new(initial_prompt: impl Into<String>) -> Self {
-        Self {
-            initial_prompt: initial_prompt.into(),
-            turn: 0,
-            answers: Vec::new(),
-            prior_state: None,
+impl Display for DiscoveryFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingProblemStatement => write!(f, "missing problem statement"),
+            Self::MissingGoals => write!(f, "missing goals"),
+            Self::MissingConstraints => write!(f, "missing constraints"),
+            Self::UnresolvedBlockingAmbiguity => write!(f, "unresolved blocking ambiguity"),
+            Self::NoClarificationQuestions => {
+                write!(f, "no clarification questions despite not being ready")
+            }
         }
     }
 }
 
-pub fn build_discovery_prompt(input: &DiscoveryInput) -> String {
-    let mut lines = vec![
-        "You are the discovery stage for MMAT.".to_string(),
-        format!("Initial prompt: {}", input.initial_prompt),
-        format!("Discovery turn: {}", input.turn + 1),
-    ];
+pub fn build_prompt(input: DiscoveryInput) -> String {
+    let mut lines = vec![format!("Initial prompt: {}", input.initial_prompt)];
 
-    if let Some(prior_state) = &input.prior_state {
+    if let Some(prior_state) = &input.last_output {
         lines.push(String::new());
         lines.push("Current understanding:".to_string());
         lines.push(format!(
@@ -93,6 +86,17 @@ pub fn build_discovery_prompt(input: &DiscoveryInput) -> String {
         }
     }
 
+    if !input.findings.is_empty() {
+        lines.push(String::new());
+        lines.push("Validation findings to address in this turn:".to_string());
+        lines.extend(
+            input
+                .findings
+                .iter()
+                .map(|finding| format!("- {}", finding)),
+        );
+    }
+
     if !input.answers.is_empty() {
         lines.push(String::new());
         lines.push("Answered clarifications:".to_string());
@@ -109,225 +113,77 @@ pub fn build_discovery_prompt(input: &DiscoveryInput) -> String {
         "Return the next structured discovery state, including explicit uncertainty and any remaining high-value questions."
             .to_string(),
     );
+    lines.push(
+        "Only mark ready_for_solution true when the hand-off is complete enough for solution generation without blocking ambiguity."
+            .to_string(),
+    );
 
     lines.join("\n")
 }
 
-pub fn build_turn_step<R: 'static, A>(
-    agent: Arc<A>,
-) -> Step<R, DiscoveryInput, DiscoveryState, (), WorkflowError>
-where
-    A: DiscoveryTurnAgent<R>,
-{
-    Step::builder(
-        task_fn(move |runtime: &R, input: DiscoveryInput| {
-            let agent = agent.clone();
-            let prompt = build_discovery_prompt(&input);
-            Box::pin(async move { agent.run_turn(runtime, input, prompt).await })
-        })
-        .observed_as("discovery_turn"),
-    )
-    .with_findings::<()>()
-    .build()
+pub fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
+    let mut findings = Vec::new();
+
+    if output.problem_statement.trim().is_empty() {
+        findings.push(DiscoveryFinding::MissingProblemStatement);
+    }
+
+    if output.goals.iter().any(|item| !item.trim().is_empty()) {
+        findings.push(DiscoveryFinding::MissingGoals);
+    }
+
+    if output
+        .constraints
+        .iter()
+        .any(|item| !item.trim().is_empty())
+    {
+        findings.push(DiscoveryFinding::MissingConstraints);
+    }
+
+    if !output.ready_for_solution || !output.open_questions.is_empty() {
+        findings.push(DiscoveryFinding::UnresolvedBlockingAmbiguity);
+    }
+
+    if !output.ready_for_solution && output.open_questions.is_empty() {
+        findings.push(DiscoveryFinding::NoClarificationQuestions);
+    }
+
+    findings
 }
 
-pub async fn run_live_discovery<R>(
+pub async fn repair<R>(
     runtime: &R,
-    step: &Step<R, DiscoveryInput, DiscoveryState, (), WorkflowError>,
-    initial_prompt: impl Into<String>,
-    max_turns: usize,
-) -> Result<DiscoveryOutcome, WorkflowError>
+    attempts: Vec<Attempt<DiscoveryInput, DiscoveryOutput, DiscoveryFinding>>,
+) -> Result<DiscoveryInput, R::Error>
 where
-    R: HumanIO<Error = WorkflowError> + 'static,
+    R: HumanIO + 'static,
 {
-    let mut input = DiscoveryInput::new(initial_prompt);
+    let latest_attempt = attempts
+        .last()
+        .expect("discovery repair requires an attempt");
+    let mut answers = latest_attempt.input.answers.clone();
 
-    for turn in 0..max_turns {
-        input.turn = turn;
-        let state = step.run(runtime, input.clone()).await.map_err(|error| {
-            WorkflowError::Discovery(format!("discovery step execution failed: {error}"))
-        })?;
-
-        if state.ready_for_solution {
-            return Ok(DiscoveryOutcome {
-                state,
-                answers: input.answers,
-            });
-        }
-
-        if state.open_questions.is_empty() {
-            return Err(WorkflowError::Discovery(
-                "discovery is not solution-ready and produced no further questions".to_string(),
-            ));
-        }
-
-        let mut answers = input.answers.clone();
-        for question in &state.open_questions {
-            let reply = runtime
-                .ask(HumanQuestion {
-                    question: question.prompt.clone(),
-                    choices: if question.choices.is_empty() {
-                        None
-                    } else {
-                        Some(question.choices.clone())
-                    },
-                })
-                .await?;
-            answers.push(DiscoveryAnswer {
+    for question in &latest_attempt.output.open_questions {
+        let reply = runtime
+            .ask(HumanQuestion {
                 question: question.prompt.clone(),
-                answer: reply.content,
-            });
-        }
-
-        input = DiscoveryInput {
-            initial_prompt: input.initial_prompt.clone(),
-            turn: turn + 1,
-            answers,
-            prior_state: Some(state),
-        };
-    }
-
-    Err(WorkflowError::Discovery(format!(
-        "discovery exceeded the configured turn budget of {max_turns}"
-    )))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{collections::VecDeque, sync::Arc};
-
-    use parking_lot::Mutex;
-
-    use crate::runtime::ScriptedRuntime;
-
-    use super::*;
-
-    #[derive(Default)]
-    struct StubDiscoveryAgent {
-        states: Mutex<VecDeque<DiscoveryState>>,
-        prompts: Mutex<Vec<String>>,
-    }
-
-    impl StubDiscoveryAgent {
-        fn new(states: Vec<DiscoveryState>) -> Self {
-            Self {
-                states: Mutex::new(states.into()),
-                prompts: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn prompts(&self) -> Vec<String> {
-            self.prompts.lock().clone()
-        }
-    }
-
-    impl DiscoveryTurnAgent<ScriptedRuntime> for StubDiscoveryAgent {
-        fn run_turn<'a>(
-            &'a self,
-            _runtime: &'a ScriptedRuntime,
-            _input: DiscoveryInput,
-            prompt: String,
-        ) -> LocalBoxFuture<'a, Result<DiscoveryState, WorkflowError>> {
-            self.prompts.lock().push(prompt);
-            let state = self
-                .states
-                .lock()
-                .pop_front()
-                .expect("stub discovery state should exist");
-            Box::pin(async move { Ok(state) })
-        }
-    }
-
-    fn ready_state() -> DiscoveryState {
-        DiscoveryState {
-            ready_for_solution: true,
-            problem_statement: "Build a workflow rewrite".to_string(),
-            goals: vec!["Preserve the workflow shape".to_string()],
-            constraints: vec!["Use scoped knowledge".to_string()],
-            assumptions: vec!["Live questions are acceptable".to_string()],
-            risks: vec!["Architecture drift".to_string()],
-            notes: vec!["Discovery complete".to_string()],
-            recommended_path: "Generate solution branches".to_string(),
-            open_questions: Vec::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn live_discovery_reuses_prior_answers_and_reaches_ready_state() {
-        let runtime = ScriptedRuntime::new(["Use SQLite for metadata"]);
-        let agent = Arc::new(StubDiscoveryAgent::new(vec![
-            DiscoveryState {
-                ready_for_solution: false,
-                problem_statement: "Rewrite MMAT".to_string(),
-                goals: vec!["Keep the workflow shape".to_string()],
-                constraints: Vec::new(),
-                assumptions: Vec::new(),
-                risks: vec!["Prompt overload".to_string()],
-                notes: Vec::new(),
-                recommended_path: "Clarify persistence".to_string(),
-                open_questions: vec![DiscoveryQuestion {
-                    prompt: "What should back knowledge-group metadata?".to_string(),
-                    choices: vec!["SQLite".to_string(), "Filesystem".to_string()],
-                }],
-            },
-            ready_state(),
-        ]));
-        let step = build_turn_step(agent.clone());
-
-        let outcome = run_live_discovery(&runtime, &step, "Rewrite MMAT", 3)
-            .await
-            .expect("discovery should finish");
-
-        assert!(outcome.state.ready_for_solution);
-        assert_eq!(outcome.answers.len(), 1);
-        assert_eq!(outcome.answers[0].answer, "Use SQLite for metadata");
-        assert_eq!(runtime.asked_questions().len(), 1);
-        assert!(
-            agent
-                .prompts()
-                .last()
-                .expect("second prompt should exist")
-                .contains("Use SQLite for metadata")
-        );
-    }
-
-    #[tokio::test]
-    async fn live_discovery_fails_when_more_questions_are_missing() {
-        let runtime = ScriptedRuntime::new(std::iter::empty::<String>());
-        let agent = Arc::new(StubDiscoveryAgent::new(vec![DiscoveryState {
-            ready_for_solution: false,
-            problem_statement: "Rewrite MMAT".to_string(),
-            goals: Vec::new(),
-            constraints: Vec::new(),
-            assumptions: Vec::new(),
-            risks: Vec::new(),
-            notes: Vec::new(),
-            recommended_path: "Clarify goals".to_string(),
-            open_questions: Vec::new(),
-        }]));
-        let step = build_turn_step(agent);
-
-        let error = run_live_discovery(&runtime, &step, "Rewrite MMAT", 1)
-            .await
-            .expect_err("discovery should fail");
-
-        assert!(error.to_string().contains("produced no further questions"));
-    }
-
-    #[test]
-    fn discovery_prompt_includes_previous_answers() {
-        let prompt = build_discovery_prompt(&DiscoveryInput {
-            initial_prompt: "Rewrite MMAT".to_string(),
-            turn: 1,
-            answers: vec![DiscoveryAnswer {
-                question: "What should back metadata?".to_string(),
-                answer: "SQLite".to_string(),
-            }],
-            prior_state: Some(ready_state()),
+                choices: if question.choices.is_empty() {
+                    None
+                } else {
+                    Some(question.choices.clone())
+                },
+            })
+            .await?;
+        answers.push(DiscoveryAnswer {
+            question: question.prompt.clone(),
+            answer: reply.content,
         });
-
-        assert!(prompt.contains("Rewrite MMAT"));
-        assert!(prompt.contains("What should back metadata? => SQLite"));
-        assert!(prompt.contains("Build a workflow rewrite"));
     }
+
+    Ok(DiscoveryInput {
+        initial_prompt: latest_attempt.input.initial_prompt.clone(),
+        answers,
+        findings: latest_attempt.findings.clone(),
+        last_output: Some(latest_attempt.output.clone()),
+    })
 }

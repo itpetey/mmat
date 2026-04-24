@@ -7,7 +7,7 @@ use futures::future::LocalBoxFuture;
 use naaf_llm::{HumanAnswer, HumanIO, HumanQuestion};
 use parking_lot::Mutex;
 
-use crate::workflow::{WorkflowError, WorkflowStageId};
+use crate::workflow_old::{WorkflowError, WorkflowStageId};
 
 pub trait StagePromptProvider {
     fn system_prompt_for_stage(&self, stage: WorkflowStageId) -> String;
