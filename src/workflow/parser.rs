@@ -169,7 +169,7 @@ mod tests {
         let content = "```json\n{\"ready_for_solution\":true,\"problem_statement\":\"ok\",\"goals\":[],\"constraints\":[],\"assumptions\":[],\"risks\":[],\"notes\":[],\"recommended_path\":\"go\",\"open_questions\":[]}\n```";
         let parsed: DiscoveryOutput =
             parse_json_payload(content).expect("payload should parse successfully");
-        assert_eq!(parsed.ready_for_solution, true);
+        assert_eq!(parsed.is_ready(), true);
     }
 
     #[test]

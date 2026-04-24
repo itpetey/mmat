@@ -1,14 +1,25 @@
-use std::fmt::Display;
+use std::{
+    convert::Infallible,
+    fmt::{Debug, Display},
+};
 
-use naaf_core::Attempt;
-use naaf_llm::{HumanIO, HumanQuestion};
+use futures::future;
+use naaf_core::{Attempt, Step, check_fn, repair_fn};
+use naaf_llm::{HumanIO, HumanQuestion, LlmAgent, LlmClient, TaskError};
 use serde::{Deserialize, Serialize};
+
+use crate::workflow::parser::decode_outcome;
 
 pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
 
+type DiscoveryStepError<C, E> =
+    TaskError<Infallible, <C as LlmClient>::Error, E, serde_json::Error>;
+type DiscoveryStep<C, R, E> =
+    Step<R, DiscoveryInput, DiscoveryOutput, DiscoveryFinding, DiscoveryStepError<C, E>>;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryInput {
+pub(super) struct DiscoveryInput {
     initial_prompt: String,
     answers: Vec<DiscoveryAnswer>,
     findings: Vec<DiscoveryFinding>,
@@ -16,37 +27,48 @@ pub struct DiscoveryInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryOutput {
-    pub ready_for_solution: bool,
-    pub problem_statement: String,
-    pub goals: Vec<String>,
-    pub constraints: Vec<String>,
-    pub assumptions: Vec<String>,
-    pub risks: Vec<String>,
-    pub notes: Vec<String>,
-    pub recommended_path: String,
-    pub open_questions: Vec<DiscoveryQuestion>,
+pub(super) struct DiscoveryOutput {
+    ready_for_solution: bool,
+    problem_statement: String,
+    goals: Vec<String>,
+    constraints: Vec<String>,
+    assumptions: Vec<String>,
+    risks: Vec<String>,
+    notes: Vec<String>,
+    recommended_path: String,
+    open_questions: Vec<DiscoveryQuestion>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryQuestion {
-    pub prompt: String,
-    pub choices: Vec<String>,
+pub(super) struct DiscoveryQuestion {
+    prompt: String,
+    choices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryAnswer {
-    pub question: String,
-    pub answer: String,
+pub(super) struct DiscoveryAnswer {
+    question: String,
+    answer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiscoveryFinding {
+pub(super) enum DiscoveryFinding {
     MissingProblemStatement,
     MissingGoals,
     MissingConstraints,
     UnresolvedBlockingAmbiguity,
     NoClarificationQuestions,
+}
+
+impl DiscoveryOutput {
+    #[cfg(test)]
+    pub fn is_ready(&self) -> bool {
+        self.ready_for_solution
+            && self.open_questions.is_empty()
+            && !self.problem_statement.trim().is_empty()
+            && !self.goals.iter().any(|item| item.trim().is_empty())
+            && !self.constraints.iter().any(|item| item.trim().is_empty())
+    }
 }
 
 impl Display for DiscoveryFinding {
@@ -63,7 +85,28 @@ impl Display for DiscoveryFinding {
     }
 }
 
-pub fn build_prompt(input: DiscoveryInput) -> String {
+pub(super) fn step<C, R, E>(agent: &LlmAgent<C, R, E>) -> DiscoveryStep<C, R, E>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    E: Debug + 'static,
+    R: HumanIO<Error = Infallible> + 'static,
+{
+    Step::builder(agent.json_task(
+        MODEL.into(),
+        SYSTEM_PROMPT.into(),
+        |i| Ok::<_, Infallible>(build_prompt(i)),
+        decode_outcome,
+        "discovery-turn".into(),
+    ))
+    .validate(check_fn(|r, _, o| Box::pin(future::ok(validate(r, o)))))
+    .repair_with(repair_fn(|r, a| {
+        Box::pin(async move { repair(r, a).await.map_err(|error| match error {}) })
+    }))
+    .build_persistent()
+}
+
+fn build_prompt(input: DiscoveryInput) -> String {
     let mut lines = vec![format!("Initial prompt: {}", input.initial_prompt)];
 
     if let Some(prior_state) = &input.last_output {
@@ -121,7 +164,7 @@ pub fn build_prompt(input: DiscoveryInput) -> String {
     lines.join("\n")
 }
 
-pub fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
+fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
     let mut findings = Vec::new();
 
     if output.problem_statement.trim().is_empty() {
@@ -151,7 +194,7 @@ pub fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFindin
     findings
 }
 
-pub async fn repair<R>(
+async fn repair<R>(
     runtime: &R,
     attempts: Vec<Attempt<DiscoveryInput, DiscoveryOutput, DiscoveryFinding>>,
 ) -> Result<DiscoveryInput, R::Error>
