@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::workflow::parser::decode_outcome;
 
-pub const MODEL: &str = "gpt-5.5";
-pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
-
-type DiscoveryStepError<C, E> =
-    TaskError<Infallible, <C as LlmClient>::Error, E, serde_json::Error>;
 type DiscoveryStep<C, R, E> =
     Step<R, DiscoveryInput, DiscoveryOutput, DiscoveryFinding, DiscoveryStepError<C, E>>;
+type DiscoveryStepError<C, E> =
+    TaskError<Infallible, <C as LlmClient>::Error, E, serde_json::Error>;
+
+pub const MODEL: &str = "gpt-5.5";
+pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryInput {
@@ -28,27 +28,27 @@ pub(super) struct DiscoveryInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryOutput {
-    ready_for_solution: bool,
-    problem_statement: String,
-    goals: Vec<String>,
-    constraints: Vec<String>,
-    assumptions: Vec<String>,
-    risks: Vec<String>,
-    notes: Vec<String>,
-    recommended_path: String,
-    open_questions: Vec<DiscoveryQuestion>,
+    pub(super) ready_for_solution: bool,
+    pub(super) problem_statement: String,
+    pub(super) goals: Vec<String>,
+    pub(super) constraints: Vec<String>,
+    pub(super) assumptions: Vec<String>,
+    pub(super) risks: Vec<String>,
+    pub(super) notes: Vec<String>,
+    pub(super) recommended_path: String,
+    pub(super) open_questions: Vec<DiscoveryQuestion>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryQuestion {
-    prompt: String,
-    choices: Vec<String>,
+    pub(super) prompt: String,
+    pub(super) choices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryAnswer {
-    question: String,
-    answer: String,
+    pub(super) question: String,
+    pub(super) answer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +68,17 @@ impl DiscoveryOutput {
             && !self.problem_statement.trim().is_empty()
             && !self.goals.iter().any(|item| item.trim().is_empty())
             && !self.constraints.iter().any(|item| item.trim().is_empty())
+    }
+}
+
+impl DiscoveryInput {
+    pub(super) fn new(initial_prompt: impl Into<String>) -> Self {
+        Self {
+            initial_prompt: initial_prompt.into(),
+            answers: Vec::new(),
+            findings: Vec::new(),
+            last_output: None,
+        }
     }
 }
 
@@ -164,36 +175,6 @@ fn build_prompt(input: DiscoveryInput) -> String {
     lines.join("\n")
 }
 
-fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
-    let mut findings = Vec::new();
-
-    if output.problem_statement.trim().is_empty() {
-        findings.push(DiscoveryFinding::MissingProblemStatement);
-    }
-
-    if output.goals.iter().any(|item| !item.trim().is_empty()) {
-        findings.push(DiscoveryFinding::MissingGoals);
-    }
-
-    if output
-        .constraints
-        .iter()
-        .any(|item| !item.trim().is_empty())
-    {
-        findings.push(DiscoveryFinding::MissingConstraints);
-    }
-
-    if !output.ready_for_solution || !output.open_questions.is_empty() {
-        findings.push(DiscoveryFinding::UnresolvedBlockingAmbiguity);
-    }
-
-    if !output.ready_for_solution && output.open_questions.is_empty() {
-        findings.push(DiscoveryFinding::NoClarificationQuestions);
-    }
-
-    findings
-}
-
 async fn repair<R>(
     runtime: &R,
     attempts: Vec<Attempt<DiscoveryInput, DiscoveryOutput, DiscoveryFinding>>,
@@ -229,4 +210,34 @@ where
         findings: latest_attempt.findings.clone(),
         last_output: Some(latest_attempt.output.clone()),
     })
+}
+
+fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
+    let mut findings = Vec::new();
+
+    if output.problem_statement.trim().is_empty() {
+        findings.push(DiscoveryFinding::MissingProblemStatement);
+    }
+
+    if output.goals.iter().any(|item| !item.trim().is_empty()) {
+        findings.push(DiscoveryFinding::MissingGoals);
+    }
+
+    if output
+        .constraints
+        .iter()
+        .any(|item| !item.trim().is_empty())
+    {
+        findings.push(DiscoveryFinding::MissingConstraints);
+    }
+
+    if !output.ready_for_solution || !output.open_questions.is_empty() {
+        findings.push(DiscoveryFinding::UnresolvedBlockingAmbiguity);
+    }
+
+    if !output.ready_for_solution && output.open_questions.is_empty() {
+        findings.push(DiscoveryFinding::NoClarificationQuestions);
+    }
+
+    findings
 }

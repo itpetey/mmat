@@ -19,10 +19,6 @@ where
     parse_json_payload(content)
 }
 
-fn blank_model_output_message() -> &'static str {
-    "model returned blank assistant content instead of JSON. This often means the model/backend emitted only hidden reasoning or non-structured tool-call text that MMAT cannot consume"
-}
-
 pub fn extract_json_fragment(content: &str) -> Option<&str> {
     let object_start = content.find('{');
     let array_start = content.find('[');
@@ -82,6 +78,21 @@ fn augment_json_error(content: &str, error: serde_json::Error) -> serde_json::Er
         .unwrap_or(error)
 }
 
+fn blank_model_output_message() -> &'static str {
+    "model returned blank assistant content instead of JSON. This often means the model/backend emitted only hidden reasoning or non-structured tool-call text that MMAT cannot consume"
+}
+
+fn describe_markup_tool_call(content: &str) -> Option<String> {
+    if !content.contains("<tool_call>") || !content.contains("<function=") {
+        return None;
+    }
+
+    let name = extract_markup_tool_name(content).unwrap_or("unknown_tool");
+    Some(format!(
+        "model returned text-encoded tool call markup for `{name}` instead of a structured `tool_calls` response. This model/backend is not exposing OpenAI-compatible tool calls for MMAT."
+    ))
+}
+
 fn describe_non_json_output(content: &str) -> Option<String> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -110,17 +121,6 @@ fn describe_text_encoded_tool_call(content: &str) -> Option<String> {
 
     message.push_str(". This model/backend is not exposing OpenAI-compatible tool calls for MMAT.");
     Some(message)
-}
-
-fn describe_markup_tool_call(content: &str) -> Option<String> {
-    if !content.contains("<tool_call>") || !content.contains("<function=") {
-        return None;
-    }
-
-    let name = extract_markup_tool_name(content).unwrap_or("unknown_tool");
-    Some(format!(
-        "model returned text-encoded tool call markup for `{name}` instead of a structured `tool_calls` response. This model/backend is not exposing OpenAI-compatible tool calls for MMAT."
-    ))
 }
 
 fn extract_markup_tool_name(content: &str) -> Option<&str> {
