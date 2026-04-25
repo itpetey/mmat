@@ -34,17 +34,12 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
     });
 
     let snapshot_value = snapshot.read().clone();
-    let header_badge = header_badge_text(
-        &snapshot_value.composer_mode,
-        snapshot_value.run_summary.as_ref(),
-    );
 
     rsx! {
         div { class: "mmat-root",
             div { class: "mmat-shell",
                 div { class: "mmat-header",
                     pre { class: "mmat-logo", "aria-hidden": "true", "|\\/| |\\/|  /\\  T\n|  | |  | /--\\ |" }
-                    div { class: "header-badge", "{header_badge}" }
                 }
                 div { class: "mmat-content",
                     div { class: "mmat-conversation",
@@ -93,18 +88,13 @@ impl PartialEq for ComposerProps {
 fn Composer(props: ComposerProps) -> Element {
     let mut input = use_signal(String::new);
     let is_working = matches!(props.mode, ComposerMode::Working);
-    let button_label = match props.mode {
-        ComposerMode::InitialPrompt => "Start",
-        ComposerMode::Reply => "Reply",
-        ComposerMode::Working => "Working...",
-    };
     let placeholder = match props.mode {
         ComposerMode::InitialPrompt => "Describe what you want to build...",
         ComposerMode::Reply => "Type your reply...",
         ComposerMode::Working => "Working... You can draft the next message here.",
     };
 
-    let submit_state = props.ui_state.clone();
+    let key_submit_state = props.ui_state.clone();
     let choices = props
         .pending_prompt
         .as_ref()
@@ -141,27 +131,31 @@ fn Composer(props: ComposerProps) -> Element {
                 placeholder: "{placeholder}",
                 rows: "2",
                 oninput: move |event| input.set(event.value()),
-            }
-            button {
-                class: "composer-btn",
-                r#type: "button",
-                disabled: is_working,
-                onclick: move |_| {
-                    let submitted = input.read().trim().to_string();
-                    if submitted.is_empty() {
+                onkeydown: move |event| {
+                    let modifiers = event.modifiers();
+                    let should_submit = event.key() == Key::Enter && (modifiers.meta() || modifiers.ctrl());
+
+                    if !should_submit || is_working {
                         return;
                     }
 
-                    if submit_state.send_initial_input(submitted.clone())
-                        || submit_state.send_pending_prompt(submitted)
-                    {
-                        input.set(String::new());
-                    }
+                    event.prevent_default();
+                    submit_composer_input(&mut input, &key_submit_state);
                 },
-                "{button_label}"
             }
         }
         div { class: "composer-hint", "Cmd+Enter to submit" }
+    }
+}
+
+fn submit_composer_input(input: &mut Signal<String>, ui_state: &Arc<UiState>) {
+    let submitted = input.read().trim().to_string();
+    if submitted.is_empty() {
+        return;
+    }
+
+    if ui_state.send_initial_input(submitted.clone()) || ui_state.send_pending_prompt(submitted) {
+        input.set(String::new());
     }
 }
 
@@ -195,41 +189,31 @@ fn RawLogsDisclosure(props: RawLogsDisclosureProps) -> Element {
 fn render_conversation_entry(index: usize, entry: &ConversationEntry) -> Element {
     match entry {
         ConversationEntry::UserMessage { text } => rsx! {
-            div { key: "conv-{index}", class: "conversation-entry user", "{text}" }
+            div { key: "conv-{index}", class: "conversation-entry user",
+                span { class: "entry-role", "user" }
+                span { class: "entry-body", "{text}" }
+            }
         },
         ConversationEntry::AssistantQuestion { question } => rsx! {
-            div { key: "conv-{index}", class: "conversation-entry question", "{question}" }
+            div { key: "conv-{index}", class: "conversation-entry question",
+                span { class: "entry-role", "ask" }
+                span { class: "entry-body", "{question}" }
+            }
         },
         ConversationEntry::AssistantReasoning { text, complete } => rsx! {
             div {
                 key: "conv-{index}",
                 class: if *complete { "conversation-entry reasoning" } else { "conversation-entry reasoning pending" },
-                div { class: "reasoning-label", if *complete { "Reasoning" } else { "Reasoning..." } }
-                "{text}"
+                span { class: "entry-role", if *complete { "trace" } else { "trace*" } }
+                span { class: "entry-body", "{text}" }
             }
         },
         ConversationEntry::AssistantMessage { text, .. } => rsx! {
-            div { key: "conv-{index}", class: "conversation-entry assistant", "{text}" }
+            div { key: "conv-{index}", class: "conversation-entry assistant",
+                span { class: "entry-role", "agent" }
+                span { class: "entry-body", "{text}" }
+            }
         },
-    }
-}
-
-fn header_badge_text(mode: &ComposerMode, summary: Option<&RunSummary>) -> String {
-    if let Some(summary) = summary {
-        return match summary.status.as_str() {
-            "running" => format!("Running: {}", summary.current_stage.replace('_', " ")),
-            "awaiting_clarification" => "Awaiting clarification".to_string(),
-            "awaiting_approval" => "Awaiting proposal approval".to_string(),
-            "awaiting_contract_approval" => "Awaiting contract approval".to_string(),
-            "revising" => format!("Revising: {}", summary.current_stage.replace('_', " ")),
-            _ => summary.status.replace('_', " "),
-        };
-    }
-
-    match mode {
-        ComposerMode::InitialPrompt => "Ready for a new run".to_string(),
-        ComposerMode::Reply => "Awaiting your reply".to_string(),
-        ComposerMode::Working => "Working".to_string(),
     }
 }
 

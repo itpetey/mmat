@@ -5,6 +5,10 @@ edition = "2024"
 repository = "https://github.com/itpetey/mmat"
 license = "MPL-2.0"
 
+[[bin]]
+path = "src/bin/web.rs"
+name = "mmat"
+
 [dependencies]
 axum = { version = "0.8", features = ["http1", "tokio", "ws"] }
 clap = { version = "4.6", features = ["derive", "help", "std", "usage"] }
