@@ -6,17 +6,22 @@ pub fn decode_outcome<T>(outcome: ExecutionOutcome) -> Result<T, serde_json::Err
 where
     T: DeserializeOwned,
 {
-    let content = outcome.final_message().content.as_deref().ok_or_else(|| {
-        serde_json::Error::io(std::io::Error::other(blank_model_output_message()))
-    })?;
-
-    if content.trim().is_empty() {
-        return Err(serde_json::Error::io(std::io::Error::other(
-            blank_model_output_message(),
-        )));
+    if let Some(content) = outcome
+        .final_message()
+        .content
+        .as_deref()
+        .filter(|content| !content.trim().is_empty())
+    {
+        return parse_json_payload(content);
     }
 
-    parse_json_payload(content)
+    if let Some(reasoning_content) = outcome_reasoning_content(&outcome) {
+        return parse_json_payload(reasoning_content);
+    }
+
+    Err(serde_json::Error::io(std::io::Error::other(
+        blank_model_output_message(),
+    )))
 }
 
 pub fn extract_json_fragment(content: &str) -> Option<&str> {
@@ -80,6 +85,16 @@ fn augment_json_error(content: &str, error: serde_json::Error) -> serde_json::Er
 
 fn blank_model_output_message() -> &'static str {
     "model returned blank assistant content instead of JSON. This often means the model/backend emitted only hidden reasoning or non-structured tool-call text that MMAT cannot consume"
+}
+
+fn outcome_reasoning_content(outcome: &ExecutionOutcome) -> Option<&str> {
+    outcome
+        .final_response()
+        .metadata
+        .get("reasoning_content")
+        .or_else(|| outcome.final_response().metadata.get("reasoning"))
+        .and_then(Value::as_str)
+        .filter(|content| !content.trim().is_empty())
 }
 
 fn describe_markup_tool_call(content: &str) -> Option<String> {
@@ -146,6 +161,7 @@ mod tests {
         parse_json_payload, strip_code_fence,
     };
     use naaf_llm::{AssistantMessage, CompletionResponse, ExecutionOutcome};
+    use serde_json::json;
 
     #[test]
     fn strips_json_code_fence() {
@@ -226,5 +242,20 @@ mod tests {
             .expect_err("blank output should fail clearly");
 
         assert!(error.to_string().contains("blank assistant content"));
+    }
+
+    #[test]
+    fn decode_outcome_falls_back_to_reasoning_json_when_content_is_blank() {
+        let response = CompletionResponse::new(AssistantMessage::from_text("")).with_metadata(
+            json!({
+                "reasoning_content": "{\"ready_for_solution\":true,\"problem_statement\":\"ok\",\"goals\":[],\"constraints\":[],\"assumptions\":[],\"risks\":[],\"notes\":[],\"recommended_path\":\"go\",\"open_questions\":[]}"
+            }),
+        );
+        let outcome = ExecutionOutcome::new(Vec::new(), vec![response]);
+
+        let parsed = super::decode_outcome::<DiscoveryOutput>(outcome)
+            .expect("reasoning JSON should decode when visible content is blank");
+
+        assert_eq!(parsed.problem_statement, "ok");
     }
 }

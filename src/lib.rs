@@ -1,6 +1,7 @@
 use naaf_llm::{OpenAiError, WebSearchError};
 use thiserror::Error;
 
+pub mod liveview;
 pub mod workflow;
 
 #[derive(Debug, Error)]

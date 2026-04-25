@@ -25,12 +25,12 @@ use thiserror::Error;
 use crate::workflow::{WorkflowStageId, discovery::DiscoveryOutput, parser::decode_outcome};
 
 type KnowledgeStep<C, R, E> =
-    Step<R, KnowledgeInput, KnowledgePlan, KnowledgeFinding, KnowledgeStepError<C, E>>;
-type KnowledgeStepError<C, E> =
-    TaskError<Infallible, <C as LlmClient>::Error, E, serde_json::Error>;
+    Step<R, KnowledgeInput, KnowledgePlan, KnowledgeFinding, KnowledgeStepError<C, R, E>>;
+type KnowledgeStepError<C, R, E> =
+    TaskError<<R as HumanIO>::Error, <C as LlmClient>::Error, E, serde_json::Error>;
 
 const MAX_PLANNING_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "gpt-5.5";
+pub const MODEL: &str = "qwen/qwen3.6-35b-a3b";
 pub const SYSTEM_PROMPT: &str = "You are the knowledge planning stage for MMAT. Your job is to identify the minimum useful knowledge groups for downstream work, scope each group to the stages that need it, and name the concrete sources that should be materialised.";
 pub const UPSTREAM_NAAF_FOLLOW_UPS: &[&str] = &[
     "Add first-class web and paper acquisition helpers to naaf-knowledge.",
@@ -439,11 +439,12 @@ where
     C::Error: Debug + 'static,
     E: Debug + 'static,
     R: HumanIO + 'static,
+    R::Error: Debug + 'static,
 {
     Step::builder(agent.json_task(
         MODEL.into(),
         SYSTEM_PROMPT.into(),
-        |i| Ok::<_, Infallible>(build_prompt(i)),
+        |i| Ok::<_, R::Error>(build_prompt(i)),
         decode_outcome,
         "knowledge-planning-turn".into(),
     ))
@@ -525,9 +526,18 @@ fn build_prompt(input: KnowledgeInput) -> String {
 
     lines.push(String::new());
     lines.push(
-        "Return a JSON knowledge plan. Only propose groups that a later stage will actually need."
+        "Return only one JSON object. Do not include markdown, prose, code fences, or hidden reasoning in the assistant content."
             .to_string(),
     );
+    lines.push(
+        "The JSON object must use this exact shape: {\"groups\":[{\"template\":string,\"instance_name\":string,\"description\":string,\"tags\":string[],\"query_hints\":string[],\"stages\":string[],\"sources\":[{\"kind\":string,\"label\":string,\"location\":string|null,\"content\":string|null,\"recursive\":boolean}]}],\"upstream_follow_ups\":string[]}."
+            .to_string(),
+    );
+    lines.push(
+        "Valid template values: WorkspaceCode, WorkspaceDocs, DiscoveryTranscript, WebResearch, Papers. Valid stage values: Solutions, SoftwareArchitect. Valid source kind values: RepositoryPath, InlineMarkdown, InlinePlainText, DiscoveryTranscript, WebPage, ResearchPaper."
+            .to_string(),
+    );
+    lines.push("Only propose groups that a later stage will actually need.".to_string());
     lines.push(
         "Prefer repository paths or discovery transcripts for first-party context; list web pages and papers only when their content is already available or acquisition is explicitly required."
             .to_string(),
@@ -980,6 +990,9 @@ mod tests {
         assert!(prompt.contains("Problem statement: Rewrite MMAT"));
         assert!(prompt.contains("Constraints: Use SQLite"));
         assert!(prompt.contains("Recommended path: Plan knowledge, then branch"));
+        assert!(prompt.contains("Return only one JSON object"));
+        assert!(prompt.contains("\"groups\""));
+        assert!(prompt.contains("Do not include markdown"));
     }
 
     #[test]

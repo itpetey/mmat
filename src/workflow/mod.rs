@@ -1,6 +1,15 @@
-use naaf_core::{EdgeSpec, GraphPatch, NodeId, NodeInput, NodeSpec, StepNode, Workflow};
-use naaf_llm::{ChannelHumanIO, LlmAgent, OpenAiClient, OpenAiConfig};
+use std::{
+    fmt::{Debug, Display},
+    sync::Arc,
+};
+
+use naaf_core::{
+    EdgeSpec, GraphPatch, NodeId, NodeInput, NodeSpec, StepNode, Workflow, WorkflowRunReport,
+};
+use naaf_llm::{HumanIO, LlmAgent, OpenAiClient, OpenAiConfig, OpenAiStreamObserver};
 use serde::{Deserialize, Serialize};
+
+use crate::MmatError;
 
 mod discovery;
 mod knowledge;
@@ -39,10 +48,20 @@ impl std::fmt::Display for WorkflowStageId {
     }
 }
 
-pub async fn greenfield(init_prompt: String) {
-    let (_runtime, _pending_questions) = ChannelHumanIO::new(1024 * 512); // 512k question buffer
-    let cfg = OpenAiConfig::new("blah");
-    let oai_client = OpenAiClient::<ChannelHumanIO>::new(cfg);
+pub async fn greenfield<R>(
+    init_prompt: String,
+    runtime: R,
+    stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
+) -> Result<WorkflowRunReport, MmatError>
+where
+    R: HumanIO + 'static,
+    R::Error: Debug + Display + 'static,
+{
+    let cfg = OpenAiConfig::new("").with_base_url("http://127.0.0.1:1234/v1");
+    let mut oai_client = OpenAiClient::<R>::new(cfg);
+    if let Some(stream_observer) = stream_observer {
+        oai_client = oai_client.with_stream_observer(stream_observer);
+    }
     let agent = LlmAgent::new(oai_client);
 
     let discovery_id = NodeId::new();
@@ -68,12 +87,17 @@ pub async fn greenfield(init_prompt: String) {
     .with_id(knowledge_id)
     .with_parent(discovery_id);
 
-    let _workflow = Workflow::new()
+    let workflow = Workflow::new()
         .with_patch(
             GraphPatch::new()
                 .with_node(discovery_node)
                 .with_node(knowledge_node)
                 .with_edge(EdgeSpec::new(discovery_id, knowledge_id)),
         )
-        .expect("workflow graph patch should be valid");
+        .map_err(|error| MmatError::Workflow(error.to_string()))?;
+
+    workflow
+        .run(&runtime)
+        .await
+        .map_err(|error| MmatError::Workflow(error.to_string()))
 }
