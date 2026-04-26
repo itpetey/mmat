@@ -5,12 +5,11 @@ use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn};
 use naaf_llm::{HumanIO, HumanQuestion, LlmAgent, LlmClient, TaskError};
 use serde::{Deserialize, Serialize};
 
-use crate::workflow::parser::decode_outcome;
+use crate::workflow::{WorkflowBuildError, WorkflowTaskError, parser::decode_outcome};
 
 type DiscoveryStep<C, R, E> =
     Step<R, DiscoveryInput, DiscoveryOutput, DiscoveryFinding, DiscoveryStepError<C, R, E>>;
-type DiscoveryStepError<C, R, E> =
-    TaskError<<R as HumanIO>::Error, <C as LlmClient>::Error, E, serde_json::Error>;
+type DiscoveryStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
 pub const MODEL: &str = "qwen/qwen3.6-35b-a3b";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
@@ -108,13 +107,17 @@ where
     Step::builder(agent.json_task(
         MODEL.into(),
         SYSTEM_PROMPT.into(),
-        |i| Ok::<_, R::Error>(build_prompt(i)),
+        |i| Ok::<_, WorkflowBuildError<R::Error>>(build_prompt(i)),
         decode_outcome,
         "discovery-turn".into(),
     ))
     .validate(check_fn(|r, _, o| Box::pin(future::ok(validate(r, o)))))
     .repair_with(repair_fn(|r, a| {
-        Box::pin(async move { repair(r, a).await.map_err(TaskError::Build) })
+        Box::pin(async move {
+            repair(r, a)
+                .await
+                .map_err(|error| TaskError::Build(WorkflowBuildError::Human(error)))
+        })
     }))
     .retry_policy(RetryPolicy::unlimited())
     .build_persistent()

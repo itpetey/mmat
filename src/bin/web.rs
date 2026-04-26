@@ -86,7 +86,11 @@ async fn run_workflow_when_prompted(
             send_log(
                 &event_tx,
                 tracing::Level::INFO,
-                format!("Workflow completed with {} node(s).", report.nodes().len()),
+                format!(
+                    "Workflow completed as {} after {} step attempt(s).",
+                    report.outcome_label(),
+                    report.attempt_count()
+                ),
             );
         }
         Err(error) => {
