@@ -30,7 +30,7 @@ services:
     volumes:
       - .:/workspace/mmat/rewrite
       - ../../naaf/main/crates:/workspace/naaf/main/crates:ro
-      - ../../naaf/Cargo.toml:/workspace/naaf/main/Cargo.toml:ro
+      - ../../naaf/main/Cargo.toml:/workspace/naaf/main/Cargo.toml:ro
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - mmat-target:/workspace/mmat/rewrite/target
