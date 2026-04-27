@@ -21,11 +21,8 @@ naaf-llm = { path = "../../naaf/main/crates/llm", features = [
   "openai",
   "web-search"
 ] }
-naaf-persistence-fs = { path = "../../naaf/main/crates/persistence-fs" }
 naaf-persistence-sqlite = { path = "../../naaf/main/crates/persistence-sqlite" }
-naaf-process = { path = "../../naaf/main/crates/process" }
 naaf-qdrant = { path = "../../naaf/main/crates/qdrant" }
-naaf-workspace = { path = "../../naaf/main/crates/workspace" }
 parking_lot = "0.12"
 rusqlite = "0.39"
 serde = { version = "1.0", features = ["derive"] }
@@ -43,4 +40,3 @@ tokio = { version = "1.52", features = [
 tracing = { version = "0.1", features = ["std"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "std"] }
 uuid = { version = "1.23", features = ["serde", "v4"] }
-walkdir = "2"
