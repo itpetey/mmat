@@ -84,6 +84,12 @@ pub(super) struct MaterialisedKnowledgeGroup {
     ingested_sources: usize,
 }
 
+impl MaterialisedKnowledgeGroup {
+    pub(super) fn as_knowledge_group(&self) -> KnowledgeGroup {
+        self.group.clone()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KnowledgePlan {
     groups: Vec<KnowledgeGroupPlan>,
@@ -142,6 +148,8 @@ pub enum KnowledgeFinding {
     GroupWithoutStages(String),
     GroupWithoutSources(String),
     MissingStageCoverage(WorkflowStageId),
+    LintFailed(String),
+    LintFindings(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,6 +258,12 @@ impl Display for KnowledgeFinding {
             }
             Self::MissingStageCoverage(stage) => {
                 write!(f, "knowledge plan does not cover the `{stage}` stage")
+            }
+            Self::LintFailed(error) => {
+                write!(f, "knowledge lint check failed: {error}")
+            }
+            Self::LintFindings(count) => {
+                write!(f, "knowledge lint found {count} issue(s)")
             }
         }
     }
@@ -377,7 +391,20 @@ impl<R> QdrantKnowledgeBackend<R> {
         &self,
         group: &MaterialisedKnowledgeGroup,
     ) -> Result<Arc<QdrantAgent<R>>, KnowledgeError> {
-        let collection = &group.group.collection;
+        self.agent_for_collection(&group.group.collection)
+    }
+
+    pub(super) fn agent_for_group(
+        &self,
+        group: &KnowledgeGroup,
+    ) -> Result<Arc<QdrantAgent<R>>, KnowledgeError> {
+        self.agent_for_collection(&group.collection)
+    }
+
+    fn agent_for_collection(
+        &self,
+        collection: &str,
+    ) -> Result<Arc<QdrantAgent<R>>, KnowledgeError> {
         if let Some(agent) = self.agents.lock().get(collection).cloned() {
             return Ok(agent);
         }
@@ -395,7 +422,7 @@ impl<R> QdrantKnowledgeBackend<R> {
 
         self.agents
             .lock()
-            .insert(collection.clone(), Arc::clone(&agent));
+            .insert(collection.to_owned(), Arc::clone(&agent));
 
         Ok(agent)
     }
@@ -504,6 +531,42 @@ where
         "knowledge-planning-turn".into(),
     ))
     .validate(check_fn(|r, i, o| Box::pin(future::ok(validate(r, i, o)))))
+    .repair_with(repair_fn(|_r, a| {
+        Box::pin(async move { repair(a).await.map_err(|error| match error {}) })
+    }))
+    .retry_policy(RetryPolicy::new(MAX_PLANNING_ATTEMPTS))
+    .build_persistent()
+}
+
+/// Builds a knowledge planning step that includes lint validation.
+///
+/// Runs the knowledge planning step, then validates the plan with lint. If lint
+/// finds issues, feeds findings back to the knowledge planning step for retry.
+pub(super) fn step_with_lint<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    store: Arc<SqliteKnowledgeGroupStore>,
+    collection_prefix: String,
+) -> KnowledgeStep<C, R, E>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    E: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+{
+    let lint_check = knowledge_lint_check(store.as_ref(), &collection_prefix);
+
+    Step::builder(agent.json_task(
+        MODEL.into(),
+        SYSTEM_PROMPT.into(),
+        |i| Ok::<_, WorkflowBuildError<R::Error>>(build_prompt(i)),
+        decode_outcome,
+        "knowledge-planning-turn".into(),
+    ))
+    .validate(check_fn(|r, i, o| Box::pin(future::ok(validate(r, i, o)))))
+    .validate(check_fn(move |_, _, o| {
+        Box::pin(future::ok(lint_check(&(), o)))
+    }))
     .repair_with(repair_fn(|_r, a| {
         Box::pin(async move { repair(a).await.map_err(|error| match error {}) })
     }))
@@ -655,6 +718,45 @@ where
     }))
     .with_findings::<KnowledgeFinding>()
     .build_persistent()
+}
+
+fn knowledge_lint_check(
+    _store: &SqliteKnowledgeGroupStore,
+    _collection_prefix: &str,
+) -> impl Fn(&(), KnowledgePlan) -> Vec<KnowledgeFinding> + 'static {
+    move |_runtime: &(), plan: KnowledgePlan| {
+        let mut findings = Vec::new();
+
+        if plan.groups.is_empty() {
+            findings.push(KnowledgeFinding::EmptyPlan);
+            return findings;
+        }
+
+        let mut seen_collections = std::collections::BTreeSet::new();
+        for group_plan in &plan.groups {
+            let collection =
+                sanitise_collection_name(group_plan.template.slug(), &group_plan.instance_name);
+            if !seen_collections.insert(collection.clone()) {
+                findings.push(KnowledgeFinding::DuplicateCollectionName(collection));
+            }
+            if group_plan.sources.is_empty() {
+                findings.push(KnowledgeFinding::GroupWithoutSources(
+                    group_plan.instance_name.clone(),
+                ));
+            }
+            if group_plan.stages.is_empty() {
+                findings.push(KnowledgeFinding::GroupWithoutStages(
+                    group_plan.instance_name.clone(),
+                ));
+            }
+        }
+
+        if !findings.is_empty() {
+            findings.push(KnowledgeFinding::LintFindings(findings.len()));
+        }
+
+        findings
+    }
 }
 
 async fn materialise_knowledge_plan<B>(

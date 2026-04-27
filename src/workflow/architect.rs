@@ -1,9 +1,13 @@
 use std::fmt::{Debug, Display};
 
 use futures::future;
-use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn};
-use naaf_llm::{HumanIO, LlmAgent, LlmClient};
+use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
+use naaf_knowledge::KnowledgeSearchTool;
+use naaf_llm::{
+    AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::workflow::{
     WorkflowBuildError, WorkflowTaskError, discovery::DiscoveryOutput,
@@ -15,13 +19,15 @@ pub(super) type ArchitectStep<C, R, E> =
 
 const MAX_ARCHITECT_ATTEMPTS: usize = 3;
 pub const MODEL: &str = "qwen/qwen3.6-27b";
-pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff.";
+pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff. If useful, you may request references to existing knowledge groups that have been materialised using `@knowledge_search` tool.";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct ArchitectInput {
     discovery: DiscoveryOutput,
     selected_solution: SelectedSolution,
     knowledge: StageKnowledgeSession,
+    #[serde(default)]
+    materialised: Vec<naaf_knowledge::KnowledgeGroup>,
     turn: usize,
     findings: Vec<ArchitectFinding>,
     prior_plan: Option<ArchitectPlan>,
@@ -50,11 +56,13 @@ impl ArchitectInput {
         discovery: DiscoveryOutput,
         selected_solution: SelectedSolution,
         knowledge: StageKnowledgeSession,
+        materialised: Vec<naaf_knowledge::KnowledgeGroup>,
     ) -> Self {
         Self {
             discovery,
             selected_solution,
             knowledge,
+            materialised,
             turn: 0,
             findings: Vec::new(),
             prior_plan: None,
@@ -78,6 +86,7 @@ impl Display for ArchitectFinding {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn step<C, R, E>(agent: &LlmAgent<C, R, E>) -> ArchitectStep<C, R, E>
 where
     C: LlmClient<Runtime = R> + 'static,
@@ -99,6 +108,103 @@ where
     }))
     .retry_policy(RetryPolicy::new(MAX_ARCHITECT_ATTEMPTS))
     .build_persistent()
+}
+
+pub(super) fn step_with_knowledge_tools<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    knowledge_backend: std::sync::Arc<crate::workflow::knowledge::QdrantKnowledgeBackend<R>>,
+) -> ArchitectStep<C, R, E>
+where
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
+    E: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+{
+    let system_prompt = format!(
+        "{}\n\nYou have access to a `knowledge_search` tool to query existing repository knowledge.",
+        SYSTEM_PROMPT
+    );
+
+    let kb = knowledge_backend.clone();
+    let client = (*agent.executor().client()).clone();
+
+    let task = task_fn(move |_runtime: &R, input: ArchitectInput| {
+        let kb = kb.clone();
+        let system_prompt = system_prompt.clone();
+        let client = client.clone();
+        Box::pin(async move {
+            let user_content = build_prompt(input.clone());
+            let request = CompletionRequest::new(
+                MODEL.to_string(),
+                vec![
+                    Message::system(system_prompt),
+                    Message::user(user_content),
+                ],
+            )
+            .with_metadata(json!({
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "architect_output",
+                        "strict": false,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }));
+
+            let mut tools = naaf_llm::ToolRegistry::<R, naaf_knowledge::KnowledgeError>::new();
+            for group in &input.materialised {
+                let qdrant_agent_result = kb.agent_for_group(group);
+                let qdrant_agent = match qdrant_agent_result {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Err(AdaptorError::Build(WorkflowBuildError::Knowledge(
+                            crate::workflow::knowledge::KnowledgeError::Knowledge(format!(
+                                "failed to get agent for group {}: {e}",
+                                group.collection
+                            )),
+                        )));
+                    }
+                };
+                let embedder = qdrant_agent.clone_embedder();
+                let search_tool = KnowledgeSearchTool::new(embedder, 5, 0.7)
+                    .with_group(group.clone(), qdrant_agent.client().clone());
+                if let Err(e) = tools.register(search_tool) {
+                    tracing::warn!(
+                        error = %e,
+                        collection = %group.collection,
+                        "failed to register knowledge search tool"
+                    );
+                }
+            }
+
+            let executor: Executor<C, R, naaf_knowledge::KnowledgeError> =
+                Executor::with_tools(client, tools);
+
+            let outcome = executor
+                .execute(_runtime, request)
+                .await
+                .map_err(|e| {
+                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                        "executor failed: {e}"
+                    )))
+                })?;
+
+            decode_outcome(outcome).map_err(AdaptorError::Decode)
+        })
+    });
+
+    Step::builder(task)
+        .validate(check_fn(|r, i, o| Box::pin(future::ok(validate(r, i, o)))))
+        .repair_with(repair_fn(|_r, a| {
+            Box::pin(async move { repair(a).await.map_err(|error| match error {}) })
+        }))
+        .retry_policy(RetryPolicy::new(MAX_ARCHITECT_ATTEMPTS))
+        .build_persistent()
 }
 
 fn build_prompt(input: ArchitectInput) -> String {
@@ -159,6 +265,7 @@ async fn repair(
         discovery: latest_attempt.input.discovery.clone(),
         selected_solution: latest_attempt.input.selected_solution.clone(),
         knowledge: latest_attempt.input.knowledge.clone(),
+        materialised: latest_attempt.input.materialised.clone(),
         turn: latest_attempt.input.turn + 1,
         findings: latest_attempt.findings.clone(),
         prior_plan: Some(latest_attempt.output.clone()),
@@ -230,6 +337,7 @@ mod tests {
                 system_prompt: "Architect prompt".to_string(),
                 group_collections: vec!["workspace-code-repo".to_string()],
             },
+            Vec::new(),
         )
     }
 
@@ -242,6 +350,11 @@ mod tests {
         assert!(prompt.contains("workspace-code-repo"));
         assert!(prompt.contains("Return only one JSON object"));
         assert!(prompt.contains("\"architecture_decisions\":string[]"));
+    }
+
+    #[test]
+    fn architect_system_prompt_mentions_knowledge_search() {
+        assert!(SYSTEM_PROMPT.contains("@knowledge_search"));
     }
 
     #[test]

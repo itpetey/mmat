@@ -154,7 +154,7 @@ pub async fn greenfield<R>(
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
 ) -> Result<GreenfieldReport, MmatError>
 where
-    R: HumanIO + 'static,
+    R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
 {
     let knowledge_config = KnowledgeRuntimeConfig::from_env()?;
@@ -168,7 +168,7 @@ pub async fn greenfield_for_project<R>(
     project: &ProjectConfig,
 ) -> Result<GreenfieldReport, MmatError>
 where
-    R: HumanIO + 'static,
+    R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
 {
     let knowledge_config = KnowledgeRuntimeConfig::from_project(project)?;
@@ -182,7 +182,7 @@ pub async fn greenfield_with_knowledge_config<R>(
     knowledge_config: KnowledgeRuntimeConfig,
 ) -> Result<GreenfieldReport, MmatError>
 where
-    R: HumanIO + 'static,
+    R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
 {
     let cfg = workflow_llm_config();
@@ -193,7 +193,7 @@ where
     let agent = LlmAgent::new(oai_client);
     let knowledge_store = Arc::new(knowledge_config.open_store()?);
     let knowledge_backend = Arc::new(knowledge_config.qdrant_backend::<R>());
-    let workflow = build_greenfield_step::<OpenAiClient<R>, R, Infallible, _>(
+    let workflow = build_greenfield_step::<OpenAiClient<R>, R, Infallible>(
         &agent,
         knowledge_store,
         knowledge_backend,
@@ -407,39 +407,43 @@ struct ArchitectStageInput {
     materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
 }
 
-fn build_greenfield_step<C, R, E, B>(
+fn build_greenfield_step<C, R, E>(
     agent: &LlmAgent<C, R, E>,
     knowledge_store: Arc<SqliteKnowledgeGroupStore>,
-    knowledge_backend: Arc<B>,
+    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
     knowledge_collection_prefix: String,
 ) -> WorkflowStep<C, R, E, discovery::DiscoveryInput, WorkflowRunResult>
 where
-    C: LlmClient<Runtime = R> + 'static,
+    C: LlmClient<Runtime = R> + Clone + 'static,
     C::Error: Debug + Display + 'static,
     R: HumanIO + 'static,
     R::Error: Debug + Display + 'static,
     E: Debug + Display + 'static,
-    B: knowledge::KnowledgeBackend,
 {
     let discovery = discovery::step(agent).map_findings(WorkflowFinding::from);
-    let knowledge = knowledge::step(agent)
-        .map_input(knowledge::KnowledgeInput::new)
-        .map_findings(WorkflowFinding::from);
+    let knowledge = knowledge::step_with_lint(
+        agent,
+        knowledge_store.clone(),
+        knowledge_collection_prefix.clone(),
+    )
+    .map_input(knowledge::KnowledgeInput::new)
+    .map_findings(WorkflowFinding::from);
     let knowledge_context = knowledge
         .with_input()
         .map(|(discovery, plan)| KnowledgeMaterialisationInput { discovery, plan });
 
-    let materialisation = knowledge::materialisation_step::<C, R, E, B>(
-        knowledge_store,
-        knowledge_backend,
-        knowledge_collection_prefix,
-    )
-    .map_input(|input: KnowledgeMaterialisationInput| input.plan)
-    .map_with_input(|input, materialised| KnowledgeMaterialisationOutput {
-        discovery: input.discovery,
-        materialised,
-    })
-    .map_findings(WorkflowFinding::from);
+    let materialisation =
+        knowledge::materialisation_step::<C, R, E, knowledge::QdrantKnowledgeBackend<R>>(
+            knowledge_store.clone(),
+            knowledge_backend.clone(),
+            knowledge_collection_prefix.clone(),
+        )
+        .map_input(|input: KnowledgeMaterialisationInput| input.plan)
+        .map_with_input(|input, materialised| KnowledgeMaterialisationOutput {
+            discovery: input.discovery,
+            materialised,
+        })
+        .map_findings(WorkflowFinding::from);
 
     let solution_branches = solution_branch_step::<C, R, E>(
         solutions::branch_step(agent),
@@ -479,7 +483,7 @@ where
             choice,
         });
 
-    let architect = architect::step(agent)
+    let architect = architect::step_with_knowledge_tools(agent, knowledge_backend.clone())
         .map_input(architect_input_from_stage)
         .map_findings(WorkflowFinding::from);
 
@@ -524,7 +528,17 @@ fn architect_input_from_stage(input: ArchitectStageInput) -> architect::Architec
         WorkflowStageId::SoftwareArchitect.default_system_prompt(),
         &input.materialised,
     );
-    architect::ArchitectInput::new(input.discovery, input.selected_solution, knowledge)
+    let materialised = input
+        .materialised
+        .iter()
+        .map(|g| g.as_knowledge_group())
+        .collect();
+    architect::ArchitectInput::new(
+        input.discovery,
+        input.selected_solution,
+        knowledge,
+        materialised,
+    )
 }
 
 fn finalise_choice_step<C, R, E>(
