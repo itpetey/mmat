@@ -1,31 +1,43 @@
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::{oneshot, watch};
 
-use crate::liveview::event::{FrontendEvent, RunSummaryEvent};
+use crate::{
+    build::{BuildJob, BuildJobStatus},
+    liveview::event::{FrontendEvent, RunSummaryEvent},
+    project::{NewProject, ProjectConfig, ProjectId, ProjectRegistryStore},
+};
 
 const EVENT_HISTORY_CAP: usize = 256;
 
 #[derive(Debug)]
 pub struct UiState {
-    event_history: Mutex<VecDeque<UiEventEntry>>,
-    conversation_history: Mutex<VecDeque<ConversationEntry>>,
-    pending_initial_input: Mutex<Option<oneshot::Sender<String>>>,
-    pending_prompt: Mutex<Option<PendingPrompt>>,
-    run_summary: Mutex<Option<RunSummary>>,
+    projects: Mutex<Vec<ProjectConfig>>,
+    active_project_id: Mutex<ProjectId>,
+    project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
+    registry_store: Option<Arc<ProjectRegistryStore>>,
+    pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
     next_event_id: Mutex<u64>,
     version_tx: watch::Sender<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct UiSnapshot {
+    pub projects: Vec<ProjectConfig>,
+    pub active_project: ProjectConfig,
     pub history: VecDeque<UiEventEntry>,
     pub conversation: VecDeque<ConversationEntry>,
     pub pending_prompt: Option<PendingPromptSnapshot>,
     pub composer_mode: ComposerMode,
     pub run_summary: Option<RunSummary>,
+    pub queue: Vec<BuildJobSnapshot>,
+    pub worker_summary: Vec<ProjectWorkerSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -49,6 +61,12 @@ pub enum ComposerMode {
     Working,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectPrompt {
+    pub project_id: ProjectId,
+    pub prompt: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum UiEvent {
     Log { level: String, message: String },
@@ -68,6 +86,23 @@ pub struct PendingPrompt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BuildJobSnapshot {
+    pub id: String,
+    pub status: String,
+    pub prompt: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProjectWorkerSnapshot {
+    pub project_id: ProjectId,
+    pub project_name: String,
+    pub pending: usize,
+    pub running: usize,
+    pub failed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PendingPromptSnapshot {
     pub question: String,
     pub choices: Option<Vec<String>>,
@@ -75,6 +110,7 @@ pub struct PendingPromptSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RunSummary {
+    pub project_id: ProjectId,
     pub run_id: String,
     pub project_root: String,
     pub run_root: String,
@@ -82,6 +118,15 @@ pub struct RunSummary {
     pub status: String,
     pub current_stage: String,
     pub next_step: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct ProjectUiState {
+    event_history: VecDeque<UiEventEntry>,
+    conversation_history: VecDeque<ConversationEntry>,
+    pending_prompt: Option<PendingPrompt>,
+    run_summary: Option<RunSummary>,
+    queue: Vec<BuildJobSnapshot>,
 }
 
 impl Default for UiState {
@@ -92,13 +137,44 @@ impl Default for UiState {
 
 impl UiState {
     pub fn new() -> Self {
+        let default_project = ProjectConfig::default_for_root(
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        )
+        .expect("default project config should be valid");
+        Self::with_projects(vec![default_project], None)
+    }
+
+    pub fn with_projects(
+        projects: Vec<ProjectConfig>,
+        registry_store: Option<Arc<ProjectRegistryStore>>,
+    ) -> Self {
         let (version_tx, _version_rx) = watch::channel(0);
+        let projects = if projects.is_empty() {
+            vec![
+                ProjectConfig::default_for_root(
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                )
+                .expect("default project config should be valid"),
+            ]
+        } else {
+            projects
+        };
+        let active_project_id = projects
+            .first()
+            .expect("projects should not be empty")
+            .id
+            .clone();
+        let project_states = projects
+            .iter()
+            .map(|project| (project.id.clone(), ProjectUiState::default()))
+            .collect();
+
         Self {
-            event_history: Mutex::new(VecDeque::with_capacity(EVENT_HISTORY_CAP)),
-            conversation_history: Mutex::new(VecDeque::with_capacity(EVENT_HISTORY_CAP)),
+            projects: Mutex::new(projects),
+            active_project_id: Mutex::new(active_project_id),
+            project_states: Mutex::new(project_states),
+            registry_store,
             pending_initial_input: Mutex::new(None),
-            pending_prompt: Mutex::new(None),
-            run_summary: Mutex::new(None),
             next_event_id: Mutex::new(0),
             version_tx,
         }
@@ -108,7 +184,7 @@ impl UiState {
         self.version_tx.subscribe()
     }
 
-    pub fn prepare_initial_input(&self, sender: oneshot::Sender<String>) {
+    pub fn prepare_initial_input(&self, sender: oneshot::Sender<ProjectPrompt>) {
         *self.pending_initial_input.lock() = Some(sender);
         self.bump_version();
     }
@@ -119,33 +195,57 @@ impl UiState {
     }
 
     pub fn push_event(&self, event: UiEvent) {
+        let project_id = self.active_project_id.lock().clone();
+        self.push_project_event(&project_id, event);
+    }
+
+    pub fn push_project_event(&self, project_id: &ProjectId, event: UiEvent) {
         let mut next_event_id = self.next_event_id.lock();
         let event_id = *next_event_id;
         *next_event_id += 1;
         drop(next_event_id);
 
-        let mut history = self.event_history.lock();
-        if history.len() >= EVENT_HISTORY_CAP {
-            history.pop_front();
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        if state.event_history.len() >= EVENT_HISTORY_CAP {
+            state.event_history.pop_front();
         }
-        history.push_back(UiEventEntry {
+        state.event_history.push_back(UiEventEntry {
             id: event_id,
             event,
         });
-        drop(history);
+        drop(states);
         self.bump_version();
     }
 
     pub fn set_run_summary(&self, summary: RunSummary) {
-        *self.run_summary.lock() = Some(summary);
+        self.set_project_run_summary(summary.project_id.clone(), summary);
+    }
+
+    pub fn set_project_run_summary(&self, project_id: ProjectId, summary: RunSummary) {
+        self.project_states
+            .lock()
+            .entry(project_id)
+            .or_default()
+            .run_summary = Some(summary);
         self.bump_version();
     }
 
     pub fn record_user_message(&self, text: String) {
-        self.push_conversation_entry(ConversationEntry::UserMessage { text });
+        let project_id = self.active_project_id.lock().clone();
+        self.record_project_user_message(&project_id, text);
+    }
+
+    pub fn record_project_user_message(&self, project_id: &ProjectId, text: String) {
+        self.push_project_conversation_entry(project_id, ConversationEntry::UserMessage { text });
     }
 
     pub fn record_assistant_message_delta(&self, delta: &str) {
+        let project_id = self.active_project_id.lock().clone();
+        self.record_project_assistant_message_delta(&project_id, delta);
+    }
+
+    pub fn record_project_assistant_message_delta(&self, project_id: &ProjectId, delta: &str) {
         if delta.is_empty() {
             return;
         }
@@ -155,7 +255,9 @@ impl UiState {
             return;
         }
 
-        let mut conv = self.conversation_history.lock();
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let conv = &mut state.conversation_history;
         if let Some(ConversationEntry::AssistantMessage {
             text,
             complete: false,
@@ -164,23 +266,30 @@ impl UiState {
             text.push_str(delta);
         } else {
             Self::push_conversation_entry_locked(
-                &mut conv,
+                conv,
                 ConversationEntry::AssistantMessage {
                     text: delta.to_string(),
                     complete: false,
                 },
             );
         }
-        drop(conv);
+        drop(states);
         self.bump_version();
     }
 
     pub fn record_assistant_reasoning_delta(&self, delta: &str) {
+        let project_id = self.active_project_id.lock().clone();
+        self.record_project_assistant_reasoning_delta(&project_id, delta);
+    }
+
+    pub fn record_project_assistant_reasoning_delta(&self, project_id: &ProjectId, delta: &str) {
         if delta.is_empty() {
             return;
         }
 
-        let mut conv = self.conversation_history.lock();
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let conv = &mut state.conversation_history;
         if let Some(ConversationEntry::AssistantReasoning {
             text,
             complete: false,
@@ -189,19 +298,26 @@ impl UiState {
             text.push_str(delta);
         } else {
             Self::push_conversation_entry_locked(
-                &mut conv,
+                conv,
                 ConversationEntry::AssistantReasoning {
                     text: delta.to_string(),
                     complete: false,
                 },
             );
         }
-        drop(conv);
+        drop(states);
         self.bump_version();
     }
 
     pub fn finish_assistant_reasoning(&self) {
-        let mut conv = self.conversation_history.lock();
+        let project_id = self.active_project_id.lock().clone();
+        self.finish_project_assistant_reasoning(&project_id);
+    }
+
+    pub fn finish_project_assistant_reasoning(&self, project_id: &ProjectId) {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let conv = &mut state.conversation_history;
         let mut changed = false;
 
         if let Some(index) = conv.iter().rposition(|entry| {
@@ -249,23 +365,30 @@ impl UiState {
             changed = true;
         }
 
-        drop(conv);
+        drop(states);
         if changed {
             self.bump_version();
         }
     }
 
     pub fn record_assistant_message(&self, text: String) {
+        let project_id = self.active_project_id.lock().clone();
+        self.record_project_assistant_message(&project_id, text);
+    }
+
+    pub fn record_project_assistant_message(&self, project_id: &ProjectId, text: String) {
         let trimmed = text.trim();
         if trimmed.is_empty() || trimmed.starts_with('{') || trimmed.starts_with('[') {
-            let removed = self.remove_incomplete_assistant_message();
+            let removed = self.remove_project_incomplete_assistant_message(project_id);
             if removed {
                 self.bump_version();
             }
             return;
         }
 
-        let mut conv = self.conversation_history.lock();
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let conv = &mut state.conversation_history;
         if let Some(ConversationEntry::AssistantMessage {
             text: existing,
             complete,
@@ -276,19 +399,21 @@ impl UiState {
             *complete = true;
         } else {
             Self::push_conversation_entry_locked(
-                &mut conv,
+                conv,
                 ConversationEntry::AssistantMessage {
                     text,
                     complete: true,
                 },
             );
         }
-        drop(conv);
+        drop(states);
         self.bump_version();
     }
 
-    fn remove_incomplete_assistant_message(&self) -> bool {
-        let mut conv = self.conversation_history.lock();
+    fn remove_project_incomplete_assistant_message(&self, project_id: &ProjectId) -> bool {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let conv = &mut state.conversation_history;
         let Some(index) = conv.iter().rposition(|entry| {
             matches!(
                 entry,
@@ -306,12 +431,23 @@ impl UiState {
     }
 
     pub fn set_pending_prompt(&self, prompt: Option<PendingPrompt>) {
+        let project_id = self.active_project_id.lock().clone();
+        self.set_project_pending_prompt(&project_id, prompt);
+    }
+
+    pub fn set_project_pending_prompt(
+        &self,
+        project_id: &ProjectId,
+        prompt: Option<PendingPrompt>,
+    ) {
         let question = prompt.as_ref().map(|p| p.question.clone());
 
-        *self.pending_prompt.lock() = prompt;
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        state.pending_prompt = prompt;
 
         if let Some(question) = question {
-            let mut conv = self.conversation_history.lock();
+            let conv = &mut state.conversation_history;
 
             if let Some(ConversationEntry::AssistantReasoning { complete, .. }) = conv.back_mut()
                 && !*complete
@@ -320,11 +456,12 @@ impl UiState {
             }
 
             Self::push_conversation_entry_locked(
-                &mut conv,
+                conv,
                 ConversationEntry::AssistantQuestion { question },
             );
         }
 
+        drop(states);
         self.bump_version();
     }
 
@@ -332,8 +469,14 @@ impl UiState {
         let mut pending = self.pending_initial_input.lock();
         if let Some(sender) = pending.take() {
             drop(pending);
-            self.record_user_message(text.clone());
-            let ok = sender.send(text).is_ok();
+            let project_id = self.active_project_id.lock().clone();
+            self.record_project_user_message(&project_id, text.clone());
+            let ok = sender
+                .send(ProjectPrompt {
+                    project_id,
+                    prompt: text,
+                })
+                .is_ok();
             self.bump_version();
             ok
         } else {
@@ -342,10 +485,12 @@ impl UiState {
     }
 
     pub fn send_pending_prompt(&self, text: String) -> bool {
-        let mut pending = self.pending_prompt.lock();
-        if let Some(prompt) = pending.take() {
-            drop(pending);
-            self.record_user_message(text.clone());
+        let project_id = self.active_project_id.lock().clone();
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        if let Some(prompt) = state.pending_prompt.take() {
+            drop(states);
+            self.record_project_user_message(&project_id, text.clone());
             let ok = prompt.reply.send(text).is_ok();
             self.bump_version();
             ok
@@ -355,19 +500,35 @@ impl UiState {
     }
 
     pub fn snapshot(&self) -> UiSnapshot {
-        let history = self.event_history.lock().clone();
-        let conversation = self.conversation_history.lock().clone();
+        let projects = self.projects.lock().clone();
+        let active_project_id = self.active_project_id.lock().clone();
+        let active_project = projects
+            .iter()
+            .find(|project| project.id == active_project_id)
+            .cloned()
+            .or_else(|| projects.first().cloned())
+            .expect("ui state should have at least one project");
+        let states = self.project_states.lock();
+        let current = states.get(&active_project.id);
+        let history = current
+            .map(|state| state.event_history.clone())
+            .unwrap_or_default();
+        let conversation = current
+            .map(|state| state.conversation_history.clone())
+            .unwrap_or_default();
         let has_pending_input = self.pending_initial_input.lock().is_some();
-        let pending_prompt = self
-            .pending_prompt
-            .lock()
+        let pending_prompt = current
+            .and_then(|state| state.pending_prompt.as_ref())
             .as_ref()
             .map(|p| PendingPromptSnapshot {
                 question: p.question.clone(),
                 choices: p.choices.clone(),
             });
         let has_pending_prompt = pending_prompt.is_some();
-        let run_summary = self.run_summary.lock().clone();
+        let run_summary = current.and_then(|state| state.run_summary.clone());
+        let queue = current.map(|state| state.queue.clone()).unwrap_or_default();
+        let worker_summary = worker_summary(&projects, &states);
+        drop(states);
 
         let composer_mode = if has_pending_input {
             ComposerMode::InitialPrompt
@@ -378,18 +539,73 @@ impl UiState {
         };
 
         UiSnapshot {
+            projects,
+            active_project,
             history,
             conversation,
             pending_prompt,
             composer_mode,
             run_summary,
+            queue,
+            worker_summary,
         }
     }
 
-    fn push_conversation_entry(&self, entry: ConversationEntry) {
-        let mut conv = self.conversation_history.lock();
-        Self::push_conversation_entry_locked(&mut conv, entry);
-        drop(conv);
+    pub fn switch_project(&self, project_id: ProjectId) -> bool {
+        if self
+            .projects
+            .lock()
+            .iter()
+            .any(|project| project.id == project_id)
+        {
+            *self.active_project_id.lock() = project_id;
+            self.bump_version();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn register_project(&self, name: String, root: String) -> Result<ProjectId, String> {
+        let new_project = NewProject::from_root(name, root);
+        let project = if let Some(store) = &self.registry_store {
+            store
+                .register_project(new_project)
+                .map_err(|error| error.to_string())?
+        } else {
+            ProjectConfig::default_for_root(new_project.root).map_err(|error| error.to_string())?
+        };
+        let project_id = project.id.clone();
+        self.projects.lock().push(project.clone());
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default();
+        *self.active_project_id.lock() = project_id.clone();
+        self.bump_version();
+        Ok(project_id)
+    }
+
+    pub fn active_project(&self) -> ProjectConfig {
+        let snapshot = self.snapshot();
+        snapshot.active_project
+    }
+
+    pub fn set_project_queue(&self, project_id: &ProjectId, jobs: Vec<BuildJob>) {
+        let queue = jobs.into_iter().map(BuildJobSnapshot::from).collect();
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .queue = queue;
+        self.bump_version();
+    }
+
+    fn push_project_conversation_entry(&self, project_id: &ProjectId, entry: ConversationEntry) {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        Self::push_conversation_entry_locked(&mut state.conversation_history, entry);
+        drop(states);
         self.bump_version();
     }
 
@@ -407,6 +623,7 @@ impl UiState {
 impl From<RunSummaryEvent> for RunSummary {
     fn from(value: RunSummaryEvent) -> Self {
         Self {
+            project_id: value.project_id,
             run_id: value.run_id,
             project_root: value.project_root,
             run_root: value.run_root,
@@ -421,6 +638,7 @@ impl From<RunSummaryEvent> for RunSummary {
 impl From<&FrontendEvent> for UiEvent {
     fn from(event: &FrontendEvent) -> Self {
         match event {
+            FrontendEvent::ProjectScoped { event, .. } => UiEvent::from(event.as_ref()),
             FrontendEvent::StepStarted { task_label } => Self::StepStarted {
                 task_label: task_label.clone(),
             },
@@ -468,9 +686,57 @@ impl From<&FrontendEvent> for UiEvent {
     }
 }
 
+impl From<BuildJob> for BuildJobSnapshot {
+    fn from(value: BuildJob) -> Self {
+        Self {
+            id: value.id.to_string(),
+            status: value.status.as_str().to_string(),
+            prompt: value.handoff.prompt,
+            error: value.error,
+        }
+    }
+}
+
+fn worker_summary(
+    projects: &[ProjectConfig],
+    states: &BTreeMap<ProjectId, ProjectUiState>,
+) -> Vec<ProjectWorkerSnapshot> {
+    projects
+        .iter()
+        .filter_map(|project| {
+            let queue = &states.get(&project.id)?.queue;
+            let pending = queue
+                .iter()
+                .filter(|job| job.status == BuildJobStatus::Pending.as_str())
+                .count();
+            let running = queue
+                .iter()
+                .filter(|job| job.status == BuildJobStatus::Running.as_str())
+                .count();
+            let failed = queue
+                .iter()
+                .filter(|job| job.status == BuildJobStatus::Failed.as_str())
+                .count();
+            (pending + running + failed > 0).then(|| ProjectWorkerSnapshot {
+                project_id: project.id.clone(),
+                project_name: project.name.clone(),
+                pending,
+                running,
+                failed,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use tokio::sync::oneshot;
+
+    use crate::{
+        build::{BuildJob, BuildJobId, BuildJobStatus},
+        project::{ProjectConfig, ProjectId},
+        workflow::DesignHandoff,
+    };
 
     use super::{ComposerMode, ConversationEntry, PendingPrompt, UiEvent, UiState};
 
@@ -483,7 +749,10 @@ mod tests {
 
         assert_eq!(state.snapshot().composer_mode, ComposerMode::InitialPrompt);
         assert!(state.send_initial_input("Build a tool".to_string()));
-        assert_eq!(rx.try_recv().expect("reply should be sent"), "Build a tool");
+        assert_eq!(
+            rx.try_recv().expect("reply should be sent").prompt,
+            "Build a tool"
+        );
 
         let snapshot = state.snapshot();
         assert_eq!(snapshot.composer_mode, ComposerMode::Working);
@@ -566,5 +835,70 @@ mod tests {
         state.record_assistant_message("{\"decision\":\"approve\"}".to_string());
 
         assert!(state.snapshot().conversation.is_empty());
+    }
+
+    #[test]
+    fn switching_projects_changes_visible_conversation_and_queue() {
+        let first = project("first");
+        let second = project("second");
+        let state = UiState::with_projects(vec![first.clone(), second.clone()], None);
+
+        state.record_project_user_message(&first.id, "First prompt".to_string());
+        state.record_project_user_message(&second.id, "Second prompt".to_string());
+        state.set_project_queue(&first.id, vec![job(&first.id, "First build")]);
+        state.set_project_queue(&second.id, vec![job(&second.id, "Second build")]);
+
+        let first_snapshot = state.snapshot();
+        assert!(matches!(
+            first_snapshot.conversation.back(),
+            Some(ConversationEntry::UserMessage { text }) if text == "First prompt"
+        ));
+        assert_eq!(first_snapshot.queue[0].prompt, "First build");
+
+        assert!(state.switch_project(second.id.clone()));
+        let second_snapshot = state.snapshot();
+        assert!(matches!(
+            second_snapshot.conversation.back(),
+            Some(ConversationEntry::UserMessage { text }) if text == "Second prompt"
+        ));
+        assert_eq!(second_snapshot.queue[0].prompt, "Second build");
+        assert!(
+            second_snapshot
+                .worker_summary
+                .iter()
+                .any(|worker| worker.project_id == first.id)
+        );
+    }
+
+    fn project(id: &str) -> ProjectConfig {
+        let project_id = ProjectId::new(id).expect("project id should parse");
+        let root = std::env::temp_dir().join(format!("mmat-ui-{id}"));
+        ProjectConfig {
+            id: project_id,
+            name: id.to_string(),
+            root: root.clone(),
+            data_dir: root.join(".mmat"),
+            enabled: true,
+            qdrant_collection_prefix: format!("p_{id}"),
+            repo_label: Some(id.to_string()),
+        }
+    }
+
+    fn job(project_id: &ProjectId, prompt: &str) -> BuildJob {
+        BuildJob {
+            id: BuildJobId::new(format!("job_{prompt}")),
+            project_id: project_id.clone(),
+            status: BuildJobStatus::Pending,
+            handoff: DesignHandoff {
+                design_run_id: uuid::Uuid::new_v4(),
+                prompt: prompt.to_string(),
+                architect_plan: serde_json::json!({"summary": prompt}),
+            },
+            error: None,
+            created_at: 1,
+            updated_at: 1,
+            started_at: None,
+            completed_at: None,
+        }
     }
 }

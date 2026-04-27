@@ -9,10 +9,10 @@ use crate::liveview::{
     assets::{APP_CSS, INDEX_HTML},
     components::{RootApp, RootAppProps},
     event::{EventReceiver, EventSender},
-    state::UiState,
+    state::{ProjectPrompt, UiState},
 };
 
-pub type InstructionReceiver = oneshot::Receiver<String>;
+pub type InstructionReceiver = oneshot::Receiver<ProjectPrompt>;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 const LIVEVIEW_PATH: &str = "/liveview";

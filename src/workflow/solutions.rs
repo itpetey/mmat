@@ -22,7 +22,7 @@ type SolutionCollectStep<C, R, E> = Step<
 
 const MAX_BRANCH_ATTEMPTS: usize = 3;
 const MAX_COLLECT_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "qwen/qwen3.6-35b-a3b";
+pub const MODEL: &str = "qwen/qwen3.6-27b";
 pub const BRANCH_SYSTEM_PROMPT: &str = "You are a solution branch planner for MMAT. Your job is to produce one distinct implementation direction that can be compared with alternatives.";
 pub const COLLECT_SYSTEM_PROMPT: &str = "You are the solution collection stage for MMAT. Your job is to compare candidate branches, preserve the tradeoffs, and recommend either one branch or a coherent hybrid.";
 

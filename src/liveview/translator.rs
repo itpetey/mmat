@@ -13,79 +13,151 @@ pub fn spawn_event_translator(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
+            if matches!(event, FrontendEvent::Quit) {
+                break;
+            }
             match event {
-                FrontendEvent::StepStarted { task_label } => {
-                    ui_state.push_event(UiEvent::StepStarted { task_label });
+                FrontendEvent::ProjectScoped { project_id, event } => {
+                    dispatch_event(Some(project_id), *event, ui_state.as_ref());
                 }
-                FrontendEvent::StepCompleted {
-                    task_label,
-                    attempts,
-                } => {
-                    ui_state.push_event(UiEvent::StepCompleted {
-                        task_label,
-                        attempts,
-                    });
-                }
-                FrontendEvent::StepFailed { task_label, stage } => {
-                    ui_state.push_event(UiEvent::StepFailed { task_label, stage });
-                }
-                FrontendEvent::ComponentStarted { component, name } => {
-                    ui_state.push_event(UiEvent::ComponentStarted { component, name });
-                }
-                FrontendEvent::ComponentCompleted { component, name } => {
-                    ui_state.push_event(UiEvent::ComponentCompleted { component, name });
-                }
-                FrontendEvent::ComponentFailed { component, name } => {
-                    ui_state.push_event(UiEvent::ComponentFailed { component, name });
-                }
-                FrontendEvent::Log {
-                    level,
-                    target,
-                    message,
-                } => {
-                    if should_store_raw_log(&target, level) {
-                        ui_state.push_event(UiEvent::Log {
-                            level: level.to_string(),
-                            message,
-                        });
-                    }
-                }
-                FrontendEvent::AssistantReasoningDelta { delta } => {
-                    ui_state.record_assistant_reasoning_delta(&delta);
-                }
-                FrontendEvent::AssistantMessageDelta { delta } => {
-                    ui_state.record_assistant_message_delta(&delta);
-                }
-                FrontendEvent::AssistantResponseCompleted { message } => {
-                    if let Some(message) = message {
-                        ui_state.record_assistant_message(message);
-                    }
-                    ui_state.finish_assistant_reasoning();
-                }
-                FrontendEvent::HumanPrompt {
-                    question,
-                    choices,
-                    reply,
-                } => {
-                    ui_state.set_pending_prompt(Some(PendingPrompt {
-                        question,
-                        choices: (!choices.is_empty()).then_some(choices),
-                        reply,
-                    }));
-                }
-                FrontendEvent::RunSummary(summary) => {
-                    ui_state.set_run_summary(RunSummary::from(summary));
-                }
-                FrontendEvent::Quit => {
-                    break;
-                }
-                FrontendEvent::StepAttemptStarted { .. }
-                | FrontendEvent::StepAttemptValidated { .. }
-                | FrontendEvent::StepRepairStarted { .. }
-                | FrontendEvent::StepRejected { .. } => {}
+                event => dispatch_event(None, event, ui_state.as_ref()),
             }
         }
     })
+}
+
+fn dispatch_event(
+    project_id: Option<crate::project::ProjectId>,
+    event: FrontendEvent,
+    ui_state: &UiState,
+) {
+    match event {
+        FrontendEvent::StepStarted { task_label } => {
+            push_event(
+                ui_state,
+                project_id.as_ref(),
+                UiEvent::StepStarted { task_label },
+            );
+        }
+        FrontendEvent::StepCompleted {
+            task_label,
+            attempts,
+        } => {
+            push_event(
+                ui_state,
+                project_id.as_ref(),
+                UiEvent::StepCompleted {
+                    task_label,
+                    attempts,
+                },
+            );
+        }
+        FrontendEvent::StepFailed { task_label, stage } => {
+            push_event(
+                ui_state,
+                project_id.as_ref(),
+                UiEvent::StepFailed { task_label, stage },
+            );
+        }
+        FrontendEvent::ComponentStarted { component, name } => {
+            push_event(
+                ui_state,
+                project_id.as_ref(),
+                UiEvent::ComponentStarted { component, name },
+            );
+        }
+        FrontendEvent::ComponentCompleted { component, name } => {
+            push_event(
+                ui_state,
+                project_id.as_ref(),
+                UiEvent::ComponentCompleted { component, name },
+            );
+        }
+        FrontendEvent::ComponentFailed { component, name } => {
+            push_event(
+                ui_state,
+                project_id.as_ref(),
+                UiEvent::ComponentFailed { component, name },
+            );
+        }
+        FrontendEvent::Log {
+            level,
+            target,
+            message,
+        } => {
+            if should_store_raw_log(&target, level) {
+                push_event(
+                    ui_state,
+                    project_id.as_ref(),
+                    UiEvent::Log {
+                        level: level.to_string(),
+                        message,
+                    },
+                );
+            }
+        }
+        FrontendEvent::AssistantReasoningDelta { delta } => {
+            if let Some(project_id) = &project_id {
+                ui_state.record_project_assistant_reasoning_delta(project_id, &delta);
+            } else {
+                ui_state.record_assistant_reasoning_delta(&delta);
+            }
+        }
+        FrontendEvent::AssistantMessageDelta { delta } => {
+            if let Some(project_id) = &project_id {
+                ui_state.record_project_assistant_message_delta(project_id, &delta);
+            } else {
+                ui_state.record_assistant_message_delta(&delta);
+            }
+        }
+        FrontendEvent::AssistantResponseCompleted { message } => {
+            if let Some(message) = message {
+                if let Some(project_id) = &project_id {
+                    ui_state.record_project_assistant_message(project_id, message);
+                } else {
+                    ui_state.record_assistant_message(message);
+                }
+            }
+            if let Some(project_id) = &project_id {
+                ui_state.finish_project_assistant_reasoning(project_id);
+            } else {
+                ui_state.finish_assistant_reasoning();
+            }
+        }
+        FrontendEvent::HumanPrompt {
+            question,
+            choices,
+            reply,
+        } => {
+            let prompt = Some(PendingPrompt {
+                question,
+                choices: (!choices.is_empty()).then_some(choices),
+                reply,
+            });
+            if let Some(project_id) = &project_id {
+                ui_state.set_project_pending_prompt(project_id, prompt);
+            } else {
+                ui_state.set_pending_prompt(prompt);
+            }
+        }
+        FrontendEvent::RunSummary(summary) => {
+            ui_state.set_run_summary(RunSummary::from(summary));
+        }
+        FrontendEvent::Quit => {}
+        FrontendEvent::StepAttemptStarted { .. }
+        | FrontendEvent::StepAttemptValidated { .. }
+        | FrontendEvent::StepRepairStarted { .. }
+        | FrontendEvent::StepRejected { .. }
+        | FrontendEvent::ProjectScoped { .. } => {}
+    }
+}
+
+fn push_event(ui_state: &UiState, project_id: Option<&crate::project::ProjectId>, event: UiEvent) {
+    if let Some(project_id) = project_id {
+        ui_state.push_project_event(project_id, event);
+    } else {
+        ui_state.push_event(event);
+    }
 }
 
 fn should_store_raw_log(target: &str, level: tracing::Level) -> bool {

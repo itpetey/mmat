@@ -14,7 +14,7 @@ pub(super) type ArchitectStep<C, R, E> =
     Step<R, ArchitectInput, ArchitectPlan, ArchitectFinding, WorkflowTaskError<C, R, E>>;
 
 const MAX_ARCHITECT_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "qwen/qwen3.6-35b-a3b";
+pub const MODEL: &str = "qwen/qwen3.6-27b";
 pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

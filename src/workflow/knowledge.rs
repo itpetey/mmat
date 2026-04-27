@@ -17,14 +17,18 @@ use naaf_knowledge::{
 };
 use naaf_llm::{HumanIO, LlmAgent, LlmClient, TaskError};
 use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
-use naaf_qdrant::QdrantAgent;
+use naaf_qdrant::{OpenAiEmbedder, QdrantAgent, QdrantClient};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::workflow::{
-    WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
-    parser::decode_outcome,
+use crate::{
+    project::prefix_collection_id,
+    workflow::{
+        WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
+        parser::decode_outcome,
+    },
 };
 
 type KnowledgeStep<C, R, E> =
@@ -32,7 +36,7 @@ type KnowledgeStep<C, R, E> =
 type KnowledgeStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
 const MAX_PLANNING_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "qwen/qwen3.6-35b-a3b";
+pub const MODEL: &str = "qwen/qwen3.6-27b";
 pub const SYSTEM_PROMPT: &str = "You are the knowledge planning stage for MMAT. Your job is to identify the minimum useful knowledge groups for downstream work, scope each group to the stages that need it, and name the concrete sources that should be materialised.";
 pub const UPSTREAM_NAAF_FOLLOW_UPS: &[&str] = &[
     "Add first-class web and paper acquisition helpers to naaf-knowledge.",
@@ -140,8 +144,21 @@ pub enum KnowledgeFinding {
     MissingStageCoverage(WorkflowStageId),
 }
 
-struct QdrantKnowledgeBackend<R> {
-    agents: BTreeMap<String, Arc<QdrantAgent<R>>>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct QdrantKnowledgeBackendConfig {
+    pub(super) url: String,
+    pub(super) api_key: Option<String>,
+    pub(super) embedding_api_key: String,
+    pub(super) embedding_base_url: String,
+    pub(super) embedding_model: String,
+    pub(super) embedding_dimension: usize,
+    pub(super) repo: Option<String>,
+    pub(super) workspace_root: PathBuf,
+}
+
+pub(super) struct QdrantKnowledgeBackend<R> {
+    agents: Mutex<BTreeMap<String, Arc<QdrantAgent<R>>>>,
+    config: QdrantKnowledgeBackendConfig,
     repo: Option<String>,
     workspace_root: Option<PathBuf>,
 }
@@ -333,21 +350,26 @@ impl KnowledgeSource {
 }
 
 impl<R> QdrantKnowledgeBackend<R> {
-    fn new(repo: Option<String>) -> Self {
+    pub(super) fn new(config: QdrantKnowledgeBackendConfig) -> Self {
         Self {
-            agents: BTreeMap::new(),
-            repo,
-            workspace_root: None,
+            agents: Mutex::new(BTreeMap::new()),
+            repo: config.repo.clone(),
+            workspace_root: Some(config.workspace_root.clone()),
+            config,
         }
     }
 
+    #[cfg(test)]
     fn with_workspace_root(mut self, workspace_root: impl Into<PathBuf>) -> Self {
         self.workspace_root = Some(workspace_root.into());
         self
     }
 
-    fn with_agent(mut self, collection: impl Into<String>, agent: QdrantAgent<R>) -> Self {
-        self.agents.insert(collection.into(), Arc::new(agent));
+    #[cfg(test)]
+    fn with_agent(self, collection: impl Into<String>, agent: QdrantAgent<R>) -> Self {
+        self.agents
+            .lock()
+            .insert(collection.into(), Arc::new(agent));
         self
     }
 
@@ -355,15 +377,27 @@ impl<R> QdrantKnowledgeBackend<R> {
         &self,
         group: &MaterialisedKnowledgeGroup,
     ) -> Result<Arc<QdrantAgent<R>>, KnowledgeError> {
+        let collection = &group.group.collection;
+        if let Some(agent) = self.agents.lock().get(collection).cloned() {
+            return Ok(agent);
+        }
+
+        let client = QdrantClient::from_url(&self.config.url, self.config.api_key.clone())
+            .map_err(|error| KnowledgeError::Knowledge(error.to_string()))?
+            .with_collection(collection);
+        let embedder = OpenAiEmbedder::with_model(
+            self.config.embedding_api_key.clone(),
+            self.config.embedding_model.clone(),
+            self.config.embedding_dimension,
+        )
+        .with_base_url(self.config.embedding_base_url.clone());
+        let agent = Arc::new(QdrantAgent::new(client, Box::new(embedder)));
+
         self.agents
-            .get(&group.group.collection)
-            .cloned()
-            .ok_or_else(|| {
-                KnowledgeError::Knowledge(format!(
-                    "no Qdrant agent configured for collection `{}`",
-                    group.group.collection
-                ))
-            })
+            .lock()
+            .insert(collection.clone(), Arc::clone(&agent));
+
+        Ok(agent)
     }
 }
 
@@ -593,6 +627,7 @@ pub(super) fn build_stage_knowledge_session(
 pub(super) fn materialisation_step<C, R, E, B>(
     store: Arc<SqliteKnowledgeGroupStore>,
     backend: Arc<B>,
+    collection_prefix: String,
 ) -> Step<
     R,
     KnowledgePlan,
@@ -611,8 +646,9 @@ where
     Step::builder(task_fn(move |_runtime: &R, plan: KnowledgePlan| {
         let store = store.clone();
         let backend = backend.clone();
+        let collection_prefix = collection_prefix.clone();
         Box::pin(async move {
-            materialise_knowledge_plan(store.as_ref(), backend.as_ref(), &plan)
+            materialise_knowledge_plan(store.as_ref(), backend.as_ref(), &collection_prefix, &plan)
                 .await
                 .map_err(|error| TaskError::Build(WorkflowBuildError::Knowledge(error)))
         })
@@ -624,6 +660,7 @@ where
 async fn materialise_knowledge_plan<B>(
     store: &SqliteKnowledgeGroupStore,
     backend: &B,
+    collection_prefix: &str,
     plan: &KnowledgePlan,
 ) -> Result<Vec<MaterialisedKnowledgeGroup>, KnowledgeError>
 where
@@ -633,8 +670,9 @@ where
     let mut seen_collections = BTreeSet::new();
 
     for group_plan in &plan.groups {
-        let collection =
+        let base_collection =
             sanitise_collection_name(group_plan.template.slug(), &group_plan.instance_name);
+        let collection = prefix_collection_id(collection_prefix, &base_collection);
         if !seen_collections.insert(collection.clone()) {
             return Err(KnowledgeError::Knowledge(format!(
                 "knowledge plan generated a colliding collection name `{collection}`"
@@ -1070,7 +1108,7 @@ mod tests {
         let backend = StubKnowledgeBackend::default();
         let plan = valid_knowledge_plan();
 
-        let materialised = materialise_knowledge_plan(&store, &backend, &plan)
+        let materialised = materialise_knowledge_plan(&store, &backend, "p_test", &plan)
             .await
             .expect("knowledge plan should materialise");
 
@@ -1079,19 +1117,19 @@ mod tests {
         assert_eq!(
             backend.initialised(),
             vec![
-                "discovery-transcript-rewrite-answers".to_string(),
-                "workspace-code-repo".to_string(),
+                "p_test__discovery_transcript_rewrite_answers".to_string(),
+                "p_test__workspace_code_repo".to_string(),
             ]
         );
         assert_eq!(
             backend.ingested(),
             vec![
                 (
-                    "discovery-transcript-rewrite-answers".to_string(),
+                    "p_test__discovery_transcript_rewrite_answers".to_string(),
                     "Discovery transcript".to_string(),
                 ),
                 (
-                    "workspace-code-repo".to_string(),
+                    "p_test__workspace_code_repo".to_string(),
                     "Repo summary".to_string()
                 ),
             ]
@@ -1102,9 +1140,10 @@ mod tests {
     async fn stage_session_contains_only_scoped_groups() {
         let store = SqliteKnowledgeGroupStore::open_in_memory().expect("SQLite store should open");
         let backend = StubKnowledgeBackend::default();
-        let materialised = materialise_knowledge_plan(&store, &backend, &valid_knowledge_plan())
-            .await
-            .expect("knowledge should materialise");
+        let materialised =
+            materialise_knowledge_plan(&store, &backend, "p_session", &valid_knowledge_plan())
+                .await
+                .expect("knowledge should materialise");
 
         let session = build_stage_knowledge_session(
             WorkflowStageId::Solutions,
@@ -1116,12 +1155,33 @@ mod tests {
         assert!(
             session
                 .group_collections
-                .contains(&"discovery-transcript-rewrite-answers".to_string())
+                .contains(&"p_session__discovery_transcript_rewrite_answers".to_string())
         );
         assert!(
             !session
                 .group_collections
-                .contains(&"workspace-code-repo".to_string())
+                .contains(&"p_session__workspace_code_repo".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn same_plan_uses_distinct_project_collections() {
+        let first_store =
+            SqliteKnowledgeGroupStore::open_in_memory().expect("first SQLite store should open");
+        let second_store =
+            SqliteKnowledgeGroupStore::open_in_memory().expect("second SQLite store should open");
+        let backend = StubKnowledgeBackend::default();
+        let plan = valid_knowledge_plan();
+
+        let first = materialise_knowledge_plan(&first_store, &backend, "p_first", &plan)
+            .await
+            .expect("first plan should materialise");
+        let second = materialise_knowledge_plan(&second_store, &backend, "p_second", &plan)
+            .await
+            .expect("second plan should materialise");
+
+        assert_ne!(first[0].group.collection, second[0].group.collection);
+        assert!(first[0].group.collection.starts_with("p_first__"));
+        assert!(second[0].group.collection.starts_with("p_second__"));
     }
 }

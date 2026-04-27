@@ -1,0 +1,10 @@
+target
+.mmat
+.git
+.runs
+.env
+.DS_Store
+*.db
+*.sqlite
+*.sqlite3
+docker-compose.override.yml

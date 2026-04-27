@@ -1,0 +1,72 @@
+services:
+  mmat-dev:
+    profiles:
+      - dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      additional_contexts:
+        naaf_crates: ../../naaf/main/crates
+    depends_on:
+      - qdrant
+    environment: &mmat-env
+      RUST_LOG: ${RUST_LOG:-info}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MMAT_LLM_API_KEY: ${MMAT_LLM_API_KEY:-}
+      MMAT_LLM_BASE_URL: ${MMAT_LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      MMAT_KNOWLEDGE_SQLITE_PATH: /data/mmat/knowledge.sqlite3
+      MMAT_QDRANT_URL: http://qdrant:6333
+      MMAT_QDRANT_API_KEY: ${MMAT_QDRANT_API_KEY:-}
+      MMAT_EMBEDDING_API_KEY: ${MMAT_EMBEDDING_API_KEY:-}
+      MMAT_EMBEDDING_BASE_URL: ${MMAT_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      MMAT_EMBEDDING_MODEL: ${MMAT_EMBEDDING_MODEL:-text-embedding-3-small}
+      MMAT_EMBEDDING_DIMENSION: ${MMAT_EMBEDDING_DIMENSION:-1536}
+      MMAT_KNOWLEDGE_REPO: ${MMAT_KNOWLEDGE_REPO:-mmat}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "${MMAT_DEV_PORT:-8080}:8080"
+    volumes:
+      - .:/workspace/mmat/rewrite
+      - ../../naaf/main/crates:/workspace/naaf/main/crates:ro
+      - ../../naaf/Cargo.toml:/workspace/naaf/main/Cargo.toml:ro
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - mmat-target:/workspace/mmat/rewrite/target
+      - mmat-data-dev:/data/mmat
+    restart: unless-stopped
+
+  mmat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      additional_contexts:
+        naaf_crates: ../../naaf/main/crates
+    depends_on:
+      - qdrant
+    environment: *mmat-env
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "${MMAT_PORT:-8080}:8080"
+    volumes:
+      - mmat-data:/data/mmat
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  cargo-git:
+  cargo-registry:
+  mmat-data:
+  mmat-data-dev:
+  mmat-target:
+  qdrant-storage:

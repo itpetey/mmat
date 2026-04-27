@@ -2,11 +2,17 @@ use std::fmt;
 
 use tokio::sync::{mpsc, oneshot};
 
+use crate::project::ProjectId;
+
 pub type EventSender = mpsc::UnboundedSender<FrontendEvent>;
 pub type EventReceiver = mpsc::UnboundedReceiver<FrontendEvent>;
 
 #[derive(Debug)]
 pub enum FrontendEvent {
+    ProjectScoped {
+        project_id: ProjectId,
+        event: Box<FrontendEvent>,
+    },
     StepStarted {
         task_label: String,
     },
@@ -74,6 +80,7 @@ pub enum FrontendEvent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunSummaryEvent {
+    pub project_id: ProjectId,
     pub run_id: String,
     pub project_root: String,
     pub run_root: String,
@@ -86,6 +93,9 @@ pub struct RunSummaryEvent {
 impl fmt::Display for FrontendEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ProjectScoped { project_id, event } => {
+                write!(f, "[project {project_id}] {event}")
+            }
             Self::StepStarted { task_label } => write!(f, "step started: {task_label}"),
             Self::StepAttemptStarted {
                 task_label,
