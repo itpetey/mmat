@@ -3,9 +3,7 @@ use std::fmt::{Debug, Display};
 use futures::future;
 use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 use naaf_knowledge::KnowledgeSearchTool;
-use naaf_llm::{
-    AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message,
-};
+use naaf_llm::{AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -137,10 +135,7 @@ where
             let user_content = build_prompt(input.clone());
             let request = CompletionRequest::new(
                 MODEL.to_string(),
-                vec![
-                    Message::system(system_prompt),
-                    Message::user(user_content),
-                ],
+                vec![Message::system(system_prompt), Message::user(user_content)],
             )
             .with_metadata(json!({
                 "response_format": {
@@ -185,14 +180,11 @@ where
             let executor: Executor<C, R, naaf_knowledge::KnowledgeError> =
                 Executor::with_tools(client, tools);
 
-            let outcome = executor
-                .execute(_runtime, request)
-                .await
-                .map_err(|e| {
-                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
-                        "executor failed: {e}"
-                    )))
-                })?;
+            let outcome = executor.execute(_runtime, request).await.map_err(|e| {
+                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                    "executor failed: {e}"
+                )))
+            })?;
 
             decode_outcome(outcome).map_err(AdaptorError::Decode)
         })

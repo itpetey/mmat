@@ -2,13 +2,6 @@
 
 MMAT, short for **Make Me A Thing**, is a repository-oriented workflow engine for turning an open-ended software prompt into a structured delivery path.
 
-This repository is a rewrite of the previous implementation in `../main/`. The rewrite keeps the broad workflow shape, but changes the architecture substantially:
-
-- workflow code is grouped by subject under `src/workflow/`, not by generic artefact type,
-- discovery is explicitly live and recursive,
-- knowledge is planned and materialised as first-class workflow state,
-- downstream stages receive only the knowledge groups they actually need.
-
 ## Workflow Shape
 
 The rewritten workflow is organised as these stages:
@@ -54,8 +47,6 @@ This keeps prompts narrower and makes evidence flow visible across the workflow.
 
 ## Upstream NAAF Follow-Ups
 
-This rewrite intentionally records platform-level gaps as upstream NAAF work instead of embedding permanent MMAT-specific workarounds.
-
 - Add first-class web and paper acquisition helpers to `naaf-knowledge`.
 - Add duplicate and near-duplicate detection to `naaf-knowledge` linting and ingestion flows.
 
@@ -82,8 +73,6 @@ cargo build --release
 ```
 
 ## Usage
-
-The current rewrite is primarily exercised through the Rust modules and unit tests in this repository.
 
 Run the fast development service stack with Docker Compose:
 
@@ -129,7 +118,7 @@ The Docker build uses the sibling NAAF checkout as a named build context, so kee
 
 ```text
 projects/
-  mmat/rewrite/
+  mmat/main/
   naaf/main/
 ```
 

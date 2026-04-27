@@ -413,7 +413,7 @@ mod tests {
             .expect("registry should open");
 
         let project = store
-            .register_project(NewProject::from_root("Rewrite", &root))
+            .register_project(NewProject::from_root("Test", &root))
             .expect("project should register");
         assert_eq!(
             store.list_projects().expect("projects should list").len(),
@@ -421,14 +421,14 @@ mod tests {
         );
 
         let mut updated = project.clone();
-        updated.name = "MMAT Rewrite".to_string();
+        updated.name = "MMAT Test".to_string();
         updated.enabled = false;
         store
             .update_project(&updated)
             .expect("project should update");
 
         let loaded = store.get_project(&project.id).expect("project should load");
-        assert_eq!(loaded.name, "MMAT Rewrite");
+        assert_eq!(loaded.name, "MMAT Test");
         assert!(!loaded.enabled);
     }
 

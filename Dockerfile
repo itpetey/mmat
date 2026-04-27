@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace/mmat/rewrite
+WORKDIR /workspace/mmat/main
 
 FROM rust-base AS dev
 
@@ -28,7 +28,7 @@ WORKDIR /workspace
 COPY ../../naaf/main/Cargo.toml /workspace/naaf/main/Cargo.toml
 COPY --from=naaf_crates . /workspace/naaf/main/crates
 
-WORKDIR /workspace/mmat/rewrite
+WORKDIR /workspace/mmat/main
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY src ./src
 COPY web ./web
@@ -44,7 +44,7 @@ RUN apt-get update \
     && mkdir -p /data/mmat \
     && chown -R mmat:mmat /data/mmat
 
-COPY --from=builder /workspace/mmat/rewrite/target/release/mmat /usr/local/bin/mmat
+COPY --from=builder /workspace/mmat/main/target/release/mmat /usr/local/bin/mmat
 
 USER mmat
 WORKDIR /data/mmat
