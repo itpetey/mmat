@@ -21,6 +21,79 @@ struct Cli {
     addr: SocketAddr,
 }
 
+struct UiStreamObserver {
+    event_tx: mmat::liveview::EventSender,
+    project_id: ProjectId,
+}
+
+impl UiStreamObserver {
+    fn new(event_tx: mmat::liveview::EventSender, project_id: ProjectId) -> Self {
+        Self {
+            event_tx,
+            project_id,
+        }
+    }
+}
+
+impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
+    fn on_content_delta(&self, _runtime: &R, delta: &str) {
+        let _ = send_project_event(
+            &self.event_tx,
+            &self.project_id,
+            FrontendEvent::AssistantMessageDelta {
+                delta: delta.to_string(),
+            },
+        );
+    }
+
+    fn on_reasoning_delta(&self, _runtime: &R, delta: &str) {
+        let _ = send_project_event(
+            &self.event_tx,
+            &self.project_id,
+            FrontendEvent::AssistantReasoningDelta {
+                delta: delta.to_string(),
+            },
+        );
+    }
+
+    fn on_response_complete(&self, _runtime: &R, message: &AssistantMessage) {
+        let _ = send_project_event(
+            &self.event_tx,
+            &self.project_id,
+            FrontendEvent::AssistantResponseCompleted {
+                message: message.content.clone(),
+            },
+        );
+    }
+}
+
+async fn forward_human_questions(
+    mut pending_questions: tokio::sync::mpsc::Receiver<naaf_llm::PendingQuestion>,
+    event_tx: mmat::liveview::EventSender,
+    project_id: ProjectId,
+) {
+    while let Some(pending) = pending_questions.recv().await {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        if !send_project_event(
+            &event_tx,
+            &project_id,
+            FrontendEvent::HumanPrompt {
+                question: pending.question.question,
+                choices: pending.question.choices.unwrap_or_default(),
+                reply: reply_tx,
+            },
+        ) {
+            break;
+        }
+
+        let Ok(answer) = reply_rx.await else {
+            break;
+        };
+
+        let _ = pending.reply.send(HumanAnswer { content: answer });
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -67,6 +140,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     translator.abort();
     handle.shutdown().await?;
     Ok(())
+}
+
+fn refresh_project_queue(
+    ui_state: &UiState,
+    project_id: &ProjectId,
+    queue_store: &BuildQueueStore,
+) {
+    match queue_store.list_for_project(project_id) {
+        Ok(jobs) => ui_state.set_project_queue(project_id, jobs),
+        Err(error) => ui_state.push_project_event(
+            project_id,
+            mmat::liveview::UiEvent::Log {
+                level: "ERROR".to_string(),
+                message: format!("Queue refresh failed: {error}"),
+            },
+        ),
+    }
 }
 
 async fn run_workflow_when_prompted(
@@ -183,57 +273,6 @@ async fn run_workflow_when_prompted(
     }
 }
 
-async fn forward_human_questions(
-    mut pending_questions: tokio::sync::mpsc::Receiver<naaf_llm::PendingQuestion>,
-    event_tx: mmat::liveview::EventSender,
-    project_id: ProjectId,
-) {
-    while let Some(pending) = pending_questions.recv().await {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        if !send_project_event(
-            &event_tx,
-            &project_id,
-            FrontendEvent::HumanPrompt {
-                question: pending.question.question,
-                choices: pending.question.choices.unwrap_or_default(),
-                reply: reply_tx,
-            },
-        ) {
-            break;
-        }
-
-        let Ok(answer) = reply_rx.await else {
-            break;
-        };
-
-        let _ = pending.reply.send(HumanAnswer { content: answer });
-    }
-}
-
-fn send_summary(
-    event_tx: &mmat::liveview::EventSender,
-    project: &ProjectConfig,
-    prompt: &str,
-    status: &str,
-    current_stage: &str,
-    next_step: Option<String>,
-) {
-    let _ = send_project_event(
-        event_tx,
-        &project.id,
-        FrontendEvent::RunSummary(RunSummaryEvent {
-            project_id: project.id.clone(),
-            run_id: "liveview".to_string(),
-            project_root: project.root.display().to_string(),
-            run_root: project.data_dir.display().to_string(),
-            prompt: prompt.to_string(),
-            status: status.to_string(),
-            current_stage: current_stage.to_string(),
-            next_step,
-        }),
-    );
-}
-
 fn send_log(
     event_tx: &mmat::liveview::EventSender,
     project_id: &ProjectId,
@@ -264,6 +303,30 @@ fn send_project_event(
         .is_ok()
 }
 
+fn send_summary(
+    event_tx: &mmat::liveview::EventSender,
+    project: &ProjectConfig,
+    prompt: &str,
+    status: &str,
+    current_stage: &str,
+    next_step: Option<String>,
+) {
+    let _ = send_project_event(
+        event_tx,
+        &project.id,
+        FrontendEvent::RunSummary(RunSummaryEvent {
+            project_id: project.id.clone(),
+            run_id: "liveview".to_string(),
+            project_root: project.root.display().to_string(),
+            run_root: project.data_dir.display().to_string(),
+            prompt: prompt.to_string(),
+            status: status.to_string(),
+            current_stage: current_stage.to_string(),
+            next_step,
+        }),
+    );
+}
+
 fn start_project_workers(
     projects: &[ProjectConfig],
     ui_state: &UiState,
@@ -277,67 +340,4 @@ fn start_project_workers(
         workers.insert(project.id.clone(), (queue_store, worker));
     }
     Ok(workers)
-}
-
-fn refresh_project_queue(
-    ui_state: &UiState,
-    project_id: &ProjectId,
-    queue_store: &BuildQueueStore,
-) {
-    match queue_store.list_for_project(project_id) {
-        Ok(jobs) => ui_state.set_project_queue(project_id, jobs),
-        Err(error) => ui_state.push_project_event(
-            project_id,
-            mmat::liveview::UiEvent::Log {
-                level: "ERROR".to_string(),
-                message: format!("Queue refresh failed: {error}"),
-            },
-        ),
-    }
-}
-
-struct UiStreamObserver {
-    event_tx: mmat::liveview::EventSender,
-    project_id: ProjectId,
-}
-
-impl UiStreamObserver {
-    fn new(event_tx: mmat::liveview::EventSender, project_id: ProjectId) -> Self {
-        Self {
-            event_tx,
-            project_id,
-        }
-    }
-}
-
-impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
-    fn on_content_delta(&self, _runtime: &R, delta: &str) {
-        let _ = send_project_event(
-            &self.event_tx,
-            &self.project_id,
-            FrontendEvent::AssistantMessageDelta {
-                delta: delta.to_string(),
-            },
-        );
-    }
-
-    fn on_reasoning_delta(&self, _runtime: &R, delta: &str) {
-        let _ = send_project_event(
-            &self.event_tx,
-            &self.project_id,
-            FrontendEvent::AssistantReasoningDelta {
-                delta: delta.to_string(),
-            },
-        );
-    }
-
-    fn on_response_complete(&self, _runtime: &R, message: &AssistantMessage) {
-        let _ = send_project_event(
-            &self.event_tx,
-            &self.project_id,
-            FrontendEvent::AssistantResponseCompleted {
-                message: message.content.clone(),
-            },
-        );
-    }
 }

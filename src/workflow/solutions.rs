@@ -22,15 +22,9 @@ type SolutionCollectStep<C, R, E> = Step<
 
 const MAX_BRANCH_ATTEMPTS: usize = 3;
 const MAX_COLLECT_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "qwen/qwen3.6-27b";
 pub const BRANCH_SYSTEM_PROMPT: &str = "You are a solution branch planner for MMAT. Your job is to produce one distinct implementation direction that can be compared with alternatives.";
 pub const COLLECT_SYSTEM_PROMPT: &str = "You are the solution collection stage for MMAT. Your job is to compare candidate branches, preserve the tradeoffs, and recommend either one branch or a coherent hybrid.";
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SolutionInput {
-    discovery: DiscoveryOutput,
-    knowledge: StageKnowledgeSession,
-}
+pub const MODEL: &str = "qwen/qwen3.6-27b";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SolutionBranchInput {
@@ -107,13 +101,6 @@ pub(super) enum SolutionUserChoice {
     Revise { feedback: String },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(super) enum SolutionBranch {
-    Conservative,
-    Recommended,
-    Ambitious,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum SolutionBranchFinding {
     WrongBranch(SolutionBranch),
@@ -138,13 +125,17 @@ pub(super) enum SolutionCollectFinding {
     RecommendedHybridUnknownBranch(SolutionBranch),
 }
 
-impl SolutionInput {
-    pub(super) fn new(discovery: DiscoveryOutput, knowledge: StageKnowledgeSession) -> Self {
-        Self {
-            discovery,
-            knowledge,
-        }
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SolutionInput {
+    discovery: DiscoveryOutput,
+    knowledge: StageKnowledgeSession,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) enum SolutionBranch {
+    Conservative,
+    Recommended,
+    Ambitious,
 }
 
 impl SolutionBranchInput {
@@ -155,6 +146,15 @@ impl SolutionBranchInput {
             turn: 0,
             findings: Vec::new(),
             prior_draft: None,
+        }
+    }
+}
+
+impl SolutionInput {
+    pub(super) fn new(discovery: DiscoveryOutput, knowledge: StageKnowledgeSession) -> Self {
+        Self {
+            discovery,
+            knowledge,
         }
     }
 }
@@ -283,31 +283,6 @@ where
     .build_persistent()
 }
 
-pub(super) fn collect_step<C, R, E>(agent: &LlmAgent<C, R, E>) -> SolutionCollectStep<C, R, E>
-where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + 'static,
-    E: Debug + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + 'static,
-{
-    Step::builder(agent.json_task(
-        MODEL.into(),
-        COLLECT_SYSTEM_PROMPT.into(),
-        |i| Ok::<_, WorkflowBuildError<R::Error>>(build_collect_prompt(i)),
-        decode_outcome,
-        "solution-collect".into(),
-    ))
-    .validate(check_fn(|r, i, o| {
-        Box::pin(future::ok(validate_collection(r, i, o)))
-    }))
-    .repair_with(repair_fn(|_r, a| {
-        Box::pin(async move { repair_collection(a).await.map_err(|error| match error {}) })
-    }))
-    .retry_policy(RetryPolicy::new(MAX_COLLECT_ATTEMPTS))
-    .build_persistent()
-}
-
 pub(super) fn choice_step<C, R, E>()
 -> Step<R, SolutionCollection, SolutionUserChoice, (), WorkflowTaskError<C, R, E>>
 where
@@ -348,6 +323,31 @@ where
         },
     ))
     .with_findings::<()>()
+    .build_persistent()
+}
+
+pub(super) fn collect_step<C, R, E>(agent: &LlmAgent<C, R, E>) -> SolutionCollectStep<C, R, E>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    E: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+{
+    Step::builder(agent.json_task(
+        MODEL.into(),
+        COLLECT_SYSTEM_PROMPT.into(),
+        |i| Ok::<_, WorkflowBuildError<R::Error>>(build_collect_prompt(i)),
+        decode_outcome,
+        "solution-collect".into(),
+    ))
+    .validate(check_fn(|r, i, o| {
+        Box::pin(future::ok(validate_collection(r, i, o)))
+    }))
+    .repair_with(repair_fn(|_r, a| {
+        Box::pin(async move { repair_collection(a).await.map_err(|error| match error {}) })
+    }))
+    .retry_policy(RetryPolicy::new(MAX_COLLECT_ATTEMPTS))
     .build_persistent()
 }
 
@@ -414,6 +414,38 @@ fn build_branch_prompt(input: SolutionBranchInput) -> String {
     lines.join("\n")
 }
 
+fn build_choice_prompt(collection: &SolutionCollection) -> String {
+    let mut lines = vec![
+        "Choose a solution branch, accept the recommended hybrid, or reply with revision feedback."
+            .to_string(),
+        String::new(),
+        "Candidate branches:".to_string(),
+    ];
+
+    lines.extend(collection.drafts.iter().map(|draft| {
+        format!(
+            "- {}: {} :: {}",
+            draft.branch.slug(),
+            draft.title,
+            draft.summary
+        )
+    }));
+
+    lines.push(String::new());
+    lines.push(format!(
+        "Recommendation: {}",
+        describe_recommendation(&collection.recommendation)
+    ));
+    lines.push(collection.recommendation.rationale.clone());
+    lines.push(String::new());
+    lines.push(
+        "Reply with one of the choices or select `revise` and include feedback in a follow-up reply."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
 fn build_collect_prompt(input: SolutionCollectInput) -> String {
     let mut lines = vec![
         format!("Collection turn: {}", input.turn + 1),
@@ -464,36 +496,110 @@ fn build_collect_prompt(input: SolutionCollectInput) -> String {
     lines.join("\n")
 }
 
-fn build_choice_prompt(collection: &SolutionCollection) -> String {
-    let mut lines = vec![
-        "Choose a solution branch, accept the recommended hybrid, or reply with revision feedback."
-            .to_string(),
-        String::new(),
-        "Candidate branches:".to_string(),
-    ];
+fn choice_options(collection: &SolutionCollection) -> Vec<String> {
+    let mut options = collection
+        .drafts
+        .iter()
+        .map(|draft| draft.branch.slug().to_string())
+        .collect::<Vec<_>>();
+    if collection.recommendation.recommended_hybrid.is_some() {
+        options.push("hybrid".to_string());
+    }
+    options.push("revise".to_string());
+    options
+}
 
-    lines.extend(collection.drafts.iter().map(|draft| {
-        format!(
-            "- {}: {} :: {}",
-            draft.branch.slug(),
-            draft.title,
-            draft.summary
-        )
-    }));
+fn describe_recommendation(recommendation: &SolutionRecommendation) -> String {
+    if let Some(hybrid) = &recommendation.recommended_hybrid {
+        return format!(
+            "hybrid from {}",
+            hybrid
+                .source_branches
+                .iter()
+                .map(|branch| branch.slug())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
-    lines.push(String::new());
-    lines.push(format!(
-        "Recommendation: {}",
-        describe_recommendation(&collection.recommendation)
-    ));
-    lines.push(collection.recommendation.rationale.clone());
-    lines.push(String::new());
-    lines.push(
-        "Reply with one of the choices or select `revise` and include feedback in a follow-up reply."
-            .to_string(),
-    );
+    recommendation
+        .recommended_branch
+        .map(|branch| branch.slug().to_string())
+        .unwrap_or_else(|| "no single recommendation".to_string())
+}
 
-    lines.join("\n")
+fn has_non_empty_entries(values: &[String]) -> bool {
+    values.iter().any(|value| !value.trim().is_empty())
+}
+
+fn parse_solution_choice<H>(
+    answer: &str,
+    collection: &SolutionCollection,
+) -> Result<SolutionUserChoice, WorkflowBuildError<H>> {
+    let trimmed = answer.trim();
+    let normalised = trimmed.to_ascii_lowercase();
+
+    match normalised.as_str() {
+        "conservative" | "recommended" | "ambitious" => {
+            let draft = collection
+                .drafts
+                .iter()
+                .find(|draft| draft.branch.slug() == normalised)
+                .ok_or_else(|| {
+                    WorkflowBuildError::InvalidChoice(format!(
+                        "no `{normalised}` branch exists in the collected solutions"
+                    ))
+                })?;
+
+            Ok(SolutionUserChoice::Selected(SelectedSolution {
+                choice_label: draft.branch.slug().to_string(),
+                branch_sources: vec![draft.branch],
+                title: draft.title.clone(),
+                summary: draft.summary.clone(),
+                architecture: draft.architecture.clone(),
+                delivery_plan: draft.delivery_plan.clone(),
+                technologies: draft.technologies.clone(),
+                rationale: draft.rationale.clone(),
+                risks: draft.risks.clone(),
+                recommended_for_stage: WorkflowStageId::SoftwareArchitect,
+            }))
+        }
+        "hybrid" => {
+            let hybrid = collection
+                .recommendation
+                .recommended_hybrid
+                .as_ref()
+                .ok_or_else(|| {
+                    WorkflowBuildError::InvalidChoice(
+                        "the collected solutions do not expose a hybrid recommendation".to_string(),
+                    )
+                })?;
+
+            Ok(SolutionUserChoice::Selected(SelectedSolution {
+                choice_label: "hybrid".to_string(),
+                branch_sources: hybrid.source_branches.clone(),
+                title: hybrid.title.clone(),
+                summary: hybrid.summary.clone(),
+                architecture: hybrid.architecture.clone(),
+                delivery_plan: hybrid.delivery_plan.clone(),
+                technologies: hybrid.technologies.clone(),
+                rationale: hybrid.rationale.clone(),
+                risks: hybrid.risks.clone(),
+                recommended_for_stage: WorkflowStageId::SoftwareArchitect,
+            }))
+        }
+        "revise" => Ok(SolutionUserChoice::Revise {
+            feedback: "User requested revisions to the presented solution set.".to_string(),
+        }),
+        _ if normalised.starts_with("revise") || normalised.starts_with("reject") => {
+            Ok(SolutionUserChoice::Revise {
+                feedback: trimmed.to_string(),
+            })
+        }
+        _ => Err(WorkflowBuildError::InvalidChoice(format!(
+            "unrecognised solution choice `{trimmed}`"
+        ))),
+    }
 }
 
 async fn repair_branch(
@@ -626,112 +732,6 @@ fn validate_collection<R>(
     }
 
     findings
-}
-
-fn parse_solution_choice<H>(
-    answer: &str,
-    collection: &SolutionCollection,
-) -> Result<SolutionUserChoice, WorkflowBuildError<H>> {
-    let trimmed = answer.trim();
-    let normalised = trimmed.to_ascii_lowercase();
-
-    match normalised.as_str() {
-        "conservative" | "recommended" | "ambitious" => {
-            let draft = collection
-                .drafts
-                .iter()
-                .find(|draft| draft.branch.slug() == normalised)
-                .ok_or_else(|| {
-                    WorkflowBuildError::InvalidChoice(format!(
-                        "no `{normalised}` branch exists in the collected solutions"
-                    ))
-                })?;
-
-            Ok(SolutionUserChoice::Selected(SelectedSolution {
-                choice_label: draft.branch.slug().to_string(),
-                branch_sources: vec![draft.branch],
-                title: draft.title.clone(),
-                summary: draft.summary.clone(),
-                architecture: draft.architecture.clone(),
-                delivery_plan: draft.delivery_plan.clone(),
-                technologies: draft.technologies.clone(),
-                rationale: draft.rationale.clone(),
-                risks: draft.risks.clone(),
-                recommended_for_stage: WorkflowStageId::SoftwareArchitect,
-            }))
-        }
-        "hybrid" => {
-            let hybrid = collection
-                .recommendation
-                .recommended_hybrid
-                .as_ref()
-                .ok_or_else(|| {
-                    WorkflowBuildError::InvalidChoice(
-                        "the collected solutions do not expose a hybrid recommendation".to_string(),
-                    )
-                })?;
-
-            Ok(SolutionUserChoice::Selected(SelectedSolution {
-                choice_label: "hybrid".to_string(),
-                branch_sources: hybrid.source_branches.clone(),
-                title: hybrid.title.clone(),
-                summary: hybrid.summary.clone(),
-                architecture: hybrid.architecture.clone(),
-                delivery_plan: hybrid.delivery_plan.clone(),
-                technologies: hybrid.technologies.clone(),
-                rationale: hybrid.rationale.clone(),
-                risks: hybrid.risks.clone(),
-                recommended_for_stage: WorkflowStageId::SoftwareArchitect,
-            }))
-        }
-        "revise" => Ok(SolutionUserChoice::Revise {
-            feedback: "User requested revisions to the presented solution set.".to_string(),
-        }),
-        _ if normalised.starts_with("revise") || normalised.starts_with("reject") => {
-            Ok(SolutionUserChoice::Revise {
-                feedback: trimmed.to_string(),
-            })
-        }
-        _ => Err(WorkflowBuildError::InvalidChoice(format!(
-            "unrecognised solution choice `{trimmed}`"
-        ))),
-    }
-}
-
-fn choice_options(collection: &SolutionCollection) -> Vec<String> {
-    let mut options = collection
-        .drafts
-        .iter()
-        .map(|draft| draft.branch.slug().to_string())
-        .collect::<Vec<_>>();
-    if collection.recommendation.recommended_hybrid.is_some() {
-        options.push("hybrid".to_string());
-    }
-    options.push("revise".to_string());
-    options
-}
-
-fn describe_recommendation(recommendation: &SolutionRecommendation) -> String {
-    if let Some(hybrid) = &recommendation.recommended_hybrid {
-        return format!(
-            "hybrid from {}",
-            hybrid
-                .source_branches
-                .iter()
-                .map(|branch| branch.slug())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-
-    recommendation
-        .recommended_branch
-        .map(|branch| branch.slug().to_string())
-        .unwrap_or_else(|| "no single recommendation".to_string())
-}
-
-fn has_non_empty_entries(values: &[String]) -> bool {
-    values.iter().any(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]

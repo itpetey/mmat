@@ -64,6 +64,25 @@ pub struct KnowledgeInput {
     turn: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KnowledgePlan {
+    groups: Vec<KnowledgeGroupPlan>,
+    upstream_follow_ups: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KnowledgeFinding {
+    EmptyPlan,
+    DuplicateCollectionName(String),
+    GroupWithoutStages(String),
+    GroupWithoutSources(String),
+    MissingStageCoverage(WorkflowStageId),
+    LintFailed(String),
+    LintFindings(usize),
+}
+
+pub(super) struct MetadataOnlyKnowledgeBackend;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct KnowledgeGroupPlan {
     template: KnowledgeGroupTemplate,
@@ -82,18 +101,6 @@ pub(super) struct MaterialisedKnowledgeGroup {
     stages: Vec<WorkflowStageId>,
     sources: Vec<KnowledgeSource>,
     ingested_sources: usize,
-}
-
-impl MaterialisedKnowledgeGroup {
-    pub(super) fn as_knowledge_group(&self) -> KnowledgeGroup {
-        self.group.clone()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct KnowledgePlan {
-    groups: Vec<KnowledgeGroupPlan>,
-    upstream_follow_ups: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,17 +148,6 @@ enum KnowledgeSourceKind {
     ResearchPaper,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KnowledgeFinding {
-    EmptyPlan,
-    DuplicateCollectionName(String),
-    GroupWithoutStages(String),
-    GroupWithoutSources(String),
-    MissingStageCoverage(WorkflowStageId),
-    LintFailed(String),
-    LintFindings(usize),
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct QdrantKnowledgeBackendConfig {
     pub(super) url: String,
@@ -171,7 +167,22 @@ pub(super) struct QdrantKnowledgeBackend<R> {
     workspace_root: Option<PathBuf>,
 }
 
-pub(super) struct MetadataOnlyKnowledgeBackend;
+impl KnowledgeInput {
+    pub(super) fn new(discovery: DiscoveryOutput) -> Self {
+        Self {
+            discovery,
+            findings: Vec::new(),
+            last_plan: None,
+            turn: 0,
+        }
+    }
+}
+
+impl MaterialisedKnowledgeGroup {
+    pub(super) fn as_knowledge_group(&self) -> KnowledgeGroup {
+        self.group.clone()
+    }
+}
 
 impl PartialEq for MaterialisedKnowledgeGroup {
     fn eq(&self, other: &Self) -> bool {
@@ -222,17 +233,6 @@ impl KnowledgeGroupTemplate {
             Self::DiscoveryTranscript => "Clarifications and intent captured during discovery.",
             Self::WebResearch => "Externally gathered web research relevant to the change.",
             Self::Papers => "Paper and long-form research material relevant to the change.",
-        }
-    }
-}
-
-impl KnowledgeInput {
-    pub(super) fn new(discovery: DiscoveryOutput) -> Self {
-        Self {
-            discovery,
-            findings: Vec::new(),
-            last_plan: None,
-            turn: 0,
         }
     }
 }
@@ -515,6 +515,58 @@ impl KnowledgeBackend for MetadataOnlyKnowledgeBackend {
     }
 }
 
+pub(super) fn build_stage_knowledge_session(
+    stage: WorkflowStageId,
+    base_system_prompt: &str,
+    materialised: &[MaterialisedKnowledgeGroup],
+) -> StageKnowledgeSession {
+    let groups = scoped_groups_for_stage(materialised, stage);
+    let system_prompt = augment_system_prompt(
+        base_system_prompt,
+        &groups,
+        &KnowledgePromptConfig::default(),
+    );
+
+    StageKnowledgeSession {
+        stage,
+        system_prompt,
+        group_collections: groups.into_iter().map(|group| group.collection).collect(),
+    }
+}
+
+pub(super) fn materialisation_step<C, R, E, B>(
+    store: Arc<SqliteKnowledgeGroupStore>,
+    backend: Arc<B>,
+    collection_prefix: String,
+) -> Step<
+    R,
+    KnowledgePlan,
+    Vec<MaterialisedKnowledgeGroup>,
+    KnowledgeFinding,
+    WorkflowTaskError<C, R, E>,
+>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+    E: Debug + 'static,
+    B: KnowledgeBackend,
+{
+    Step::builder(task_fn(move |_runtime: &R, plan: KnowledgePlan| {
+        let store = store.clone();
+        let backend = backend.clone();
+        let collection_prefix = collection_prefix.clone();
+        Box::pin(async move {
+            materialise_knowledge_plan(store.as_ref(), backend.as_ref(), &collection_prefix, &plan)
+                .await
+                .map_err(|error| TaskError::Build(WorkflowBuildError::Knowledge(error)))
+        })
+    }))
+    .with_findings::<KnowledgeFinding>()
+    .build_persistent()
+}
+
 pub(super) fn step<C, R, E>(agent: &LlmAgent<C, R, E>) -> KnowledgeStep<C, R, E>
 where
     C: LlmClient<Runtime = R> + 'static,
@@ -666,58 +718,6 @@ fn build_prompt(input: KnowledgeInput) -> String {
     );
 
     lines.join("\n")
-}
-
-pub(super) fn build_stage_knowledge_session(
-    stage: WorkflowStageId,
-    base_system_prompt: &str,
-    materialised: &[MaterialisedKnowledgeGroup],
-) -> StageKnowledgeSession {
-    let groups = scoped_groups_for_stage(materialised, stage);
-    let system_prompt = augment_system_prompt(
-        base_system_prompt,
-        &groups,
-        &KnowledgePromptConfig::default(),
-    );
-
-    StageKnowledgeSession {
-        stage,
-        system_prompt,
-        group_collections: groups.into_iter().map(|group| group.collection).collect(),
-    }
-}
-
-pub(super) fn materialisation_step<C, R, E, B>(
-    store: Arc<SqliteKnowledgeGroupStore>,
-    backend: Arc<B>,
-    collection_prefix: String,
-) -> Step<
-    R,
-    KnowledgePlan,
-    Vec<MaterialisedKnowledgeGroup>,
-    KnowledgeFinding,
-    WorkflowTaskError<C, R, E>,
->
-where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + 'static,
-    E: Debug + 'static,
-    B: KnowledgeBackend,
-{
-    Step::builder(task_fn(move |_runtime: &R, plan: KnowledgePlan| {
-        let store = store.clone();
-        let backend = backend.clone();
-        let collection_prefix = collection_prefix.clone();
-        Box::pin(async move {
-            materialise_knowledge_plan(store.as_ref(), backend.as_ref(), &collection_prefix, &plan)
-                .await
-                .map_err(|error| TaskError::Build(WorkflowBuildError::Knowledge(error)))
-        })
-    }))
-    .with_findings::<KnowledgeFinding>()
-    .build_persistent()
 }
 
 fn knowledge_lint_check(

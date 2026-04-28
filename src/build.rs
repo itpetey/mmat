@@ -17,17 +17,6 @@ use crate::{
     workflow::DesignHandoff,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct BuildJobId(String);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuildJobStatus {
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildJob {
     pub id: BuildJobId,
@@ -39,11 +28,6 @@ pub struct BuildJob {
     pub updated_at: i64,
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct BuildQueueStore {
-    path: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -58,6 +42,22 @@ pub enum BuildQueueError {
     NotFound(BuildJobId),
     #[error("unknown build job status: {0}")]
     UnknownStatus(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct BuildJobId(String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuildJobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildQueueStore {
+    path: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -76,6 +76,20 @@ pub struct BuildWorkerHandle {
 
 pub struct BuildEngine {
     project: ProjectConfig,
+}
+
+impl BuildWorkerHandle {
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+
+    pub fn notify(&self) {
+        self.notify.notify_one();
+    }
+
+    pub fn abort(&self) {
+        self.join_handle.abort();
+    }
 }
 
 impl std::fmt::Display for BuildJobId {
@@ -339,18 +353,26 @@ impl BuildEngine {
     }
 }
 
-impl BuildWorkerHandle {
-    pub fn project_id(&self) -> &ProjectId {
-        &self.project_id
+impl From<BuildQueueError> for MmatError {
+    fn from(value: BuildQueueError) -> Self {
+        Self::Workflow(value.to_string())
+    }
+}
+
+pub async fn drain_project_queue(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    engine: &BuildEngine,
+) -> Result<(), BuildQueueError> {
+    while let Some(job) = store.next_pending(project_id)? {
+        store.mark_running(&job.id)?;
+        match engine.run(&job).await {
+            Ok(()) => store.mark_succeeded(&job.id)?,
+            Err(error) => store.mark_failed(&job.id, error.to_string())?,
+        }
     }
 
-    pub fn notify(&self) {
-        self.notify.notify_one();
-    }
-
-    pub fn abort(&self) {
-        self.join_handle.abort();
-    }
+    Ok(())
 }
 
 pub fn spawn_project_worker(
@@ -382,22 +404,6 @@ pub fn spawn_project_worker(
         notify,
         join_handle,
     }
-}
-
-pub async fn drain_project_queue(
-    project_id: &ProjectId,
-    store: &BuildQueueStore,
-    engine: &BuildEngine,
-) -> Result<(), BuildQueueError> {
-    while let Some(job) = store.next_pending(project_id)? {
-        store.mark_running(&job.id)?;
-        match engine.run(&job).await {
-            Ok(()) => store.mark_succeeded(&job.id)?,
-            Err(error) => store.mark_failed(&job.id, error.to_string())?,
-        }
-    }
-
-    Ok(())
 }
 
 fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
@@ -433,12 +439,6 @@ fn now_unix_seconds() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
-}
-
-impl From<BuildQueueError> for MmatError {
-    fn from(value: BuildQueueError) -> Self {
-        Self::Workflow(value.to_string())
-    }
 }
 
 #[cfg(test)]

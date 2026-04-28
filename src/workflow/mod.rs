@@ -23,19 +23,47 @@ mod knowledge;
 mod parser;
 mod solutions;
 
+type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 type WorkflowTaskError<C, R, E> = TaskError<
     WorkflowBuildError<<R as HumanIO>::Error>,
     <C as LlmClient>::Error,
     E,
     serde_json::Error,
 >;
-type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 
+const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_EMBEDDING_DIMENSION: usize = 1536;
+const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
-const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
-const DEFAULT_EMBEDDING_DIMENSION: usize = 1536;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnowledgeRuntimeConfig {
+    pub sqlite_path: PathBuf,
+    pub qdrant_url: String,
+    pub qdrant_api_key: Option<String>,
+    pub embedding_api_key: String,
+    pub embedding_base_url: String,
+    pub embedding_model: String,
+    pub embedding_dimension: usize,
+    pub repo: Option<String>,
+    pub workspace_root: PathBuf,
+    pub qdrant_collection_prefix: String,
+}
+
+pub struct GreenfieldReport {
+    run_id: uuid::Uuid,
+    result: WorkflowRunResult,
+    step_report: StepReport<WorkflowFinding>,
+    design_handoff: Option<DesignHandoff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignHandoff {
+    pub design_run_id: uuid::Uuid,
+    pub prompt: String,
+    pub architect_plan: serde_json::Value,
+}
 
 #[derive(Debug, Error)]
 enum WorkflowBuildError<H> {
@@ -56,6 +84,61 @@ enum WorkflowFinding {
     SolutionBranch(solutions::SolutionBranchFinding),
     SolutionCollect(solutions::SolutionCollectFinding),
     Architect(architect::ArchitectFinding),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub(super) enum WorkflowStageId {
+    Discovery,
+    KnowledgePlanning,
+    KnowledgeMaterialisation,
+    Solutions,
+    SolutionSelection,
+    SoftwareArchitect,
+    ImplementationPlanning,
+    Execution,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum WorkflowRunResult {
+    ReadyForPlanning {
+        architect_plan: architect::ArchitectPlan,
+    },
+    NeedsRevision {
+        feedback: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct KnowledgeMaterialisationInput {
+    discovery: discovery::DiscoveryOutput,
+    plan: knowledge::KnowledgePlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct KnowledgeMaterialisationOutput {
+    discovery: discovery::DiscoveryOutput,
+    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SolutionCollectionContext {
+    discovery: discovery::DiscoveryOutput,
+    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
+    collection: solutions::SolutionCollection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SolutionChoiceContext {
+    discovery: discovery::DiscoveryOutput,
+    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
+    choice: solutions::SolutionUserChoice,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ArchitectStageInput {
+    discovery: discovery::DiscoveryOutput,
+    selected_solution: solutions::SelectedSolution,
+    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
 }
 
 impl From<discovery::DiscoveryFinding> for WorkflowFinding {
@@ -100,18 +183,6 @@ impl Display for WorkflowFinding {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub(super) enum WorkflowStageId {
-    Discovery,
-    KnowledgePlanning,
-    KnowledgeMaterialisation,
-    Solutions,
-    SolutionSelection,
-    SoftwareArchitect,
-    ImplementationPlanning,
-    Execution,
-}
-
 impl WorkflowStageId {
     pub(super) fn as_str(self) -> &'static str {
         match self {
@@ -145,6 +216,102 @@ impl WorkflowStageId {
 impl std::fmt::Display for WorkflowStageId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl KnowledgeRuntimeConfig {
+    pub fn from_env() -> Result<Self, MmatError> {
+        let workspace_root = env::current_dir().map_err(|error| {
+            MmatError::Config(format!("failed to resolve current workspace: {error}"))
+        })?;
+        let sqlite_path = read_env("MMAT_KNOWLEDGE_SQLITE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace_root.join(".mmat").join("knowledge.sqlite3"));
+        let embedding_dimension = match read_env("MMAT_EMBEDDING_DIMENSION") {
+            Some(value) => value.parse::<usize>().map_err(|error| {
+                MmatError::Config(format!(
+                    "invalid MMAT_EMBEDDING_DIMENSION `{value}`: {error}"
+                ))
+            })?,
+            None => DEFAULT_EMBEDDING_DIMENSION,
+        };
+
+        Ok(Self {
+            sqlite_path,
+            qdrant_url: read_env("MMAT_QDRANT_URL")
+                .unwrap_or_else(|| DEFAULT_QDRANT_URL.to_string()),
+            qdrant_api_key: read_env("MMAT_QDRANT_API_KEY"),
+            embedding_api_key: read_env("MMAT_EMBEDDING_API_KEY")
+                .or_else(|| read_env("OPENAI_API_KEY"))
+                .unwrap_or_default(),
+            embedding_base_url: read_env("MMAT_EMBEDDING_BASE_URL")
+                .unwrap_or_else(|| DEFAULT_EMBEDDING_BASE_URL.to_string()),
+            embedding_model: read_env("MMAT_EMBEDDING_MODEL")
+                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
+            embedding_dimension,
+            repo: read_env("MMAT_KNOWLEDGE_REPO"),
+            workspace_root,
+            qdrant_collection_prefix: read_env("MMAT_QDRANT_COLLECTION_PREFIX")
+                .unwrap_or_else(|| "p_default".to_string()),
+        })
+    }
+
+    pub fn from_project(project: &ProjectConfig) -> Result<Self, MmatError> {
+        let mut config = Self::from_env()?;
+        config.sqlite_path = project.data_dir.join("knowledge.sqlite3");
+        config.workspace_root = project.root.clone();
+        config.repo = project.repo_label.clone();
+        config.qdrant_collection_prefix = project.qdrant_collection_prefix.clone();
+        Ok(config)
+    }
+
+    fn open_store(&self) -> Result<SqliteKnowledgeGroupStore, MmatError> {
+        if let Some(parent) = self.sqlite_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                MmatError::Config(format!(
+                    "failed to create SQLite knowledge directory `{}`: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let path = self.sqlite_path.to_string_lossy().into_owned();
+        SqliteKnowledgeGroupStore::open(&path)
+            .map_err(|error| MmatError::Workflow(error.to_string()))
+    }
+
+    fn qdrant_backend<R>(&self) -> knowledge::QdrantKnowledgeBackend<R> {
+        knowledge::QdrantKnowledgeBackend::new(knowledge::QdrantKnowledgeBackendConfig {
+            url: self.qdrant_url.clone(),
+            api_key: self.qdrant_api_key.clone(),
+            embedding_api_key: self.embedding_api_key.clone(),
+            embedding_base_url: self.embedding_base_url.clone(),
+            embedding_model: self.embedding_model.clone(),
+            embedding_dimension: self.embedding_dimension,
+            repo: self.repo.clone(),
+            workspace_root: self.workspace_root.clone(),
+        })
+    }
+}
+
+impl GreenfieldReport {
+    pub fn run_id(&self) -> uuid::Uuid {
+        self.run_id
+    }
+
+    pub fn attempt_count(&self) -> usize {
+        self.step_report.attempt_count()
+    }
+
+    pub fn outcome_label(&self) -> &'static str {
+        match &self.result {
+            WorkflowRunResult::ReadyForPlanning { .. } => "ready-for-planning",
+            WorkflowRunResult::NeedsRevision { .. } => "needs-revision",
+        }
+    }
+
+    pub fn design_handoff(&self) -> Option<DesignHandoff> {
+        self.design_handoff.clone()
     }
 }
 
@@ -226,185 +393,23 @@ where
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KnowledgeRuntimeConfig {
-    pub sqlite_path: PathBuf,
-    pub qdrant_url: String,
-    pub qdrant_api_key: Option<String>,
-    pub embedding_api_key: String,
-    pub embedding_base_url: String,
-    pub embedding_model: String,
-    pub embedding_dimension: usize,
-    pub repo: Option<String>,
-    pub workspace_root: PathBuf,
-    pub qdrant_collection_prefix: String,
-}
-
-impl KnowledgeRuntimeConfig {
-    pub fn from_env() -> Result<Self, MmatError> {
-        let workspace_root = env::current_dir().map_err(|error| {
-            MmatError::Config(format!("failed to resolve current workspace: {error}"))
-        })?;
-        let sqlite_path = read_env("MMAT_KNOWLEDGE_SQLITE_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| workspace_root.join(".mmat").join("knowledge.sqlite3"));
-        let embedding_dimension = match read_env("MMAT_EMBEDDING_DIMENSION") {
-            Some(value) => value.parse::<usize>().map_err(|error| {
-                MmatError::Config(format!(
-                    "invalid MMAT_EMBEDDING_DIMENSION `{value}`: {error}"
-                ))
-            })?,
-            None => DEFAULT_EMBEDDING_DIMENSION,
-        };
-
-        Ok(Self {
-            sqlite_path,
-            qdrant_url: read_env("MMAT_QDRANT_URL")
-                .unwrap_or_else(|| DEFAULT_QDRANT_URL.to_string()),
-            qdrant_api_key: read_env("MMAT_QDRANT_API_KEY"),
-            embedding_api_key: read_env("MMAT_EMBEDDING_API_KEY")
-                .or_else(|| read_env("OPENAI_API_KEY"))
-                .unwrap_or_default(),
-            embedding_base_url: read_env("MMAT_EMBEDDING_BASE_URL")
-                .unwrap_or_else(|| DEFAULT_EMBEDDING_BASE_URL.to_string()),
-            embedding_model: read_env("MMAT_EMBEDDING_MODEL")
-                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
-            embedding_dimension,
-            repo: read_env("MMAT_KNOWLEDGE_REPO"),
-            workspace_root,
-            qdrant_collection_prefix: read_env("MMAT_QDRANT_COLLECTION_PREFIX")
-                .unwrap_or_else(|| "p_default".to_string()),
-        })
-    }
-
-    pub fn from_project(project: &ProjectConfig) -> Result<Self, MmatError> {
-        let mut config = Self::from_env()?;
-        config.sqlite_path = project.data_dir.join("knowledge.sqlite3");
-        config.workspace_root = project.root.clone();
-        config.repo = project.repo_label.clone();
-        config.qdrant_collection_prefix = project.qdrant_collection_prefix.clone();
-        Ok(config)
-    }
-
-    fn open_store(&self) -> Result<SqliteKnowledgeGroupStore, MmatError> {
-        if let Some(parent) = self.sqlite_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                MmatError::Config(format!(
-                    "failed to create SQLite knowledge directory `{}`: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
-
-        let path = self.sqlite_path.to_string_lossy().into_owned();
-        SqliteKnowledgeGroupStore::open(&path)
-            .map_err(|error| MmatError::Workflow(error.to_string()))
-    }
-
-    fn qdrant_backend<R>(&self) -> knowledge::QdrantKnowledgeBackend<R> {
-        knowledge::QdrantKnowledgeBackend::new(knowledge::QdrantKnowledgeBackendConfig {
-            url: self.qdrant_url.clone(),
-            api_key: self.qdrant_api_key.clone(),
-            embedding_api_key: self.embedding_api_key.clone(),
-            embedding_base_url: self.embedding_base_url.clone(),
-            embedding_model: self.embedding_model.clone(),
-            embedding_dimension: self.embedding_dimension,
-            repo: self.repo.clone(),
-            workspace_root: self.workspace_root.clone(),
-        })
-    }
-}
-
-fn read_env(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|value| !value.trim().is_empty())
-}
-
-fn workflow_llm_config() -> OpenAiConfig {
-    let api_key = read_env("MMAT_LLM_API_KEY")
-        .or_else(|| read_env("OPENAI_API_KEY"))
-        .unwrap_or_default();
-    let base_url =
-        read_env("MMAT_LLM_BASE_URL").unwrap_or_else(|| DEFAULT_LLM_BASE_URL.to_string());
-
-    OpenAiConfig::new(api_key).with_base_url(base_url)
-}
-
-pub struct GreenfieldReport {
-    run_id: uuid::Uuid,
-    result: WorkflowRunResult,
-    step_report: StepReport<WorkflowFinding>,
-    design_handoff: Option<DesignHandoff>,
-}
-
-impl GreenfieldReport {
-    pub fn run_id(&self) -> uuid::Uuid {
-        self.run_id
-    }
-
-    pub fn attempt_count(&self) -> usize {
-        self.step_report.attempt_count()
-    }
-
-    pub fn outcome_label(&self) -> &'static str {
-        match &self.result {
-            WorkflowRunResult::ReadyForPlanning { .. } => "ready-for-planning",
-            WorkflowRunResult::NeedsRevision { .. } => "needs-revision",
-        }
-    }
-
-    pub fn design_handoff(&self) -> Option<DesignHandoff> {
-        self.design_handoff.clone()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DesignHandoff {
-    pub design_run_id: uuid::Uuid,
-    pub prompt: String,
-    pub architect_plan: serde_json::Value,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum WorkflowRunResult {
-    ReadyForPlanning {
-        architect_plan: architect::ArchitectPlan,
-    },
-    NeedsRevision {
-        feedback: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct KnowledgeMaterialisationInput {
-    discovery: discovery::DiscoveryOutput,
-    plan: knowledge::KnowledgePlan,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct KnowledgeMaterialisationOutput {
-    discovery: discovery::DiscoveryOutput,
-    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct SolutionCollectionContext {
-    discovery: discovery::DiscoveryOutput,
-    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
-    collection: solutions::SolutionCollection,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct SolutionChoiceContext {
-    discovery: discovery::DiscoveryOutput,
-    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
-    choice: solutions::SolutionUserChoice,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct ArchitectStageInput {
-    discovery: discovery::DiscoveryOutput,
-    selected_solution: solutions::SelectedSolution,
-    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
+fn architect_input_from_stage(input: ArchitectStageInput) -> architect::ArchitectInput {
+    let knowledge = knowledge::build_stage_knowledge_session(
+        WorkflowStageId::SoftwareArchitect,
+        WorkflowStageId::SoftwareArchitect.default_system_prompt(),
+        &input.materialised,
+    );
+    let materialised = input
+        .materialised
+        .iter()
+        .map(|g| g.as_knowledge_group())
+        .collect();
+    architect::ArchitectInput::new(
+        input.discovery,
+        input.selected_solution,
+        knowledge,
+        materialised,
+    )
 }
 
 fn build_greenfield_step<C, R, E>(
@@ -495,52 +500,6 @@ where
         .then(finalise_choice_step::<C, R, E>(architect))
 }
 
-fn solution_branch_step<C, R, E>(
-    branch_step: solutions::SolutionBranchStep<C, R, E>,
-    branch: solutions::SolutionBranch,
-) -> WorkflowStep<C, R, E, solutions::SolutionInput, solutions::SolutionDraft>
-where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + 'static,
-    E: Debug + 'static,
-{
-    branch_step
-        .map_input(move |input| solutions::SolutionBranchInput::new(branch, input))
-        .map_findings(WorkflowFinding::from)
-}
-
-fn solution_input_from_materialisation(
-    input: KnowledgeMaterialisationOutput,
-) -> solutions::SolutionInput {
-    let knowledge = knowledge::build_stage_knowledge_session(
-        WorkflowStageId::Solutions,
-        WorkflowStageId::Solutions.default_system_prompt(),
-        &input.materialised,
-    );
-    solutions::SolutionInput::new(input.discovery, knowledge)
-}
-
-fn architect_input_from_stage(input: ArchitectStageInput) -> architect::ArchitectInput {
-    let knowledge = knowledge::build_stage_knowledge_session(
-        WorkflowStageId::SoftwareArchitect,
-        WorkflowStageId::SoftwareArchitect.default_system_prompt(),
-        &input.materialised,
-    );
-    let materialised = input
-        .materialised
-        .iter()
-        .map(|g| g.as_knowledge_group())
-        .collect();
-    architect::ArchitectInput::new(
-        input.discovery,
-        input.selected_solution,
-        knowledge,
-        materialised,
-    )
-}
-
 fn finalise_choice_step<C, R, E>(
     architect: WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>,
 ) -> WorkflowStep<C, R, E, SolutionChoiceContext, WorkflowRunResult>
@@ -583,6 +542,47 @@ where
     ))
     .with_findings::<WorkflowFinding>()
     .build()
+}
+
+fn read_env(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn solution_branch_step<C, R, E>(
+    branch_step: solutions::SolutionBranchStep<C, R, E>,
+    branch: solutions::SolutionBranch,
+) -> WorkflowStep<C, R, E, solutions::SolutionInput, solutions::SolutionDraft>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+    E: Debug + 'static,
+{
+    branch_step
+        .map_input(move |input| solutions::SolutionBranchInput::new(branch, input))
+        .map_findings(WorkflowFinding::from)
+}
+
+fn solution_input_from_materialisation(
+    input: KnowledgeMaterialisationOutput,
+) -> solutions::SolutionInput {
+    let knowledge = knowledge::build_stage_knowledge_session(
+        WorkflowStageId::Solutions,
+        WorkflowStageId::Solutions.default_system_prompt(),
+        &input.materialised,
+    );
+    solutions::SolutionInput::new(input.discovery, knowledge)
+}
+
+fn workflow_llm_config() -> OpenAiConfig {
+    let api_key = read_env("MMAT_LLM_API_KEY")
+        .or_else(|| read_env("OPENAI_API_KEY"))
+        .unwrap_or_default();
+    let base_url =
+        read_env("MMAT_LLM_BASE_URL").unwrap_or_else(|| DEFAULT_LLM_BASE_URL.to_string());
+
+    OpenAiConfig::new(api_key).with_base_url(base_url)
 }
 
 #[cfg(test)]

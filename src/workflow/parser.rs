@@ -87,16 +87,6 @@ fn blank_model_output_message() -> &'static str {
     "model returned blank assistant content instead of JSON. This often means the model/backend emitted only hidden reasoning or non-structured tool-call text that MMAT cannot consume"
 }
 
-fn outcome_reasoning_content(outcome: &ExecutionOutcome) -> Option<&str> {
-    outcome
-        .final_response()
-        .metadata
-        .get("reasoning_content")
-        .or_else(|| outcome.final_response().metadata.get("reasoning"))
-        .and_then(Value::as_str)
-        .filter(|content| !content.trim().is_empty())
-}
-
 fn describe_markup_tool_call(content: &str) -> Option<String> {
     if !content.contains("<tool_call>") || !content.contains("<function=") {
         return None;
@@ -143,6 +133,16 @@ fn extract_markup_tool_name(content: &str) -> Option<&str> {
     let start = content.find(marker)? + marker.len();
     let end = content[start..].find('>')?;
     Some(&content[start..start + end])
+}
+
+fn outcome_reasoning_content(outcome: &ExecutionOutcome) -> Option<&str> {
+    outcome
+        .final_response()
+        .metadata
+        .get("reasoning_content")
+        .or_else(|| outcome.final_response().metadata.get("reasoning"))
+        .and_then(Value::as_str)
+        .filter(|content| !content.trim().is_empty())
 }
 
 fn parse_json_candidate<T>(content: &str) -> Result<T, serde_json::Error>

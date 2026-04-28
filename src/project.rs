@@ -14,9 +14,6 @@ use crate::MmatError;
 
 const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ProjectId(String);
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub id: ProjectId,
@@ -26,21 +23,6 @@ pub struct ProjectConfig {
     pub enabled: bool,
     pub qdrant_collection_prefix: String,
     pub repo_label: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct NewProject {
-    pub name: String,
-    pub root: PathBuf,
-    pub data_dir: Option<PathBuf>,
-    pub enabled: bool,
-    pub qdrant_collection_prefix: Option<String>,
-    pub repo_label: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProjectRegistryStore {
-    path: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -55,6 +37,24 @@ pub enum ProjectRegistryError {
     NotFound(ProjectId),
     #[error("invalid project id: {0}")]
     InvalidProjectId(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ProjectId(String);
+
+#[derive(Clone, Debug)]
+pub struct NewProject {
+    pub name: String,
+    pub root: PathBuf,
+    pub data_dir: Option<PathBuf>,
+    pub enabled: bool,
+    pub qdrant_collection_prefix: Option<String>,
+    pub repo_label: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectRegistryStore {
+    path: PathBuf,
 }
 
 impl std::fmt::Display for ProjectId {
@@ -318,6 +318,26 @@ impl ProjectRegistryStore {
     }
 }
 
+impl From<ProjectRegistryError> for MmatError {
+    fn from(value: ProjectRegistryError) -> Self {
+        Self::Config(value.to_string())
+    }
+}
+
+pub fn default_collection_prefix(project_id: &ProjectId) -> String {
+    format!("p_{}", sanitise_collection_component(project_id.as_str()))
+}
+
+pub fn prefix_collection_id(prefix: &str, collection: &str) -> String {
+    let prefix = sanitise_collection_component(prefix);
+    let collection = sanitise_collection_component(collection);
+    if prefix.is_empty() {
+        return collection;
+    }
+
+    format!("{prefix}__{collection}",)
+}
+
 fn decode_project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectConfig> {
     Ok(ProjectConfig {
         id: ProjectId(row.get(0)?),
@@ -351,18 +371,11 @@ fn normalise_root(root: PathBuf) -> Result<PathBuf, ProjectRegistryError> {
     }
 }
 
-pub fn default_collection_prefix(project_id: &ProjectId) -> String {
-    format!("p_{}", sanitise_collection_component(project_id.as_str()))
-}
-
-pub fn prefix_collection_id(prefix: &str, collection: &str) -> String {
-    let prefix = sanitise_collection_component(prefix);
-    let collection = sanitise_collection_component(collection);
-    if prefix.is_empty() {
-        return collection;
-    }
-
-    format!("{prefix}__{collection}",)
+fn now_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 fn sanitise_collection_component(value: &str) -> String {
@@ -382,19 +395,6 @@ fn sanitise_collection_component(value: &str) -> String {
     }
 
     output.trim_matches('_').to_string()
-}
-
-fn now_unix_seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default()
-}
-
-impl From<ProjectRegistryError> for MmatError {
-    fn from(value: ProjectRegistryError) -> Self {
-        Self::Config(value.to_string())
-    }
 }
 
 #[cfg(test)]

@@ -4,8 +4,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::project::ProjectId;
 
-pub type EventSender = mpsc::UnboundedSender<FrontendEvent>;
 pub type EventReceiver = mpsc::UnboundedReceiver<FrontendEvent>;
+pub type EventSender = mpsc::UnboundedSender<FrontendEvent>;
 
 #[derive(Debug)]
 pub enum FrontendEvent {

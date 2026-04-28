@@ -246,6 +246,10 @@ fn build_prompt(input: ArchitectInput) -> String {
     lines.join("\n")
 }
 
+fn has_non_empty_entries(values: &[String]) -> bool {
+    values.iter().any(|value| !value.trim().is_empty())
+}
+
 async fn repair(
     attempts: Vec<Attempt<ArchitectInput, ArchitectPlan, ArchitectFinding>>,
 ) -> Result<ArchitectInput, std::convert::Infallible> {
@@ -288,10 +292,6 @@ fn validate<R>(_runtime: &R, _input: ArchitectInput, plan: ArchitectPlan) -> Vec
     }
 
     findings
-}
-
-fn has_non_empty_entries(values: &[String]) -> bool {
-    values.iter().any(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]

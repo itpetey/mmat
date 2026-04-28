@@ -111,47 +111,6 @@ impl LiveViewHandle {
     }
 }
 
-fn spawn_server(
-    addr: SocketAddr,
-    ui_state: Arc<UiState>,
-) -> Result<LiveViewReadyHandle, LiveViewError> {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let join_handle = tokio::spawn(run_server(addr, ui_state, shutdown_rx, ready_tx));
-
-    Ok(LiveViewReadyHandle {
-        shutdown_tx,
-        join_handle,
-        ready_rx,
-    })
-}
-
-async fn run_server(
-    addr: SocketAddr,
-    ui_state: Arc<UiState>,
-    shutdown_rx: watch::Receiver<bool>,
-    ready_tx: oneshot::Sender<Result<(), std::io::Error>>,
-) -> Result<(), LiveViewError> {
-    let app = build_router(ui_state);
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            let kind = error.kind();
-            let _ = ready_tx.send(Err(std::io::Error::new(kind, error.to_string())));
-            return Err(LiveViewError::Bind(error));
-        }
-    };
-    let local_addr = listener.local_addr().map_err(LiveViewError::Bind)?;
-
-    let _ = ready_tx.send(Ok(()));
-    info!(target: "mmat::liveview", "LiveView UI listening on http://{local_addr}");
-
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(wait_for_shutdown(shutdown_rx))
-        .await
-        .map_err(LiveViewError::Serve)
-}
-
 fn build_router(ui_state: Arc<UiState>) -> Router {
     let liveview_pool = dioxus_liveview::LiveViewPool::new();
     let liveview_state = ui_state.clone();
@@ -189,6 +148,47 @@ fn index_html() -> String {
         "__MMAT_LIVEVIEW_GLUE__",
         &dioxus_liveview::interpreter_glue(LIVEVIEW_PATH),
     )
+}
+
+async fn run_server(
+    addr: SocketAddr,
+    ui_state: Arc<UiState>,
+    shutdown_rx: watch::Receiver<bool>,
+    ready_tx: oneshot::Sender<Result<(), std::io::Error>>,
+) -> Result<(), LiveViewError> {
+    let app = build_router(ui_state);
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let kind = error.kind();
+            let _ = ready_tx.send(Err(std::io::Error::new(kind, error.to_string())));
+            return Err(LiveViewError::Bind(error));
+        }
+    };
+    let local_addr = listener.local_addr().map_err(LiveViewError::Bind)?;
+
+    let _ = ready_tx.send(Ok(()));
+    info!(target: "mmat::liveview", "LiveView UI listening on http://{local_addr}");
+
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(wait_for_shutdown(shutdown_rx))
+        .await
+        .map_err(LiveViewError::Serve)
+}
+
+fn spawn_server(
+    addr: SocketAddr,
+    ui_state: Arc<UiState>,
+) -> Result<LiveViewReadyHandle, LiveViewError> {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let join_handle = tokio::spawn(run_server(addr, ui_state, shutdown_rx, ready_tx));
+
+    Ok(LiveViewReadyHandle {
+        shutdown_tx,
+        join_handle,
+        ready_rx,
+    })
 }
 
 async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {

@@ -12,9 +12,61 @@ pub(super) struct RootAppProps {
     pub ui_state: Arc<UiState>,
 }
 
+#[derive(Props, Clone)]
+struct ProjectSwitcherProps {
+    ui_state: Arc<UiState>,
+    projects: Vec<crate::project::ProjectConfig>,
+    active_project_id: crate::project::ProjectId,
+}
+
+#[derive(Props, Clone)]
+struct RegisterProjectFormProps {
+    ui_state: Arc<UiState>,
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct QueuePanelProps {
+    queue: Vec<BuildJobSnapshot>,
+    worker_summary: Vec<ProjectWorkerSnapshot>,
+}
+
+#[derive(Props, Clone)]
+struct ComposerProps {
+    ui_state: Arc<UiState>,
+    mode: ComposerMode,
+    pending_prompt: Option<PendingPromptSnapshot>,
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RawLogsDisclosureProps {
+    history: VecDeque<UiEventEntry>,
+}
+
 impl PartialEq for RootAppProps {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.ui_state, &other.ui_state)
+    }
+}
+
+impl PartialEq for ProjectSwitcherProps {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ui_state, &other.ui_state)
+            && self.projects == other.projects
+            && self.active_project_id == other.active_project_id
+    }
+}
+
+impl PartialEq for RegisterProjectFormProps {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ui_state, &other.ui_state)
+    }
+}
+
+impl PartialEq for ComposerProps {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ui_state, &other.ui_state)
+            && self.mode == other.mode
+            && self.pending_prompt == other.pending_prompt
     }
 }
 
@@ -86,157 +138,6 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
     }
 }
 
-#[derive(Props, Clone)]
-struct ProjectSwitcherProps {
-    ui_state: Arc<UiState>,
-    projects: Vec<crate::project::ProjectConfig>,
-    active_project_id: crate::project::ProjectId,
-}
-
-impl PartialEq for ProjectSwitcherProps {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.ui_state, &other.ui_state)
-            && self.projects == other.projects
-            && self.active_project_id == other.active_project_id
-    }
-}
-
-#[allow(non_snake_case)]
-fn ProjectSwitcher(props: ProjectSwitcherProps) -> Element {
-    rsx! {
-        nav { class: "project-switcher",
-            for project in props.projects {
-                {
-                    let project_id = project.id.clone();
-                    let state = props.ui_state.clone();
-                    let class_name = if project.id == props.active_project_id {
-                        "project-switch active"
-                    } else {
-                        "project-switch"
-                    };
-                    rsx! {
-                        button {
-                            class: "{class_name}",
-                            r#type: "button",
-                            onclick: move |_| {
-                                state.switch_project(project_id.clone());
-                            },
-                            "{project.name}"
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone)]
-struct RegisterProjectFormProps {
-    ui_state: Arc<UiState>,
-}
-
-impl PartialEq for RegisterProjectFormProps {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.ui_state, &other.ui_state)
-    }
-}
-
-#[allow(non_snake_case)]
-fn RegisterProjectForm(props: RegisterProjectFormProps) -> Element {
-    let mut name = use_signal(String::new);
-    let mut root = use_signal(String::new);
-    let form_state = props.ui_state.clone();
-
-    rsx! {
-        div { class: "project-register",
-            input {
-                class: "project-input",
-                value: "{name}",
-                placeholder: "Name",
-                oninput: move |event| name.set(event.value()),
-            }
-            input {
-                class: "project-input root",
-                value: "{root}",
-                placeholder: "Repository root",
-                oninput: move |event| root.set(event.value()),
-            }
-            button {
-                class: "project-add",
-                r#type: "button",
-                onclick: move |_| {
-                    let submitted_name = name.read().trim().to_string();
-                    let submitted_root = root.read().trim().to_string();
-                    if submitted_name.is_empty() || submitted_root.is_empty() {
-                        return;
-                    }
-                    if form_state.register_project(submitted_name, submitted_root).is_ok() {
-                        name.set(String::new());
-                        root.set(String::new());
-                    }
-                },
-                "+"
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct QueuePanelProps {
-    queue: Vec<BuildJobSnapshot>,
-    worker_summary: Vec<ProjectWorkerSnapshot>,
-}
-
-#[allow(non_snake_case)]
-fn QueuePanel(props: QueuePanelProps) -> Element {
-    rsx! {
-        div { class: "queue-panel",
-            div { class: "queue-active",
-                span { class: "queue-title", "queue" }
-                if props.queue.is_empty() {
-                    span { class: "queue-empty", "empty" }
-                }
-                for job in props.queue {
-                    div { class: "queue-job",
-                        span { class: "queue-status {job.status}", "{job.status}" }
-                        span { class: "queue-prompt", "{job.prompt}" }
-                        if let Some(error) = &job.error {
-                            span { class: "queue-error", "{error}" }
-                        }
-                    }
-                }
-            }
-            if !props.worker_summary.is_empty() {
-                div { class: "queue-global",
-                    for worker in props.worker_summary {
-                        div { class: "worker-summary",
-                            span { class: "worker-name", "{worker.project_name}" }
-                            span { class: "worker-count", "p {worker.pending}" }
-                            span { class: "worker-count", "r {worker.running}" }
-                            span { class: "worker-count failed", "f {worker.failed}" }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone)]
-struct ComposerProps {
-    ui_state: Arc<UiState>,
-    mode: ComposerMode,
-    pending_prompt: Option<PendingPromptSnapshot>,
-}
-
-impl PartialEq for ComposerProps {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.ui_state, &other.ui_state)
-            && self.mode == other.mode
-            && self.pending_prompt == other.pending_prompt
-    }
-}
-
 #[allow(non_snake_case)]
 fn Composer(props: ComposerProps) -> Element {
     let mut input = use_signal(String::new);
@@ -301,20 +202,68 @@ fn Composer(props: ComposerProps) -> Element {
     }
 }
 
-fn submit_composer_input(input: &mut Signal<String>, ui_state: &Arc<UiState>) {
-    let submitted = input.read().trim().to_string();
-    if submitted.is_empty() {
-        return;
-    }
-
-    if ui_state.send_initial_input(submitted.clone()) || ui_state.send_pending_prompt(submitted) {
-        input.set(String::new());
+#[allow(non_snake_case)]
+fn ProjectSwitcher(props: ProjectSwitcherProps) -> Element {
+    rsx! {
+        nav { class: "project-switcher",
+            for project in props.projects {
+                {
+                    let project_id = project.id.clone();
+                    let state = props.ui_state.clone();
+                    let class_name = if project.id == props.active_project_id {
+                        "project-switch active"
+                    } else {
+                        "project-switch"
+                    };
+                    rsx! {
+                        button {
+                            class: "{class_name}",
+                            r#type: "button",
+                            onclick: move |_| {
+                                state.switch_project(project_id.clone());
+                            },
+                            "{project.name}"
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-#[derive(Props, Clone, PartialEq)]
-struct RawLogsDisclosureProps {
-    history: VecDeque<UiEventEntry>,
+#[allow(non_snake_case)]
+fn QueuePanel(props: QueuePanelProps) -> Element {
+    rsx! {
+        div { class: "queue-panel",
+            div { class: "queue-active",
+                span { class: "queue-title", "queue" }
+                if props.queue.is_empty() {
+                    span { class: "queue-empty", "empty" }
+                }
+                for job in props.queue {
+                    div { class: "queue-job",
+                        span { class: "queue-status {job.status}", "{job.status}" }
+                        span { class: "queue-prompt", "{job.prompt}" }
+                        if let Some(error) = &job.error {
+                            span { class: "queue-error", "{error}" }
+                        }
+                    }
+                }
+            }
+            if !props.worker_summary.is_empty() {
+                div { class: "queue-global",
+                    for worker in props.worker_summary {
+                        div { class: "worker-summary",
+                            span { class: "worker-name", "{worker.project_name}" }
+                            span { class: "worker-count", "p {worker.pending}" }
+                            span { class: "worker-count", "r {worker.running}" }
+                            span { class: "worker-count failed", "f {worker.failed}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[allow(non_snake_case)]
@@ -336,6 +285,95 @@ fn RawLogsDisclosure(props: RawLogsDisclosureProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[allow(non_snake_case)]
+fn RegisterProjectForm(props: RegisterProjectFormProps) -> Element {
+    let mut name = use_signal(String::new);
+    let mut root = use_signal(String::new);
+    let form_state = props.ui_state.clone();
+
+    rsx! {
+        div { class: "project-register",
+            input {
+                class: "project-input",
+                value: "{name}",
+                placeholder: "Name",
+                oninput: move |event| name.set(event.value()),
+            }
+            input {
+                class: "project-input root",
+                value: "{root}",
+                placeholder: "Repository root",
+                oninput: move |event| root.set(event.value()),
+            }
+            button {
+                class: "project-add",
+                r#type: "button",
+                onclick: move |_| {
+                    let submitted_name = name.read().trim().to_string();
+                    let submitted_root = root.read().trim().to_string();
+                    if submitted_name.is_empty() || submitted_root.is_empty() {
+                        return;
+                    }
+                    if form_state.register_project(submitted_name, submitted_root).is_ok() {
+                        name.set(String::new());
+                        root.set(String::new());
+                    }
+                },
+                "+"
+            }
+        }
+    }
+}
+
+fn format_event(event: &UiEvent) -> String {
+    match event {
+        UiEvent::Log { level, message } => format!("[{level}] {message}"),
+        UiEvent::StepStarted { task_label } => format!("> {task_label}"),
+        UiEvent::StepCompleted {
+            task_label,
+            attempts,
+        } => format!("ok {task_label} ({attempts} attempts)"),
+        UiEvent::StepFailed { task_label, stage } => format!("x {task_label} ({stage})"),
+        UiEvent::ComponentStarted { component, name } => {
+            format!("[{component}] started: {name}")
+        }
+        UiEvent::ComponentCompleted { component, name } => {
+            format!("[{component}] completed: {name}")
+        }
+        UiEvent::ComponentFailed { component, name } => {
+            format!("[{component}] failed: {name}")
+        }
+    }
+}
+
+fn format_run_summary(summary: &RunSummary) -> String {
+    let stage = summary.current_stage.replace('_', " ");
+    match summary.status.as_str() {
+        "awaiting_clarification" => format!("Waiting for clarification during {stage}."),
+        "awaiting_approval" => "Waiting for proposal approval.".to_string(),
+        "awaiting_contract_approval" => "Waiting for contract approval.".to_string(),
+        "revising" => format!("Revising after feedback in {stage}."),
+        "running" => format!("Working on {stage}."),
+        other => format!("{other} ({stage})"),
+    }
+}
+
+fn log_level_class(event: &UiEvent) -> &'static str {
+    match event {
+        UiEvent::Log { level, .. } => match level.to_lowercase().as_str() {
+            "warn" | "warning" => "warn",
+            "error" => "error",
+            _ => "info",
+        },
+        UiEvent::StepStarted { .. }
+        | UiEvent::StepCompleted { .. }
+        | UiEvent::StepFailed { .. }
+        | UiEvent::ComponentStarted { .. }
+        | UiEvent::ComponentCompleted { .. }
+        | UiEvent::ComponentFailed { .. } => "status",
     }
 }
 
@@ -370,51 +408,13 @@ fn render_conversation_entry(index: usize, entry: &ConversationEntry) -> Element
     }
 }
 
-fn format_run_summary(summary: &RunSummary) -> String {
-    let stage = summary.current_stage.replace('_', " ");
-    match summary.status.as_str() {
-        "awaiting_clarification" => format!("Waiting for clarification during {stage}."),
-        "awaiting_approval" => "Waiting for proposal approval.".to_string(),
-        "awaiting_contract_approval" => "Waiting for contract approval.".to_string(),
-        "revising" => format!("Revising after feedback in {stage}."),
-        "running" => format!("Working on {stage}."),
-        other => format!("{other} ({stage})"),
+fn submit_composer_input(input: &mut Signal<String>, ui_state: &Arc<UiState>) {
+    let submitted = input.read().trim().to_string();
+    if submitted.is_empty() {
+        return;
     }
-}
 
-fn log_level_class(event: &UiEvent) -> &'static str {
-    match event {
-        UiEvent::Log { level, .. } => match level.to_lowercase().as_str() {
-            "warn" | "warning" => "warn",
-            "error" => "error",
-            _ => "info",
-        },
-        UiEvent::StepStarted { .. }
-        | UiEvent::StepCompleted { .. }
-        | UiEvent::StepFailed { .. }
-        | UiEvent::ComponentStarted { .. }
-        | UiEvent::ComponentCompleted { .. }
-        | UiEvent::ComponentFailed { .. } => "status",
-    }
-}
-
-fn format_event(event: &UiEvent) -> String {
-    match event {
-        UiEvent::Log { level, message } => format!("[{level}] {message}"),
-        UiEvent::StepStarted { task_label } => format!("> {task_label}"),
-        UiEvent::StepCompleted {
-            task_label,
-            attempts,
-        } => format!("ok {task_label} ({attempts} attempts)"),
-        UiEvent::StepFailed { task_label, stage } => format!("x {task_label} ({stage})"),
-        UiEvent::ComponentStarted { component, name } => {
-            format!("[{component}] started: {name}")
-        }
-        UiEvent::ComponentCompleted { component, name } => {
-            format!("[{component}] completed: {name}")
-        }
-        UiEvent::ComponentFailed { component, name } => {
-            format!("[{component}] failed: {name}")
-        }
+    if ui_state.send_initial_input(submitted.clone()) || ui_state.send_pending_prompt(submitted) {
+        input.set(String::new());
     }
 }

@@ -16,17 +16,6 @@ use crate::{
 
 const EVENT_HISTORY_CAP: usize = 256;
 
-#[derive(Debug)]
-pub struct UiState {
-    projects: Mutex<Vec<ProjectConfig>>,
-    active_project_id: Mutex<ProjectId>,
-    project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
-    registry_store: Option<Arc<ProjectRegistryStore>>,
-    pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
-    next_event_id: Mutex<u64>,
-    version_tx: watch::Sender<u64>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct UiSnapshot {
     pub projects: Vec<ProjectConfig>,
@@ -38,6 +27,17 @@ pub struct UiSnapshot {
     pub run_summary: Option<RunSummary>,
     pub queue: Vec<BuildJobSnapshot>,
     pub worker_summary: Vec<ProjectWorkerSnapshot>,
+}
+
+#[derive(Debug)]
+pub struct UiState {
+    projects: Mutex<Vec<ProjectConfig>>,
+    active_project_id: Mutex<ProjectId>,
+    project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
+    registry_store: Option<Arc<ProjectRegistryStore>>,
+    pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
+    next_event_id: Mutex<u64>,
+    version_tx: watch::Sender<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
