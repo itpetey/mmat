@@ -25,8 +25,8 @@ CMD ["cargo", "watch", "-w", "src", "-w", "web", "-w", "Cargo.toml", "-w", "Carg
 FROM rust-base AS builder
 
 WORKDIR /workspace
-COPY ../../naaf/main/Cargo.toml /workspace/naaf/main/Cargo.toml
-COPY --from=naaf_crates . /workspace/naaf/main/crates
+COPY --from=naaf Cargo.toml /workspace/naaf/main/Cargo.toml
+COPY --from=naaf crates/ /workspace/naaf/main/crates
 
 WORKDIR /workspace/mmat/main
 COPY Cargo.toml Cargo.lock rustfmt.toml ./

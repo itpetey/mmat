@@ -6,8 +6,6 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
-      additional_contexts:
-        naaf_crates: ../../naaf/main/crates
     depends_on:
       - qdrant
     environment: &mmat-env
@@ -43,7 +41,7 @@ services:
       dockerfile: Dockerfile
       target: runtime
       additional_contexts:
-        naaf_crates: ../../naaf/main/crates
+        naaf: ../../naaf/main
     depends_on:
       - qdrant
     environment: *mmat-env
