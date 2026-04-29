@@ -145,6 +145,7 @@ where
                         "strict": false,
                         "schema": {
                             "type": "object",
+                            "properties": {},
                             "additionalProperties": true
                         }
                     }
