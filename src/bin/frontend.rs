@@ -102,21 +102,45 @@ async fn forward_human_questions(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let registry_store = Arc::new(ProjectRegistryStore::open_default()?);
-    registry_store.ensure_default_project(default_project_root()?)?;
-    let projects = registry_store.list_projects()?;
+
+    let registry_store = Arc::new(
+        ProjectRegistryStore::open_default()
+            .map_err(|e| format!("Failed to open project registry: {e}"))?,
+    );
+
+    registry_store
+        .ensure_default_project(
+            default_project_root()
+                .map_err(|e| format!("Failed to resolve default project root: {e}",))?,
+        )
+        .map_err(|e| format!("Failed to ensure default project: {e}"))?;
+
+    let projects = registry_store
+        .list_projects()
+        .map_err(|e| format!("Failed to list projects: {e}"))?;
+
     let ui_state = Arc::new(UiState::with_projects(
         projects.clone(),
         Some(registry_store.clone()),
     ));
+
     let (event_tx, ready_handle, instruction_rx, event_rx) = LiveViewAppBuilder::default()
         .addr(cli.addr)
         .with_ui_state(ui_state.clone())
-        .spawn_with_input()?;
+        .spawn_with_input()
+        .map_err(|e| format!("Failed to spawn LiveView server: {e}"))?;
+
     init_liveview_tracing(event_tx.clone());
+
     let translator = spawn_event_translator(event_rx, ui_state.clone());
-    let mut delivery = start_delivery_process(&projects, event_tx.clone(), ui_state.clone())?;
-    let handle = ready_handle.wait_for_ready().await?;
+
+    let mut delivery = start_delivery_process(&projects, event_tx.clone(), ui_state.clone())
+        .map_err(|e| format!("Failed to start delivery process: {e}"))?;
+
+    let handle = ready_handle
+        .wait_for_ready()
+        .await
+        .map_err(|e| format!("LiveView server failed to become ready: {e}"))?;
 
     println!("MMAT LiveView server listening on http://{}", cli.addr);
 
@@ -130,21 +154,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let workflow_finished = tokio::select! {
         result = tokio::signal::ctrl_c() => {
-            result?;
+            result.map_err(|e| format!("Failed to listen for Ctrl-C: {e}"))?;
             false
         }
         _ = &mut plan => true,
     };
 
     if workflow_finished {
-        tokio::signal::ctrl_c().await?;
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|e| format!("Failed to listen for Ctrl-C: {e}"))?;
     }
 
     translator.abort();
     let _ = delivery.sender.send(FrontendToDelivery::Shutdown);
     let _ = delivery.child.kill();
     let _ = delivery.listener.join();
-    handle.shutdown().await?;
+    handle
+        .shutdown()
+        .await
+        .map_err(|e| format!("Failed to shut down LiveView server: {e}"))?;
     Ok(())
 }
 

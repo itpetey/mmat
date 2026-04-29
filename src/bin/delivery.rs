@@ -28,14 +28,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let (frontend_tx, frontend_rx) = ipc::channel::<FrontendToDelivery>()?;
-    let (delivery_tx, delivery_rx) = ipc::channel::<DeliveryToFrontend>()?;
+    let (frontend_tx, frontend_rx) = ipc::channel::<FrontendToDelivery>()
+        .map_err(|e| format!("Failed to create frontend IPC channel: {e}"))?;
+    let (delivery_tx, delivery_rx) = ipc::channel::<DeliveryToFrontend>()
+        .map_err(|e| format!("Failed to create delivery IPC channel: {e}"))?;
     let handshake = DeliveryHandshake {
         frontend_tx,
         delivery_rx,
     };
-    IpcSender::connect(server_name)?.send(handshake)?;
-    delivery_tx.send(DeliveryToFrontend::Ready)?;
+    IpcSender::connect(server_name.clone())
+        .map_err(|e| format!("Failed to connect to IPC server '{server_name}': {e}"))?
+        .send(handshake)
+        .map_err(|e| format!("Failed to send handshake to frontend: {e}"))?;
+    delivery_tx
+        .send(DeliveryToFrontend::Ready)
+        .map_err(|e| format!("Failed to send Ready signal to frontend: {e}"))?;
 
     run_delivery_loop(frontend_rx, delivery_tx).await
 }
@@ -47,10 +54,15 @@ async fn run_delivery_loop(
     let mut workers = WorkerMap::new();
 
     loop {
-        match receiver.recv()? {
+        match receiver
+            .recv()
+            .map_err(|e| format!("Failed to receive frontend message: {e}"))?
+        {
             FrontendToDelivery::RegisterProjects(projects) => {
-                register_projects(projects, &mut workers, sender.clone())?;
-                refresh_queues(&workers, &sender)?;
+                register_projects(projects, &mut workers, sender.clone())
+                    .map_err(|e| format!("Failed to register projects: {e}"))?;
+                refresh_queues(&workers, &sender)
+                    .map_err(|e| format!("Failed to refresh queues after registration: {e}"))?;
             }
             FrontendToDelivery::Enqueue {
                 project_id,
@@ -59,24 +71,40 @@ async fn run_delivery_loop(
                 if let Some((store, worker)) = workers.get(&project_id) {
                     match store.enqueue(&project_id, handoff) {
                         Ok(_) => {
-                            refresh_one_queue(&project_id, store, &sender)?;
+                            refresh_one_queue(&project_id, store, &sender).map_err(|e| {
+                                format!("Failed to refresh queue for project {project_id}: {e}")
+                            })?;
                             worker.notify();
                         }
-                        Err(error) => sender.send(DeliveryToFrontend::Log {
-                            project_id,
-                            level: DeliveryLogLevel::Error,
-                            message: format!("Delivery enqueue failed: {error}"),
-                        })?,
+                        Err(error) => sender
+                            .send(DeliveryToFrontend::Log {
+                                project_id: project_id.clone(),
+                                level: DeliveryLogLevel::Error,
+                                message: format!("Delivery enqueue failed: {error}"),
+                            })
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to send enqueue error log for project {project_id}: {e}"
+                                )
+                            })?,
                     }
                 } else {
-                    sender.send(DeliveryToFrontend::Log {
-                        project_id,
-                        level: DeliveryLogLevel::Error,
-                        message: "Delivery worker is not registered for this project.".to_string(),
-                    })?;
+                    sender
+                        .send(DeliveryToFrontend::Log {
+                            project_id: project_id.clone(),
+                            level: DeliveryLogLevel::Error,
+                            message: "Delivery worker is not registered for this project."
+                                .to_string(),
+                        })
+                        .map_err(|e| {
+                            format!(
+                                "Failed to send 'not registered' log for project {project_id}: {e}"
+                            )
+                        })?;
                 }
             }
-            FrontendToDelivery::RefreshQueues => refresh_queues(&workers, &sender)?,
+            FrontendToDelivery::RefreshQueues => refresh_queues(&workers, &sender)
+                .map_err(|e| format!("Failed to refresh queues: {e}"))?,
             FrontendToDelivery::Shutdown => {
                 for (_, worker) in workers.values() {
                     worker.abort();
