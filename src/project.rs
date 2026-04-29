@@ -174,9 +174,27 @@ impl ProjectRegistryStore {
             return Ok(project);
         }
 
-        let config = ProjectConfig::default_for_root(root)?;
-        self.insert_project(&config)?;
-        Ok(config)
+        let default_id = ProjectId::new("default")?;
+        match self.get_project(&default_id) {
+            Ok(mut existing) => {
+                existing.root = root;
+                existing.data_dir = existing.root.join(".mmat");
+                existing.name = existing
+                    .root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("workspace")
+                    .to_string();
+                self.update_project(&existing)?;
+                Ok(existing)
+            }
+            Err(ProjectRegistryError::NotFound(_)) => {
+                let config = ProjectConfig::default_for_root(root)?;
+                self.insert_project(&config)?;
+                Ok(config)
+            }
+            Err(other) => Err(other),
+        }
     }
 
     pub fn list_projects(&self) -> Result<Vec<ProjectConfig>, ProjectRegistryError> {
