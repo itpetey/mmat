@@ -20,8 +20,8 @@ use crate::{MmatError, project::ProjectConfig};
 mod architect;
 mod discovery;
 mod knowledge;
-pub mod parser;
 mod solutions;
+pub mod parser;
 
 type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 type WorkflowTaskError<C, R, E> = TaskError<
@@ -37,6 +37,13 @@ const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 
+pub struct GreenfieldReport {
+    run_id: uuid::Uuid,
+    result: WorkflowRunResult,
+    step_report: StepReport<WorkflowFinding>,
+    design_handoff: Option<DesignHandoff>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnowledgeRuntimeConfig {
     pub sqlite_path: PathBuf,
@@ -49,13 +56,6 @@ pub struct KnowledgeRuntimeConfig {
     pub repo: Option<String>,
     pub workspace_root: PathBuf,
     pub qdrant_collection_prefix: String,
-}
-
-pub struct GreenfieldReport {
-    run_id: uuid::Uuid,
-    result: WorkflowRunResult,
-    step_report: StepReport<WorkflowFinding>,
-    design_handoff: Option<DesignHandoff>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

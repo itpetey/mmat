@@ -6,27 +6,10 @@ use crate::{
     project::{ProjectConfig, ProjectId},
 };
 
-pub type FrontendSender = ipc_channel::ipc::IpcSender<FrontendToDelivery>;
-pub type FrontendReceiver = ipc_channel::ipc::IpcReceiver<FrontendToDelivery>;
-pub type DeliverySender = ipc_channel::ipc::IpcSender<DeliveryToFrontend>;
 pub type DeliveryReceiver = ipc_channel::ipc::IpcReceiver<DeliveryToFrontend>;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeliveryHandshake {
-    pub frontend_tx: FrontendSender,
-    pub delivery_rx: DeliveryReceiver,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum FrontendToDelivery {
-    RegisterProjects(Vec<ProjectConfig>),
-    Enqueue {
-        project_id: ProjectId,
-        handoff: DesignHandoff,
-    },
-    RefreshQueues,
-    Shutdown,
-}
+pub type DeliverySender = ipc_channel::ipc::IpcSender<DeliveryToFrontend>;
+pub type FrontendReceiver = ipc_channel::ipc::IpcReceiver<FrontendToDelivery>;
+pub type FrontendSender = ipc_channel::ipc::IpcSender<FrontendToDelivery>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DeliveryToFrontend {
@@ -50,6 +33,23 @@ pub enum DeliveryToFrontend {
         status: BuildJobStatus,
         error: Option<String>,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeliveryHandshake {
+    pub frontend_tx: FrontendSender,
+    pub delivery_rx: DeliveryReceiver,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum FrontendToDelivery {
+    RegisterProjects(Vec<ProjectConfig>),
+    Enqueue {
+        project_id: ProjectId,
+        handoff: DesignHandoff,
+    },
+    RefreshQueues,
+    Shutdown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

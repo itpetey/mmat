@@ -19,7 +19,7 @@ clap = { version = "4.6", features = ["derive", "help", "std", "usage"] }
 dioxus = { version = "0.7", features = ["liveview", "server"] }
 dioxus-liveview = { version = "0.7", features = ["axum"] }
 futures = { version = "0.3", features = ["alloc", "std"] }
-ipc-channel = "0.19"
+ipc-channel = "0.21"
 naaf-core = { path = "../../naaf/main/crates/core" }
 naaf-knowledge = { path = "../../naaf/main/crates/knowledge" }
 naaf-llm = { path = "../../naaf/main/crates/llm", features = [

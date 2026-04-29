@@ -27,12 +27,17 @@ use crate::{
     project::ProjectConfig,
 };
 
+type DeliveryAgent = LlmAgent<OpenAiClient<DeliveryRuntime>, DeliveryRuntime, DeliveryError>;
+
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_MODEL: &str = "qwen/qwen3.6-27b";
 const EXECUTOR_TURNS: usize = 12;
 const IMPLEMENTATION_RETRY_LIMIT: usize = 3;
 const MAX_REMEDIATION_PASSES: usize = 3;
-type DeliveryAgent = LlmAgent<OpenAiClient<DeliveryRuntime>, DeliveryRuntime, DeliveryError>;
+
+pub trait BuildEventSink: Send + Sync + 'static {
+    fn log(&self, project: &ProjectConfig, level: tracing::Level, message: String);
+}
 
 #[derive(Debug, Error)]
 pub enum DeliveryError {
@@ -60,10 +65,6 @@ pub struct BuildEngine {
     events: Arc<dyn BuildEventSink>,
 }
 
-pub trait BuildEventSink: Send + Sync + 'static {
-    fn log(&self, project: &ProjectConfig, level: tracing::Level, message: String);
-}
-
 #[derive(Clone, Debug)]
 struct NoopEventSink;
 
@@ -74,6 +75,16 @@ struct DeliveryRuntime {
 
 struct ToolAdapter<T> {
     inner: T,
+}
+
+impl NoopEventSink {
+    fn log_inner(&self, _project: &ProjectConfig, _level: tracing::Level, _message: String) {}
+}
+
+impl BuildEventSink for NoopEventSink {
+    fn log(&self, project: &ProjectConfig, level: tracing::Level, message: String) {
+        self.log_inner(project, level, message);
+    }
 }
 
 impl BuildEngine {
@@ -431,16 +442,6 @@ impl BuildEngine {
     }
 }
 
-impl NoopEventSink {
-    fn log_inner(&self, _project: &ProjectConfig, _level: tracing::Level, _message: String) {}
-}
-
-impl BuildEventSink for NoopEventSink {
-    fn log(&self, project: &ProjectConfig, level: tracing::Level, message: String) {
-        self.log_inner(project, level, message);
-    }
-}
-
 impl DeliveryRuntime {
     fn new(project: ProjectConfig) -> Result<Self, DeliveryError> {
         let artefacts =
@@ -523,6 +524,36 @@ where
     }
 }
 
+impl From<MmatError> for DeliveryError {
+    fn from(value: MmatError) -> Self {
+        Self::Config(value.to_string())
+    }
+}
+
+impl From<Infallible> for DeliveryError {
+    fn from(value: Infallible) -> Self {
+        match value {}
+    }
+}
+
+fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), DeliveryError> {
+    let delta = naaf_workspace::FileDeltaSet {
+        summary: delta.summary.clone(),
+        rationale: delta.rationale.clone(),
+        changes: delta
+            .changes
+            .iter()
+            .map(|change| naaf_workspace::FileDelta {
+                path: change.path.clone(),
+                action: change.action.clone(),
+                content: change.content.clone(),
+            })
+            .collect(),
+    };
+    naaf_workspace::apply_file_deltas(root, &delta)
+        .map_err(|error| DeliveryError::Workspace(error.to_string()))
+}
+
 async fn build_agent(
     workspace_root: &Path,
     project: &ProjectConfig,
@@ -599,16 +630,15 @@ async fn build_knowledge_search_tool(
     Ok((loaded > 0).then_some(tool))
 }
 
-fn register_tool<T>(
-    tools: ToolRegistry<DeliveryRuntime, DeliveryError>,
-    tool: T,
-) -> Result<ToolRegistry<DeliveryRuntime, DeliveryError>, DeliveryError>
-where
-    T: Tool<Runtime = DeliveryRuntime, Error = DeliveryError> + 'static,
-{
-    tools
-        .with_tool(tool)
-        .map_err(|error| DeliveryError::Config(error.to_string()))
+fn contract_validation_system_prompt() -> String {
+    "You are MMAT's delivery contract validator. Check whether the implementation satisfies the task card, approved architect handoff, and acceptance criteria. Flag stubs, TODO placeholders, fake values, missing behaviour, or unproven claims. Return raw JSON only with this shape: {\"summary\":string,\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}]}. Use an empty findings array only when the work genuinely satisfies the contract."
+        .to_string()
+}
+
+fn delivery_model() -> String {
+    env::var("MMAT_DELIVERY_MODEL")
+        .or_else(|_| env::var("MMAT_LLM_MODEL"))
+        .unwrap_or_else(|_| DEFAULT_MODEL.to_string())
 }
 
 async fn execute_json_stage<T>(
@@ -628,47 +658,14 @@ where
     decode_outcome(outcome).map_err(DeliveryError::from)
 }
 
-fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), DeliveryError> {
-    let delta = naaf_workspace::FileDeltaSet {
-        summary: delta.summary.clone(),
-        rationale: delta.rationale.clone(),
-        changes: delta
-            .changes
-            .iter()
-            .map(|change| naaf_workspace::FileDelta {
-                path: change.path.clone(),
-                action: change.action.clone(),
-                content: change.content.clone(),
-            })
-            .collect(),
-    };
-    naaf_workspace::apply_file_deltas(root, &delta)
-        .map_err(|error| DeliveryError::Workspace(error.to_string()))
+fn final_review_system_prompt() -> String {
+    "You are MMAT's final delivery reviewer. Assess the completed delivery against the approved architect handoff, execution plan, task results, evidence, and repository state. Be strict and non-interactive. Return raw JSON only with this shape: {\"summary\":string,\"ready\":boolean,\"strengths\":string[],\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}],\"remediation_items\":[{\"id\":string,\"title\":string,\"description\":string,\"acceptance_criteria\":string[],\"related_item_ids\":string[]}],\"next_step\":string}. When ready is true, remediation_items must be empty."
+        .to_string()
 }
 
-async fn run_cargo_command(
-    root: &Path,
-    label: &str,
-    args: &[&str],
-) -> Result<CommandEvidence, DeliveryError> {
-    let output = Command::new("cargo")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .await
-        .map_err(|error| DeliveryError::Command(format!("{label} failed to start: {error}")))?;
-
-    if output.status.success() {
-        return Ok(CommandEvidence {
-            command: label.to_string(),
-            outcome: "passed".to_string(),
-        });
-    }
-
-    Err(DeliveryError::Command(format!(
-        "{label} failed: {}",
-        naaf_workspace::command_failure_summary(&output.stdout, &output.stderr)
-    )))
+fn implementation_system_prompt() -> String {
+    "You are MMAT's non-interactive delivery implementation stage. Inspect the repository using tools before proposing changes. Implement exactly the requested task card and return complete file deltas only. Do not ask the user questions. Return raw JSON only with this shape: {\"summary\":string,\"rationale\":string[],\"changes\":[{\"path\":string,\"action\":string,\"content\":string|null}]}. Allowed actions are `write` and `delete`; write actions must include complete file contents."
+        .to_string()
 }
 
 fn ordered_task_cards(task_cards: &[TaskCard]) -> Result<Vec<TaskCard>, DeliveryError> {
@@ -691,6 +688,32 @@ fn ordered_task_cards(task_cards: &[TaskCard]) -> Result<Vec<TaskCard>, Delivery
         ordered.push(remaining.remove(index));
     }
     Ok(ordered)
+}
+
+fn peer_review_system_prompt() -> String {
+    "You are MMAT's delivery peer reviewer. Review the proposed implementation delta for correctness, code quality, maintainability, and fit with the existing project. Return raw JSON only with this shape: {\"summary\":string,\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}]}. Use an empty findings array only when the work is ready to merge."
+        .to_string()
+}
+
+fn planning_system_prompt() -> String {
+    "You are MMAT's non-interactive delivery planning stage. Convert the approved software architect handoff into concrete execution milestones and task cards. Do not ask the user questions. If ambiguity remains, record explicit assumptions inside task acceptance criteria or risks. Return raw JSON only with this shape: {\"summary\":string,\"milestones\":[{\"id\":string,\"title\":string,\"objective\":string,\"task_card_ids\":string[]}],\"task_cards\":[{\"id\":string,\"source\":string,\"milestone_id\":string|null,\"title\":string,\"objective\":string,\"contract_refs\":string[],\"acceptance_criteria\":string[],\"expected_files\":string[],\"verification_commands\":string[],\"dependencies\":string[],\"rollback_notes\":string[]}],\"risks\":string[]}."
+        .to_string()
+}
+
+fn read_env(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn register_tool<T>(
+    tools: ToolRegistry<DeliveryRuntime, DeliveryError>,
+    tool: T,
+) -> Result<ToolRegistry<DeliveryRuntime, DeliveryError>, DeliveryError>
+where
+    T: Tool<Runtime = DeliveryRuntime, Error = DeliveryError> + 'static,
+{
+    tools
+        .with_tool(tool)
+        .map_err(|error| DeliveryError::Config(error.to_string()))
 }
 
 fn remediation_plan(plan: &ExecutionPlan, review: &FinalReview) -> ExecutionPlan {
@@ -724,6 +747,31 @@ fn remediation_plan(plan: &ExecutionPlan, review: &FinalReview) -> ExecutionPlan
     }
 }
 
+async fn run_cargo_command(
+    root: &Path,
+    label: &str,
+    args: &[&str],
+) -> Result<CommandEvidence, DeliveryError> {
+    let output = Command::new("cargo")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .await
+        .map_err(|error| DeliveryError::Command(format!("{label} failed to start: {error}")))?;
+
+    if output.status.success() {
+        return Ok(CommandEvidence {
+            command: label.to_string(),
+            outcome: "passed".to_string(),
+        });
+    }
+
+    Err(DeliveryError::Command(format!(
+        "{label} failed: {}",
+        naaf_workspace::command_failure_summary(&output.stdout, &output.stderr)
+    )))
+}
+
 fn sanitise_worktree_name(name: &str) -> String {
     let mut output = String::with_capacity(name.len());
     for ch in name.chars() {
@@ -747,12 +795,6 @@ where
     Ok(serde_json::to_string_pretty(value)?)
 }
 
-fn delivery_model() -> String {
-    env::var("MMAT_DELIVERY_MODEL")
-        .or_else(|_| env::var("MMAT_LLM_MODEL"))
-        .unwrap_or_else(|_| DEFAULT_MODEL.to_string())
-}
-
 fn workflow_llm_config() -> OpenAiConfig {
     let api_key = read_env("MMAT_DELIVERY_LLM_API_KEY")
         .or_else(|| read_env("MMAT_LLM_API_KEY"))
@@ -763,47 +805,6 @@ fn workflow_llm_config() -> OpenAiConfig {
         .unwrap_or_else(|| DEFAULT_LLM_BASE_URL.to_string());
 
     OpenAiConfig::new(api_key).with_base_url(base_url)
-}
-
-fn read_env(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|value| !value.trim().is_empty())
-}
-
-fn planning_system_prompt() -> String {
-    "You are MMAT's non-interactive delivery planning stage. Convert the approved software architect handoff into concrete execution milestones and task cards. Do not ask the user questions. If ambiguity remains, record explicit assumptions inside task acceptance criteria or risks. Return raw JSON only with this shape: {\"summary\":string,\"milestones\":[{\"id\":string,\"title\":string,\"objective\":string,\"task_card_ids\":string[]}],\"task_cards\":[{\"id\":string,\"source\":string,\"milestone_id\":string|null,\"title\":string,\"objective\":string,\"contract_refs\":string[],\"acceptance_criteria\":string[],\"expected_files\":string[],\"verification_commands\":string[],\"dependencies\":string[],\"rollback_notes\":string[]}],\"risks\":string[]}."
-        .to_string()
-}
-
-fn implementation_system_prompt() -> String {
-    "You are MMAT's non-interactive delivery implementation stage. Inspect the repository using tools before proposing changes. Implement exactly the requested task card and return complete file deltas only. Do not ask the user questions. Return raw JSON only with this shape: {\"summary\":string,\"rationale\":string[],\"changes\":[{\"path\":string,\"action\":string,\"content\":string|null}]}. Allowed actions are `write` and `delete`; write actions must include complete file contents."
-        .to_string()
-}
-
-fn peer_review_system_prompt() -> String {
-    "You are MMAT's delivery peer reviewer. Review the proposed implementation delta for correctness, code quality, maintainability, and fit with the existing project. Return raw JSON only with this shape: {\"summary\":string,\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}]}. Use an empty findings array only when the work is ready to merge."
-        .to_string()
-}
-
-fn contract_validation_system_prompt() -> String {
-    "You are MMAT's delivery contract validator. Check whether the implementation satisfies the task card, approved architect handoff, and acceptance criteria. Flag stubs, TODO placeholders, fake values, missing behaviour, or unproven claims. Return raw JSON only with this shape: {\"summary\":string,\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}]}. Use an empty findings array only when the work genuinely satisfies the contract."
-        .to_string()
-}
-
-fn final_review_system_prompt() -> String {
-    "You are MMAT's final delivery reviewer. Assess the completed delivery against the approved architect handoff, execution plan, task results, evidence, and repository state. Be strict and non-interactive. Return raw JSON only with this shape: {\"summary\":string,\"ready\":boolean,\"strengths\":string[],\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}],\"remediation_items\":[{\"id\":string,\"title\":string,\"description\":string,\"acceptance_criteria\":string[],\"related_item_ids\":string[]}],\"next_step\":string}. When ready is true, remediation_items must be empty."
-        .to_string()
-}
-
-impl From<MmatError> for DeliveryError {
-    fn from(value: MmatError) -> Self {
-        Self::Config(value.to_string())
-    }
-}
-
-impl From<Infallible> for DeliveryError {
-    fn from(value: Infallible) -> Self {
-        match value {}
-    }
 }
 
 #[cfg(test)]

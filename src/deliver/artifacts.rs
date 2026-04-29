@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 use rusqlite::OptionalExtension;
-use rusqlite::{Connection, params};
-use serde::Serialize;
 #[cfg(test)]
 use serde::de::DeserializeOwned;
+use rusqlite::{Connection, params};
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::deliver::queue::BuildJobId;

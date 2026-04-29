@@ -12,8 +12,8 @@ use thiserror::Error;
 
 use crate::MmatError;
 
-const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
 const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
+const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -349,6 +349,21 @@ pub fn default_collection_prefix(project_id: &ProjectId) -> String {
     format!("p_{}", sanitise_collection_component(project_id.as_str()))
 }
 
+pub fn default_data_dir_for_root(root: &Path) -> PathBuf {
+    if let Some(base) = env::var(DATA_DIR_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let project_slug = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("default");
+        return PathBuf::from(base).join(project_slug);
+    }
+
+    root.join(".mmat")
+}
+
 pub fn prefix_collection_id(prefix: &str, collection: &str) -> String {
     let prefix = sanitise_collection_component(prefix);
     let collection = sanitise_collection_component(collection);
@@ -380,21 +395,6 @@ fn default_registry_path() -> Result<PathBuf, ProjectRegistryError> {
     }
 
     Ok(env::current_dir()?.join(".mmat").join("projects.sqlite3"))
-}
-
-pub fn default_data_dir_for_root(root: &Path) -> PathBuf {
-    if let Some(base) = env::var(DATA_DIR_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let project_slug = root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("default");
-        return PathBuf::from(base).join(project_slug);
-    }
-
-    root.join(".mmat")
 }
 
 fn normalise_root(root: PathBuf) -> Result<PathBuf, ProjectRegistryError> {

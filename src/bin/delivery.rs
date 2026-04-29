@@ -47,6 +47,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_delivery_loop(frontend_rx, delivery_tx).await
 }
 
+fn refresh_one_queue(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    sender: &ipc::IpcSender<DeliveryToFrontend>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sender.send(DeliveryToFrontend::QueueSnapshot {
+        project_id: project_id.clone(),
+        jobs: store.list_for_project(project_id)?,
+    })?;
+    Ok(())
+}
+
+fn refresh_queues(
+    workers: &WorkerMap,
+    sender: &ipc::IpcSender<DeliveryToFrontend>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (project_id, (store, _)) in workers {
+        refresh_one_queue(project_id, store, sender)?;
+    }
+    Ok(())
+}
+
+fn register_projects(
+    projects: Vec<ProjectConfig>,
+    workers: &mut WorkerMap,
+    sender: ipc::IpcSender<DeliveryToFrontend>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for project in projects.into_iter().filter(|project| project.enabled) {
+        if workers.contains_key(&project.id) {
+            continue;
+        }
+
+        let store = Arc::new(BuildQueueStore::for_project(&project)?);
+        store.recover_stale_running(&project.id)?;
+        let project_id = project.id.clone();
+        let event_sender = sender.clone();
+        let worker =
+            spawn_project_worker_with_events(project.clone(), store.clone(), move |event| {
+                let _ = send_worker_event(&event_sender, event);
+            });
+        workers.insert(project_id, (store, worker));
+    }
+    Ok(())
+}
+
 async fn run_delivery_loop(
     receiver: ipc::IpcReceiver<FrontendToDelivery>,
     sender: ipc::IpcSender<DeliveryToFrontend>,
@@ -115,55 +160,10 @@ async fn run_delivery_loop(
     }
 }
 
-fn register_projects(
-    projects: Vec<ProjectConfig>,
-    workers: &mut WorkerMap,
-    sender: ipc::IpcSender<DeliveryToFrontend>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for project in projects.into_iter().filter(|project| project.enabled) {
-        if workers.contains_key(&project.id) {
-            continue;
-        }
-
-        let store = Arc::new(BuildQueueStore::for_project(&project)?);
-        store.recover_stale_running(&project.id)?;
-        let project_id = project.id.clone();
-        let event_sender = sender.clone();
-        let worker =
-            spawn_project_worker_with_events(project.clone(), store.clone(), move |event| {
-                let _ = send_worker_event(&event_sender, event);
-            });
-        workers.insert(project_id, (store, worker));
-    }
-    Ok(())
-}
-
-fn refresh_queues(
-    workers: &WorkerMap,
-    sender: &ipc::IpcSender<DeliveryToFrontend>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for (project_id, (store, _)) in workers {
-        refresh_one_queue(project_id, store, sender)?;
-    }
-    Ok(())
-}
-
-fn refresh_one_queue(
-    project_id: &ProjectId,
-    store: &BuildQueueStore,
-    sender: &ipc::IpcSender<DeliveryToFrontend>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    sender.send(DeliveryToFrontend::QueueSnapshot {
-        project_id: project_id.clone(),
-        jobs: store.list_for_project(project_id)?,
-    })?;
-    Ok(())
-}
-
 fn send_worker_event(
     sender: &ipc::IpcSender<DeliveryToFrontend>,
     event: BuildWorkerEvent,
-) -> Result<(), ipc_channel::Error> {
+) -> Result<(), ipc_channel::IpcError> {
     match event {
         BuildWorkerEvent::QueueChanged { project_id, jobs } => {
             sender.send(DeliveryToFrontend::QueueSnapshot { project_id, jobs })

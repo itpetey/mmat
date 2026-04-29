@@ -72,6 +72,26 @@ impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
     }
 }
 
+fn default_project_root() -> Result<std::path::PathBuf, std::io::Error> {
+    match std::env::var("MMAT_PROJECT_ROOT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(root) => Ok(root.into()),
+        None => std::env::current_dir(),
+    }
+}
+
+fn delivery_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(path) = std::env::var("MMAT_DELIVERY_BIN") {
+        return Ok(path.into());
+    }
+
+    let mut path = std::env::current_exe()?;
+    path.set_file_name("delivery");
+    Ok(path)
+}
+
 async fn forward_human_questions(
     mut pending_questions: tokio::sync::mpsc::Receiver<naaf_llm::PendingQuestion>,
     event_tx: mmat::liveview::EventSender,
@@ -96,6 +116,56 @@ async fn forward_human_questions(
         };
 
         let _ = pending.reply.send(HumanAnswer { content: answer });
+    }
+}
+
+fn handle_delivery_event(
+    event_tx: &mmat::liveview::EventSender,
+    ui_state: &UiState,
+    event: DeliveryToFrontend,
+) {
+    match event {
+        DeliveryToFrontend::Ready => {}
+        DeliveryToFrontend::QueueSnapshot { project_id, jobs } => {
+            ui_state.set_project_queue(&project_id, jobs);
+        }
+        DeliveryToFrontend::Log {
+            project_id,
+            level,
+            message,
+        } => {
+            send_log(event_tx, &project_id, level.as_tracing_level(), message);
+        }
+        DeliveryToFrontend::JobStarted { project_id, job_id } => {
+            send_log(
+                event_tx,
+                &project_id,
+                tracing::Level::INFO,
+                format!("Delivery job {job_id} started."),
+            );
+        }
+        DeliveryToFrontend::JobFinished {
+            project_id,
+            job_id,
+            status,
+            error,
+        } => {
+            let level = if error.is_some() {
+                tracing::Level::ERROR
+            } else {
+                tracing::Level::INFO
+            };
+            let suffix = error.map(|error| format!(": {error}")).unwrap_or_default();
+            send_log(
+                event_tx,
+                &project_id,
+                level,
+                format!(
+                    "Delivery job {job_id} finished as {}{suffix}.",
+                    status.as_str()
+                ),
+            );
+        }
     }
 }
 
@@ -175,16 +245,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Failed to shut down LiveView server: {e}"))?;
     Ok(())
-}
-
-fn default_project_root() -> Result<std::path::PathBuf, std::io::Error> {
-    match std::env::var("MMAT_PROJECT_ROOT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        Some(root) => Ok(root.into()),
-        None => std::env::current_dir(),
-    }
 }
 
 async fn run_workflow_when_prompted(
@@ -366,64 +426,4 @@ fn start_delivery_process(
         child,
         listener,
     })
-}
-
-fn delivery_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(path) = std::env::var("MMAT_DELIVERY_BIN") {
-        return Ok(path.into());
-    }
-
-    let mut path = std::env::current_exe()?;
-    path.set_file_name("delivery");
-    Ok(path)
-}
-
-fn handle_delivery_event(
-    event_tx: &mmat::liveview::EventSender,
-    ui_state: &UiState,
-    event: DeliveryToFrontend,
-) {
-    match event {
-        DeliveryToFrontend::Ready => {}
-        DeliveryToFrontend::QueueSnapshot { project_id, jobs } => {
-            ui_state.set_project_queue(&project_id, jobs);
-        }
-        DeliveryToFrontend::Log {
-            project_id,
-            level,
-            message,
-        } => {
-            send_log(event_tx, &project_id, level.as_tracing_level(), message);
-        }
-        DeliveryToFrontend::JobStarted { project_id, job_id } => {
-            send_log(
-                event_tx,
-                &project_id,
-                tracing::Level::INFO,
-                format!("Delivery job {job_id} started."),
-            );
-        }
-        DeliveryToFrontend::JobFinished {
-            project_id,
-            job_id,
-            status,
-            error,
-        } => {
-            let level = if error.is_some() {
-                tracing::Level::ERROR
-            } else {
-                tracing::Level::INFO
-            };
-            let suffix = error.map(|error| format!(": {error}")).unwrap_or_default();
-            send_log(
-                event_tx,
-                &project_id,
-                level,
-                format!(
-                    "Delivery job {job_id} finished as {}{suffix}.",
-                    status.as_str()
-                ),
-            );
-        }
-    }
 }

@@ -8,6 +8,7 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use super::engine::{BuildEngine, DeliveryError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -17,7 +18,23 @@ use crate::{
     project::{ProjectConfig, ProjectId},
 };
 
-use super::engine::{BuildEngine, DeliveryError};
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuildWorkerEvent {
+    QueueChanged {
+        project_id: ProjectId,
+        jobs: Vec<BuildJob>,
+    },
+    JobStarted {
+        project_id: ProjectId,
+        job_id: BuildJobId,
+    },
+    JobFinished {
+        project_id: ProjectId,
+        job_id: BuildJobId,
+        status: BuildJobStatus,
+        error: Option<String>,
+    },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildJob {
@@ -66,24 +83,6 @@ pub struct BuildWorkerHandle {
     project_id: ProjectId,
     notify: Arc<Notify>,
     join_handle: tokio::task::JoinHandle<()>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BuildWorkerEvent {
-    QueueChanged {
-        project_id: ProjectId,
-        jobs: Vec<BuildJob>,
-    },
-    JobStarted {
-        project_id: ProjectId,
-        job_id: BuildJobId,
-    },
-    JobFinished {
-        project_id: ProjectId,
-        job_id: BuildJobId,
-        status: BuildJobStatus,
-        error: Option<String>,
-    },
 }
 
 impl BuildWorkerHandle {
@@ -457,18 +456,6 @@ pub fn spawn_project_worker_with_events(
     }
 }
 
-fn emit_queue_changed(
-    project_id: &ProjectId,
-    store: &BuildQueueStore,
-    events: &impl Fn(BuildWorkerEvent),
-) -> Result<(), BuildQueueError> {
-    events(BuildWorkerEvent::QueueChanged {
-        project_id: project_id.clone(),
-        jobs: store.list_for_project(project_id)?,
-    });
-    Ok(())
-}
-
 fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
     let status = BuildJobStatus::from_db(row.get(2)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(error))
@@ -495,6 +482,18 @@ fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
         started_at: row.get(7)?,
         completed_at: row.get(8)?,
     })
+}
+
+fn emit_queue_changed(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    events: &impl Fn(BuildWorkerEvent),
+) -> Result<(), BuildQueueError> {
+    events(BuildWorkerEvent::QueueChanged {
+        project_id: project_id.clone(),
+        jobs: store.list_for_project(project_id)?,
+    });
+    Ok(())
 }
 
 fn now_unix_seconds() -> i64 {
