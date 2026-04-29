@@ -1,9 +1,17 @@
-use std::fmt::{Debug, Display};
+use std::{
+    convert::Infallible,
+    fmt::{Debug, Display},
+    path::PathBuf,
+};
 
 use futures::future;
 use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
-use naaf_llm::{HumanIO, HumanQuestion, LlmAgent, LlmClient, TaskError};
+use naaf_llm::{
+    AdaptorError, CompletionRequest, Executor, HumanIO, HumanQuestion, LlmAgent, LlmClient,
+    Message, TaskError, ToolRegistry,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::plan::{
     WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
@@ -258,29 +266,93 @@ impl Display for SolutionCollectFinding {
     }
 }
 
-pub(super) fn branch_step<C, R, E>(agent: &LlmAgent<C, R, E>) -> SolutionBranchStep<C, R, E>
+pub(super) fn branch_step<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    workspace_root: PathBuf,
+) -> SolutionBranchStep<C, R, E>
 where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + 'static,
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
     E: Debug + 'static,
     R: HumanIO + 'static,
     R::Error: Debug + 'static,
 {
-    Step::builder(agent.json_task(
-        MODEL.into(),
-        BRANCH_SYSTEM_PROMPT.into(),
-        |i| Ok::<_, WorkflowBuildError<R::Error>>(build_branch_prompt(i)),
-        decode_outcome,
-        "solution-branch".into(),
-    ))
-    .validate(check_fn(|r, i, o| {
-        Box::pin(future::ok(validate_branch(r, i, o)))
-    }))
-    .repair_with(repair_fn(|_r, a| {
-        Box::pin(async move { repair_branch(a).await.map_err(|error| match error {}) })
-    }))
-    .retry_policy(RetryPolicy::new(MAX_BRANCH_ATTEMPTS))
-    .build_persistent()
+    let client = (*agent.executor().client()).clone();
+    let system_prompt = format!(
+        "{}\n\nYou have access to repository tools: `glob_paths`, `search_files`, and `read_file`. Use them when repository structure or implementation details matter.",
+        BRANCH_SYSTEM_PROMPT
+    );
+
+    let task = task_fn(move |runtime: &R, input: SolutionBranchInput| {
+        let client = client.clone();
+        let system_prompt = system_prompt.clone();
+        let workspace_root = workspace_root.clone();
+        Box::pin(async move {
+            let request = CompletionRequest::new(
+                MODEL.to_string(),
+                vec![
+                    Message::system(system_prompt),
+                    Message::user(build_branch_prompt(input)),
+                ],
+            )
+            .with_metadata(json!({
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "solution_branch",
+                        "strict": false,
+                        "schema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }));
+
+            let mut tools = ToolRegistry::<R, Infallible>::new();
+            register_repository_tools(&mut tools, workspace_root);
+            let executor = Executor::with_tools(client, tools);
+            let outcome = executor.execute(runtime, request).await.map_err(|error| {
+                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                    "executor failed: {error}"
+                )))
+            })?;
+
+            decode_outcome(outcome).map_err(AdaptorError::Decode)
+        })
+    });
+
+    Step::builder(task)
+        .validate(check_fn(|r, i, o| {
+            Box::pin(future::ok(validate_branch(r, i, o)))
+        }))
+        .repair_with(repair_fn(|_r, a| {
+            Box::pin(async move { repair_branch(a).await.map_err(|error| match error {}) })
+        }))
+        .retry_policy(RetryPolicy::new(MAX_BRANCH_ATTEMPTS))
+        .build_persistent()
+}
+
+fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
+where
+    R: 'static,
+{
+    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
+        workspace_root,
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
+    }
 }
 
 pub(super) fn choice_step<C, R, E>()

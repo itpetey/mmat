@@ -6,9 +6,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use super::engine::{BuildEngine, DeliveryError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use super::engine::{BuildEngine, DeliveryError};
 use thiserror::Error;
 use tokio::sync::Notify;
 

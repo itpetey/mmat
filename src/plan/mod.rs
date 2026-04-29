@@ -20,8 +20,8 @@ use crate::{MmatError, project::ProjectConfig};
 mod architect;
 mod discovery;
 mod knowledge;
-mod solutions;
 pub mod parser;
+mod solutions;
 
 type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 type WorkflowTaskError<C, R, E> = TaskError<
@@ -367,6 +367,7 @@ where
         knowledge_store,
         knowledge_backend,
         knowledge_config.qdrant_collection_prefix.clone(),
+        knowledge_config.workspace_root.clone(),
     );
 
     let traced = plan
@@ -423,6 +424,7 @@ fn build_greenfield_step<C, R, E>(
     knowledge_store: Arc<SqliteKnowledgeGroupStore>,
     knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
     knowledge_collection_prefix: String,
+    workspace_root: PathBuf,
 ) -> WorkflowStep<C, R, E, discovery::DiscoveryInput, WorkflowRunResult>
 where
     C: LlmClient<Runtime = R> + Clone + 'static,
@@ -436,6 +438,7 @@ where
         agent,
         knowledge_store.clone(),
         knowledge_collection_prefix.clone(),
+        workspace_root.clone(),
     )
     .map_input(knowledge::KnowledgeInput::new)
     .map_findings(WorkflowFinding::from);
@@ -457,15 +460,15 @@ where
         .map_findings(WorkflowFinding::from);
 
     let solution_branches = solution_branch_step::<C, R, E>(
-        solutions::branch_step(agent),
+        solutions::branch_step(agent, workspace_root.clone()),
         solutions::SolutionBranch::Conservative,
     )
     .join(solution_branch_step::<C, R, E>(
-        solutions::branch_step(agent),
+        solutions::branch_step(agent, workspace_root.clone()),
         solutions::SolutionBranch::Recommended,
     ))
     .join(solution_branch_step::<C, R, E>(
-        solutions::branch_step(agent),
+        solutions::branch_step(agent, workspace_root.clone()),
         solutions::SolutionBranch::Ambitious,
     ))
     .map(|((conservative, recommended), ambitious)| vec![conservative, recommended, ambitious]);
@@ -494,9 +497,13 @@ where
             choice,
         });
 
-    let architect = architect::step_with_knowledge_tools(agent, knowledge_backend.clone())
-        .map_input(architect_input_from_stage)
-        .map_findings(WorkflowFinding::from);
+    let architect = architect::step_with_knowledge_tools(
+        agent,
+        knowledge_backend.clone(),
+        workspace_root.clone(),
+    )
+    .map_input(architect_input_from_stage)
+    .map_findings(WorkflowFinding::from);
 
     discovery
         .then(knowledge_context)

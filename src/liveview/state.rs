@@ -379,8 +379,8 @@ impl UiState {
     pub fn record_project_assistant_message(&self, project_id: &ProjectId, text: String) {
         let trimmed = text.trim();
         if trimmed.is_empty() || trimmed.starts_with('{') || trimmed.starts_with('[') {
-            let removed = self.remove_project_incomplete_assistant_message(project_id);
-            if removed {
+            let changed = self.finish_or_remove_project_incomplete_assistant_message(project_id);
+            if changed {
                 self.bump_version();
             }
             return;
@@ -410,7 +410,10 @@ impl UiState {
         self.bump_version();
     }
 
-    fn remove_project_incomplete_assistant_message(&self, project_id: &ProjectId) -> bool {
+    fn finish_or_remove_project_incomplete_assistant_message(
+        &self,
+        project_id: &ProjectId,
+    ) -> bool {
         let mut states = self.project_states.lock();
         let state = states.entry(project_id.clone()).or_default();
         let conv = &mut state.conversation_history;
@@ -426,8 +429,26 @@ impl UiState {
             return false;
         };
 
-        conv.remove(index);
-        true
+        if matches!(
+            conv.get(index),
+            Some(ConversationEntry::AssistantMessage { text, .. })
+                if Self::looks_like_structured_payload(text)
+        ) {
+            conv.remove(index);
+            return true;
+        }
+
+        if let Some(ConversationEntry::AssistantMessage { complete, .. }) = conv.get_mut(index) {
+            *complete = true;
+            return true;
+        }
+
+        false
+    }
+
+    fn looks_like_structured_payload(text: &str) -> bool {
+        let trimmed = text.trim_start();
+        trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"')
     }
 
     pub fn set_pending_prompt(&self, prompt: Option<PendingPrompt>) {
@@ -835,6 +856,40 @@ mod tests {
         state.record_assistant_message("{\"decision\":\"approve\"}".to_string());
 
         assert!(state.snapshot().conversation.is_empty());
+    }
+
+    #[test]
+    fn json_final_message_keeps_unstructured_streamed_text() {
+        let state = UiState::new();
+
+        state.record_assistant_message_delta("Inspecting repository");
+        state.record_assistant_message("{\"decision\":\"approve\"}".to_string());
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.conversation.len(), 1);
+        assert!(matches!(
+            snapshot.conversation.front(),
+            Some(ConversationEntry::AssistantMessage { text, complete: true })
+                if text == "Inspecting repository"
+        ));
+    }
+
+    #[test]
+    fn json_final_message_keeps_completed_reasoning() {
+        let state = UiState::new();
+
+        state.record_assistant_reasoning_delta("Inspecting repository");
+        state.record_assistant_message_delta("\"decision\"");
+        state.record_assistant_message("{\"decision\":\"approve\"}".to_string());
+        state.finish_assistant_reasoning();
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.conversation.len(), 1);
+        assert!(matches!(
+            snapshot.conversation.front(),
+            Some(ConversationEntry::AssistantReasoning { text, complete: true })
+                if text == "Inspecting repository"
+        ));
     }
 
     #[test]

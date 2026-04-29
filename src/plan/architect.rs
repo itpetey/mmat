@@ -1,11 +1,17 @@
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    path::PathBuf,
+};
 
-use futures::future;
+use futures::{future, future::LocalBoxFuture};
 use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 use naaf_knowledge::KnowledgeSearchTool;
-use naaf_llm::{AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message};
+use naaf_llm::{
+    AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message, Tool,
+    ToolRegistry, ToolSpec,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::plan::{
     WorkflowBuildError, WorkflowTaskError, discovery::DiscoveryOutput,
@@ -111,6 +117,7 @@ where
 pub(super) fn step_with_knowledge_tools<C, R, E>(
     agent: &LlmAgent<C, R, E>,
     knowledge_backend: std::sync::Arc<crate::plan::knowledge::QdrantKnowledgeBackend<R>>,
+    workspace_root: PathBuf,
 ) -> ArchitectStep<C, R, E>
 where
     C: LlmClient<Runtime = R> + Clone + 'static,
@@ -120,7 +127,7 @@ where
     R::Error: Debug + 'static,
 {
     let system_prompt = format!(
-        "{}\n\nYou have access to a `knowledge_search` tool to query existing repository knowledge.",
+        "{}\n\nYou have access to `knowledge_search` for materialised repository knowledge and repository tools: `glob_paths`, `search_files`, and `read_file`.",
         SYSTEM_PROMPT
     );
 
@@ -131,6 +138,7 @@ where
         let kb = kb.clone();
         let system_prompt = system_prompt.clone();
         let client = client.clone();
+        let workspace_root = workspace_root.clone();
         Box::pin(async move {
             let user_content = build_prompt(input.clone());
             let request = CompletionRequest::new(
@@ -152,7 +160,8 @@ where
                 }
             }));
 
-            let mut tools = naaf_llm::ToolRegistry::<R, naaf_knowledge::KnowledgeError>::new();
+            let mut tools = ToolRegistry::<R, naaf_knowledge::KnowledgeError>::new();
+            register_repository_tools(&mut tools, workspace_root);
             for group in &input.materialised {
                 let qdrant_agent_result = kb.agent_for_group(group);
                 let qdrant_agent = match qdrant_agent_result {
@@ -198,6 +207,65 @@ where
         }))
         .retry_policy(RetryPolicy::new(MAX_ARCHITECT_ATTEMPTS))
         .build_persistent()
+}
+
+struct KnowledgeToolAdapter<T> {
+    inner: T,
+}
+
+impl<T> KnowledgeToolAdapter<T> {
+    fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R, T> Tool for KnowledgeToolAdapter<T>
+where
+    T: Tool<Runtime = R>,
+    T::Error: Debug,
+{
+    type Runtime = R;
+    type Error = naaf_knowledge::KnowledgeError;
+
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+
+    fn call<'a>(
+        &'a self,
+        runtime: &'a Self::Runtime,
+        arguments: Value,
+    ) -> LocalBoxFuture<'a, Result<Value, Self::Error>> {
+        Box::pin(async move {
+            self.inner
+                .call(runtime, arguments)
+                .await
+                .map_err(|error| naaf_knowledge::KnowledgeError::Query(format!("{error:?}")))
+        })
+    }
+}
+
+fn register_repository_tools<R>(
+    tools: &mut ToolRegistry<R, naaf_knowledge::KnowledgeError>,
+    workspace_root: PathBuf,
+) where
+    R: 'static,
+{
+    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
+        naaf_llm::repository::ReadFileTool::<R>::new(workspace_root.clone()),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
+        naaf_llm::repository::GlobPathsTool::<R>::new(workspace_root.clone()),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
+        naaf_llm::repository::SearchFilesTool::<R>::new(workspace_root),
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
+    }
 }
 
 fn build_prompt(input: ArchitectInput) -> String {
