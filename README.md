@@ -1,49 +1,43 @@
 # MMAT
 
-MMAT, short for **Make Me A Thing**, is a repository-oriented workflow engine for turning an open-ended software prompt into a structured delivery path.
+MMAT, short for **Make Me A Thing**, is a repository-oriented plan engine for turning an open-ended software prompt into a structured delivery path.
 
 ## Workflow Shape
 
-The rewritten workflow is organised as these stages:
+The product now has two independent flows:
 
-1. Discovery
-2. Knowledge Planning
-3. Knowledge Materialisation
-4. Solution Branch Fan-out
-5. Solution Collect + Recommend + User Choice
-6. Software Architect
-7. Implementation Planning
-8. Execution
+- `plan`: discovery, knowledge planning/materialisation, solution branching, user selection, and software architect handoff.
+- `deliver`: queued implementation planning and execution for approved handoffs.
 
-The current codebase implements the workflow foundation through the architect handoff boundary.
+The frontend submits approved plan handoffs to a separate delivery process over `ipc-channel`.
 
 ## Current Implementation
 
-The workflow foundation is implemented as subject-owned modules:
+The plan foundation is implemented as subject-owned modules:
 
-- `src/workflow/discovery/`
+- `src/plan/discovery/`
   Live recursive discovery, prompt construction, and per-turn NAAF step building.
-- `src/workflow/knowledge/`
+- `src/plan/knowledge/`
   Knowledge planning, SQLite-backed metadata persistence, deterministic materialisation, and stage-scoped knowledge sessions.
-- `src/workflow/solutions/`
+- `src/plan/solutions/`
   Concurrent conservative, recommended, and ambitious branch generation, collection/recommendation, and live user choice.
-- `src/workflow/architect/`
+- `src/plan/architect/`
   Downstream Software Architect handoff and planning-ready output.
-- `src/runtime/`
-  Runtime interfaces for live human questions and stage prompt scoping without coupling workflow modules to a particular UI transport.
+- `src/deliver/`
+  SQLite-backed delivery queue, IPC messages, delivery models, worktree execution, cargo checks, and validation/review loops.
 
-The browser UI and the full execution pipeline are still being rebuilt on top of these contracts.
+The browser UI runs from `src/bin/frontend.rs`; the delivery worker runs from `src/bin/delivery.rs`.
 
 ## Scoped Knowledge
 
-MMAT treats knowledge as explicit workflow state instead of one global prompt attachment.
+MMAT treats knowledge as explicit plan state instead of one global prompt attachment.
 
 - Discovery produces a structured handoff.
 - A separate knowledge-planning stage proposes zero or more useful knowledge groups.
 - A deterministic materialisation stage persists knowledge-group metadata via SQLite using `naaf-persistence-sqlite::SqliteKnowledgeGroupStore`.
 - Each downstream stage receives only the materialised groups selected for that stage.
 
-This keeps prompts narrower and makes evidence flow visible across the workflow.
+This keeps prompts narrower and makes evidence flow visible across the plan.
 
 ## Upstream NAAF Follow-Ups
 
@@ -78,39 +72,50 @@ Run the fast development service stack with Docker Compose:
 
 ```bash
 cp .env.example .env
-docker compose --profile dev up --build mmat-dev
+MMAT_HOST_PROJECT_ROOT=/path/to/target/repository
+docker compose --profile dev up --build builder frontend
 ```
 
 Then open `http://127.0.0.1:8080`.
 
-The development service bind-mounts this checkout and the sibling NAAF crates into the container, stores Cargo registry/git data and build artefacts in named volumes, and runs `cargo watch`. Source changes under `src/`, `web/`, `Cargo.toml`, or `Cargo.lock` recompile and restart the web server without rebuilding the image.
+The development services bind-mount this checkout and the sibling NAAF crates into the container, stores Cargo registry/git data and build artefacts in named volumes, and runs `cargo watch`. Source changes under `src/`, `web/`, `Cargo.toml`, or `Cargo.lock` recompile and restart the web server without rebuilding the image.
+
+Set `MMAT_HOST_PROJECT_ROOT` to the host repository that MMAT should plan and deliver against. Compose mounts it at `MMAT_PROJECT_ROOT` inside the containers, defaulting to `/workspace/project`, and the frontend registers that path as the default project. Delivery edits are written through that bind mount.
 
 Use the same dev container for checks:
 
 ```bash
-docker compose --profile dev run --rm mmat-dev cargo test
-docker compose --profile dev run --rm mmat-dev cargo clippy -- -D warnings
-docker compose --profile dev run --rm mmat-dev cargo fmt --all
+docker compose --profile dev run --rm frontend cargo test
+docker compose --profile dev run --rm frontend cargo clippy -- -D warnings
+docker compose --profile dev run --rm frontend cargo fmt --all
 ```
 
 Rebuild the dev image only when Dockerfile dependencies change, such as the Rust image or installed tools:
 
 ```bash
-docker compose --profile dev build mmat-dev
+docker compose --profile dev build builder frontend
 ```
 
 For a packaged image that copies code into the container, run:
 
 ```bash
-docker compose up --build mmat
+MMAT_HOST_PROJECT_ROOT=/path/to/target/repository
+docker compose --profile prod up --build builder-prod frontend-prod
 ```
 
 That path is useful for production-style validation, but it requires an image rebuild after source changes.
 
-The Compose stack includes:
+The development profile includes:
 
-- `mmat`, the LiveView web server.
-- `mmat-dev`, the bind-mounted development web server.
+- `frontend`, the bind-mounted development LiveView web server.
+- `builder`, a bind-mounted development builder that keeps the delivery binary available for frontend-launched IPC.
+- `qdrant`, the vector store used for materialised knowledge.
+- named volumes for SQLite knowledge metadata and Qdrant data.
+
+The production profile includes:
+
+- `frontend-prod`, the packaged LiveView web server.
+- `builder-prod`, a packaged delivery-binary companion container used as a health gate for frontend-launched IPC.
 - `qdrant`, the vector store used for materialised knowledge.
 - named volumes for SQLite knowledge metadata and Qdrant data.
 
@@ -122,7 +127,7 @@ projects/
   naaf/main/
 ```
 
-By default, the container connects to an OpenAI-compatible workflow LLM at `http://host.docker.internal:1234/v1`. Set `MMAT_LLM_BASE_URL` and `MMAT_LLM_API_KEY` in `.env` if your model endpoint is somewhere else.
+By default, the container connects to an OpenAI-compatible plan LLM at `http://host.docker.internal:1234/v1`. Set `MMAT_LLM_BASE_URL` and `MMAT_LLM_API_KEY` in `.env` if your model endpoint is somewhere else.
 
 Knowledge materialisation uses persistent storage by default:
 
@@ -141,12 +146,12 @@ MMAT_EMBEDDING_BASE_URL=https://api.openai.com/v1
 MMAT_EMBEDDING_MODEL=text-embedding-3-small
 MMAT_EMBEDDING_DIMENSION=1536
 MMAT_KNOWLEDGE_REPO=mmat
-cargo run --bin mmat
+cargo run --bin frontend
 ```
 
 For Docker Compose, set the same values in `.env`; inside the Compose network Qdrant is reached through `http://qdrant:6333` and SQLite is stored at `/data/mmat/knowledge.sqlite3`.
 
-To verify the implemented workflow foundation:
+To verify the implemented plan foundation:
 
 ```bash
 cargo test

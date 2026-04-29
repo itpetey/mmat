@@ -1,24 +1,29 @@
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, process::Child, sync::Arc};
 
 use clap::Parser;
+use ipc_channel::ipc::IpcOneShotServer;
 use mmat::{
-    build::{BuildQueueStore, BuildWorkerHandle, spawn_project_worker},
+    deliver::ipc::{DeliveryHandshake, DeliveryToFrontend, FrontendSender, FrontendToDelivery},
     liveview::{
         FrontendEvent, LiveViewAppBuilder, RunSummaryEvent, UiState, init_liveview_tracing,
         spawn_event_translator,
     },
+    plan,
     project::{ProjectConfig, ProjectId, ProjectRegistryStore},
-    workflow,
 };
 use naaf_llm::{AssistantMessage, ChannelHumanIO, HumanAnswer, OpenAiStreamObserver};
 
-type WorkerMap = BTreeMap<ProjectId, (Arc<BuildQueueStore>, BuildWorkerHandle)>;
-
 #[derive(Debug, Parser)]
-#[command(name = "mmat-web", about = "Run the MMAT LiveView web server")]
+#[command(name = "frontend", about = "Run the MMAT LiveView frontend")]
 struct Cli {
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: SocketAddr,
+}
+
+struct DeliveryClient {
+    sender: FrontendSender,
+    child: Child,
+    listener: std::thread::JoinHandle<()>,
 }
 
 struct UiStreamObserver {
@@ -98,39 +103,37 @@ async fn forward_human_questions(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let registry_store = Arc::new(ProjectRegistryStore::open_default()?);
-    let current_dir = std::env::current_dir()?;
-    registry_store.ensure_default_project(current_dir)?;
+    registry_store.ensure_default_project(default_project_root()?)?;
     let projects = registry_store.list_projects()?;
     let ui_state = Arc::new(UiState::with_projects(
         projects.clone(),
         Some(registry_store.clone()),
     ));
-    let workers = start_project_workers(&projects, ui_state.as_ref())?;
     let (event_tx, ready_handle, instruction_rx, event_rx) = LiveViewAppBuilder::default()
         .addr(cli.addr)
         .with_ui_state(ui_state.clone())
         .spawn_with_input()?;
     init_liveview_tracing(event_tx.clone());
     let translator = spawn_event_translator(event_rx, ui_state.clone());
+    let mut delivery = start_delivery_process(&projects, event_tx.clone(), ui_state.clone())?;
     let handle = ready_handle.wait_for_ready().await?;
 
     println!("MMAT LiveView server listening on http://{}", cli.addr);
 
-    let workflow = run_workflow_when_prompted(
+    let plan = run_workflow_when_prompted(
         instruction_rx,
         event_tx.clone(),
-        ui_state.clone(),
         registry_store,
-        workers,
+        delivery.sender.clone(),
     );
-    tokio::pin!(workflow);
+    tokio::pin!(plan);
 
     let workflow_finished = tokio::select! {
         result = tokio::signal::ctrl_c() => {
             result?;
             false
         }
-        _ = &mut workflow => true,
+        _ = &mut plan => true,
     };
 
     if workflow_finished {
@@ -138,33 +141,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     translator.abort();
+    let _ = delivery.sender.send(FrontendToDelivery::Shutdown);
+    let _ = delivery.child.kill();
+    let _ = delivery.listener.join();
     handle.shutdown().await?;
     Ok(())
 }
 
-fn refresh_project_queue(
-    ui_state: &UiState,
-    project_id: &ProjectId,
-    queue_store: &BuildQueueStore,
-) {
-    match queue_store.list_for_project(project_id) {
-        Ok(jobs) => ui_state.set_project_queue(project_id, jobs),
-        Err(error) => ui_state.push_project_event(
-            project_id,
-            mmat::liveview::UiEvent::Log {
-                level: "ERROR".to_string(),
-                message: format!("Queue refresh failed: {error}"),
-            },
-        ),
+fn default_project_root() -> Result<std::path::PathBuf, std::io::Error> {
+    match std::env::var("MMAT_PROJECT_ROOT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(root) => Ok(root.into()),
+        None => std::env::current_dir(),
     }
 }
 
 async fn run_workflow_when_prompted(
     instruction_rx: mmat::liveview::InstructionReceiver,
     event_tx: mmat::liveview::EventSender,
-    ui_state: Arc<UiState>,
     registry_store: Arc<ProjectRegistryStore>,
-    workers: WorkerMap,
+    delivery_sender: FrontendSender,
 ) {
     let Ok(project_prompt) = instruction_rx.await else {
         return;
@@ -188,7 +186,7 @@ async fn run_workflow_when_prompted(
         &event_tx,
         &project_id,
         tracing::Level::INFO,
-        "Prompt received. Starting workflow.",
+        "Prompt received. Starting plan.",
     );
     send_summary(&event_tx, &project, &prompt, "running", "discovery", None);
 
@@ -202,38 +200,24 @@ async fn run_workflow_when_prompted(
     let stream_observer: Arc<dyn OpenAiStreamObserver<ChannelHumanIO>> =
         Arc::new(UiStreamObserver::new(event_tx.clone(), project_id.clone()));
     let result =
-        workflow::greenfield_for_project(prompt.clone(), runtime, Some(stream_observer), &project)
+        plan::greenfield_for_project(prompt.clone(), runtime, Some(stream_observer), &project)
             .await;
     human_bridge.abort();
 
     match result {
         Ok(report) => {
             if let Some(handoff) = report.design_handoff()
-                && let Some((queue_store, worker)) = workers.get(&project_id)
+                && let Err(error) = delivery_sender.send(FrontendToDelivery::Enqueue {
+                    project_id: project_id.clone(),
+                    handoff,
+                })
             {
-                match queue_store.enqueue(&project_id, handoff) {
-                    Ok(_) => {
-                        refresh_project_queue(ui_state.as_ref(), &project_id, queue_store.as_ref());
-                        worker.notify();
-                        let ui_state = ui_state.clone();
-                        let project_id = project_id.clone();
-                        let queue_store = queue_store.clone();
-                        tokio::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                            refresh_project_queue(
-                                ui_state.as_ref(),
-                                &project_id,
-                                queue_store.as_ref(),
-                            );
-                        });
-                    }
-                    Err(error) => send_log(
-                        &event_tx,
-                        &project_id,
-                        tracing::Level::ERROR,
-                        format!("Build enqueue failed: {error}"),
-                    ),
-                }
+                send_log(
+                    &event_tx,
+                    &project_id,
+                    tracing::Level::ERROR,
+                    format!("Delivery enqueue failed: {error}"),
+                );
             }
             send_summary(
                 &event_tx,
@@ -248,7 +232,7 @@ async fn run_workflow_when_prompted(
                 &project_id,
                 tracing::Level::INFO,
                 format!(
-                    "Workflow completed as {} after {} step attempt(s).",
+                    "Plan completed as {} after {} step attempt(s).",
                     report.outcome_label(),
                     report.attempt_count()
                 ),
@@ -260,14 +244,14 @@ async fn run_workflow_when_prompted(
                 &project,
                 &prompt,
                 "failed",
-                "workflow",
+                "plan",
                 Some(error.to_string()),
             );
             send_log(
                 &event_tx,
                 &project_id,
                 tracing::Level::ERROR,
-                format!("Workflow failed: {error}"),
+                format!("Plan failed: {error}"),
             );
         }
     }
@@ -284,7 +268,7 @@ fn send_log(
         project_id,
         FrontendEvent::Log {
             level,
-            target: "mmat::web".to_string(),
+            target: "mmat::frontend".to_string(),
             message: message.into(),
         },
     );
@@ -327,17 +311,90 @@ fn send_summary(
     );
 }
 
-fn start_project_workers(
+fn start_delivery_process(
     projects: &[ProjectConfig],
-    ui_state: &UiState,
-) -> Result<WorkerMap, Box<dyn std::error::Error>> {
-    let mut workers = BTreeMap::new();
-    for project in projects.iter().filter(|project| project.enabled) {
-        let queue_store = Arc::new(BuildQueueStore::for_project(project)?);
-        queue_store.recover_stale_running(&project.id)?;
-        refresh_project_queue(ui_state, &project.id, queue_store.as_ref());
-        let worker = spawn_project_worker(project.clone(), queue_store.clone());
-        workers.insert(project.id.clone(), (queue_store, worker));
+    event_tx: mmat::liveview::EventSender,
+    ui_state: Arc<UiState>,
+) -> Result<DeliveryClient, Box<dyn std::error::Error>> {
+    let (server, server_name) = IpcOneShotServer::<DeliveryHandshake>::new()?;
+    let child = std::process::Command::new(delivery_binary_path()?)
+        .arg("--ipc-server")
+        .arg(server_name)
+        .spawn()?;
+    let (_, handshake) = server.accept()?;
+    let sender = handshake.frontend_tx;
+    let receiver = handshake.delivery_rx;
+    sender.send(FrontendToDelivery::RegisterProjects(projects.to_vec()))?;
+
+    let listener = std::thread::spawn(move || {
+        while let Ok(event) = receiver.recv() {
+            handle_delivery_event(&event_tx, ui_state.as_ref(), event);
+        }
+    });
+
+    Ok(DeliveryClient {
+        sender,
+        child,
+        listener,
+    })
+}
+
+fn delivery_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(path) = std::env::var("MMAT_DELIVERY_BIN") {
+        return Ok(path.into());
     }
-    Ok(workers)
+
+    let mut path = std::env::current_exe()?;
+    path.set_file_name("delivery");
+    Ok(path)
+}
+
+fn handle_delivery_event(
+    event_tx: &mmat::liveview::EventSender,
+    ui_state: &UiState,
+    event: DeliveryToFrontend,
+) {
+    match event {
+        DeliveryToFrontend::Ready => {}
+        DeliveryToFrontend::QueueSnapshot { project_id, jobs } => {
+            ui_state.set_project_queue(&project_id, jobs);
+        }
+        DeliveryToFrontend::Log {
+            project_id,
+            level,
+            message,
+        } => {
+            send_log(event_tx, &project_id, level.as_tracing_level(), message);
+        }
+        DeliveryToFrontend::JobStarted { project_id, job_id } => {
+            send_log(
+                event_tx,
+                &project_id,
+                tracing::Level::INFO,
+                format!("Delivery job {job_id} started."),
+            );
+        }
+        DeliveryToFrontend::JobFinished {
+            project_id,
+            job_id,
+            status,
+            error,
+        } => {
+            let level = if error.is_some() {
+                tracing::Level::ERROR
+            } else {
+                tracing::Level::INFO
+            };
+            let suffix = error.map(|error| format!(": {error}")).unwrap_or_default();
+            send_log(
+                event_tx,
+                &project_id,
+                level,
+                format!(
+                    "Delivery job {job_id} finished as {}{suffix}.",
+                    status.as_str()
+                ),
+            );
+        }
+    }
 }

@@ -5,7 +5,7 @@ use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 use naaf_llm::{HumanIO, HumanQuestion, LlmAgent, LlmClient, TaskError};
 use serde::{Deserialize, Serialize};
 
-use crate::workflow::{
+use crate::plan::{
     WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
     knowledge::StageKnowledgeSession, parser::decode_outcome,
 };

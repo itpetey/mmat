@@ -154,7 +154,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::workflow::discovery::DiscoveryOutput;
+    use crate::plan::discovery::DiscoveryOutput;
 
     use super::{
         describe_non_json_output, describe_text_encoded_tool_call, extract_json_fragment,

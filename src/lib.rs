@@ -1,10 +1,10 @@
 use naaf_llm::{OpenAiError, WebSearchError};
 use thiserror::Error;
 
-pub mod build;
+pub mod deliver;
 pub mod liveview;
+pub mod plan;
 pub mod project;
-pub mod workflow;
 
 #[derive(Debug, Error)]
 pub enum MmatError {
@@ -18,7 +18,7 @@ pub enum MmatError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     WebSearch(#[from] WebSearchError),
-    #[error("workflow error: {0}")]
+    #[error("plan error: {0}")]
     Workflow(String),
     #[error("workspace error: {0}")]
     Workspace(String),

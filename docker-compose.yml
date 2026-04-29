@@ -1,5 +1,5 @@
 services:
-  mmat-dev:
+  builder:
     profiles:
       - dev
     build:
@@ -21,6 +21,42 @@ services:
       MMAT_EMBEDDING_MODEL: ${MMAT_EMBEDDING_MODEL:-text-embedding-3-small}
       MMAT_EMBEDDING_DIMENSION: ${MMAT_EMBEDDING_DIMENSION:-1536}
       MMAT_KNOWLEDGE_REPO: ${MMAT_KNOWLEDGE_REPO:-mmat}
+      MMAT_PROJECT_ROOT: ${MMAT_PROJECT_ROOT:-/workspace/project}
+      MMAT_DELIVERY_BIN: /workspace/mmat/main/target/debug/delivery
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - .:/workspace/mmat/main
+      - ../../naaf/main/crates:/workspace/naaf/main/crates:ro
+      - ../../naaf/main/Cargo.toml:/workspace/naaf/main/Cargo.toml:ro
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - mmat-target:/workspace/mmat/main/target
+      - mmat-data-dev:/data/mmat
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+    command: ["cargo", "watch", "-w", "src", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "build --bin delivery"]
+    healthcheck:
+      test: ["CMD", "test", "-x", "/workspace/mmat/main/target/debug/delivery"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  frontend:
+    profiles:
+      - dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    depends_on:
+      builder:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      <<: *mmat-env
+      MMAT_DELIVERY_BIN: /workspace/mmat/main/target/debug/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
@@ -33,9 +69,13 @@ services:
       - cargo-git:/usr/local/cargo/git
       - mmat-target:/workspace/mmat/main/target
       - mmat-data-dev:/data/mmat
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+    command: ["cargo", "watch", "-w", "src", "-w", "web", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "run --bin frontend -- --addr 0.0.0.0:8080"]
     restart: unless-stopped
 
-  mmat:
+  builder-prod:
+    profiles:
+      - prod
     build:
       context: .
       dockerfile: Dockerfile
@@ -44,13 +84,45 @@ services:
         naaf: ../../naaf/main
     depends_on:
       - qdrant
-    environment: *mmat-env
+    environment:
+      <<: *mmat-env
+      MMAT_DELIVERY_BIN: /usr/local/bin/delivery
+    command: ["sh", "-lc", "test -x /usr/local/bin/delivery && sleep infinity"]
+    volumes:
+      - mmat-data:/data/mmat
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+    healthcheck:
+      test: ["CMD", "test", "-x", "/usr/local/bin/delivery"]
+      interval: 5s
+      timeout: 2s
+      retries: 6
+    restart: unless-stopped
+
+  frontend-prod:
+    profiles:
+      - prod
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      additional_contexts:
+        naaf: ../../naaf/main
+    depends_on:
+      builder-prod:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      <<: *mmat-env
+      MMAT_DELIVERY_BIN: /usr/local/bin/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - "${MMAT_PORT:-8080}:8080"
     volumes:
       - mmat-data:/data/mmat
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+    command: ["frontend", "--addr", "0.0.0.0:8080"]
     restart: unless-stopped
 
   qdrant:

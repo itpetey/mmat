@@ -5,7 +5,7 @@ use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn};
 use naaf_llm::{HumanIO, HumanQuestion, LlmAgent, LlmClient, TaskError};
 use serde::{Deserialize, Serialize};
 
-use crate::workflow::{WorkflowBuildError, WorkflowTaskError, parser::decode_outcome};
+use crate::plan::{WorkflowBuildError, WorkflowTaskError, parser::decode_outcome};
 
 type DiscoveryStep<C, R, E> =
     Step<R, DiscoveryInput, DiscoveryOutput, DiscoveryFinding, DiscoveryStepError<C, R, E>>;
@@ -354,7 +354,7 @@ mod tests {
         DiscoveryOutput {
             ready_for_solution: true,
             problem_statement: "Rewrite MMAT".to_string(),
-            goals: vec!["Keep the workflow inspectable".to_string()],
+            goals: vec!["Keep the plan inspectable".to_string()],
             constraints: vec!["Use local models".to_string()],
             assumptions: vec!["LM Studio is running".to_string()],
             risks: vec!["Local model output may drift".to_string()],
@@ -416,7 +416,7 @@ mod tests {
             r#"{
                 "ready_for_solution": true,
                 "problem_statement": "Rewrite MMAT",
-                "goals": ["Keep the workflow inspectable"],
+                "goals": ["Keep the plan inspectable"],
                 "constraints": ["Use local models"],
                 "recommended_path": "Proceed",
                 "open_questions": [{"prompt": "Any missing choices?"}]
@@ -437,7 +437,7 @@ mod tests {
             serde_json::to_string(&complete_output()).expect("output should serialise"),
         ]);
         let agent = LlmAgent::new(client.clone());
-        let runtime = AnsweringRuntime::new(["A local-first workflow tool".to_string()]);
+        let runtime = AnsweringRuntime::new(["A local-first plan tool".to_string()]);
 
         let output = step(&agent)
             .run(&runtime, DiscoveryInput::new("Hi"))
@@ -453,6 +453,6 @@ mod tests {
         let prompts = client.prompts();
         assert_eq!(prompts.len(), 2);
         assert!(prompts[1].contains("Answered clarifications:"));
-        assert!(prompts[1].contains("What are we building? => A local-first workflow tool"));
+        assert!(prompts[1].contains("What are we building? => A local-first plan tool"));
     }
 }

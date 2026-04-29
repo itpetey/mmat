@@ -20,7 +20,7 @@ use crate::{MmatError, project::ProjectConfig};
 mod architect;
 mod discovery;
 mod knowledge;
-mod parser;
+pub mod parser;
 mod solutions;
 
 type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
@@ -62,7 +62,8 @@ pub struct GreenfieldReport {
 pub struct DesignHandoff {
     pub design_run_id: uuid::Uuid,
     pub prompt: String,
-    pub architect_plan: serde_json::Value,
+    pub architect_plan: String,
+    pub knowledge_collections: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -73,7 +74,7 @@ enum WorkflowBuildError<H> {
     Knowledge(#[from] knowledge::KnowledgeError),
     #[error("invalid solution choice: {0}")]
     InvalidChoice(String),
-    #[error("workflow step failed: {0}")]
+    #[error("plan step failed: {0}")]
     Workflow(String),
 }
 
@@ -102,6 +103,7 @@ pub(super) enum WorkflowStageId {
 enum WorkflowRunResult {
     ReadyForPlanning {
         architect_plan: architect::ArchitectPlan,
+        knowledge_collections: Vec<String>,
     },
     NeedsRevision {
         feedback: String,
@@ -360,14 +362,14 @@ where
     let agent = LlmAgent::new(oai_client);
     let knowledge_store = Arc::new(knowledge_config.open_store()?);
     let knowledge_backend = Arc::new(knowledge_config.qdrant_backend::<R>());
-    let workflow = build_greenfield_step::<OpenAiClient<R>, R, Infallible>(
+    let plan = build_greenfield_step::<OpenAiClient<R>, R, Infallible>(
         &agent,
         knowledge_store,
         knowledge_backend,
         knowledge_config.qdrant_collection_prefix.clone(),
     );
 
-    let traced = workflow
+    let traced = plan
         .run_traced(
             &runtime,
             discovery::DiscoveryInput::new(init_prompt.clone()),
@@ -377,10 +379,14 @@ where
     let (result, step_report) = traced.into_parts();
     let run_id = uuid::Uuid::new_v4();
     let design_handoff = match &result {
-        WorkflowRunResult::ReadyForPlanning { architect_plan } => Some(DesignHandoff {
+        WorkflowRunResult::ReadyForPlanning {
+            architect_plan,
+            knowledge_collections,
+        } => Some(DesignHandoff {
             design_run_id: run_id,
             prompt: init_prompt,
-            architect_plan: serde_json::to_value(architect_plan)?,
+            architect_plan: serde_json::to_string(architect_plan)?,
+            knowledge_collections: knowledge_collections.clone(),
         }),
         WorkflowRunResult::NeedsRevision { .. } => None,
     };
@@ -522,15 +528,25 @@ where
                                 ArchitectStageInput {
                                     discovery: context.discovery,
                                     selected_solution,
-                                    materialised: context.materialised,
+                                    materialised: context.materialised.clone(),
                                 },
                             )
                             .await
                             .map_err(|error| {
                                 TaskError::Build(WorkflowBuildError::Workflow(error.to_string()))
                             })?;
+                        let knowledge_collections = context
+                            .materialised
+                            .into_iter()
+                            .filter(|group| {
+                                group.is_scoped_to(WorkflowStageId::ImplementationPlanning)
+                                    || group.is_scoped_to(WorkflowStageId::Execution)
+                            })
+                            .map(|group| group.as_knowledge_group().collection)
+                            .collect();
                         Ok(WorkflowRunResult::ReadyForPlanning {
                             architect_plan: plan,
+                            knowledge_collections,
                         })
                     }
                     solutions::SolutionUserChoice::Revise { feedback } => {

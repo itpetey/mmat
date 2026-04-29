@@ -18,9 +18,10 @@ ENV RUST_LOG=info \
     MMAT_EMBEDDING_BASE_URL=https://api.openai.com/v1 \
     MMAT_EMBEDDING_MODEL=text-embedding-3-small \
     MMAT_EMBEDDING_DIMENSION=1536 \
-    MMAT_LLM_BASE_URL=http://host.docker.internal:1234/v1
+    MMAT_LLM_BASE_URL=http://host.docker.internal:1234/v1 \
+    MMAT_DELIVERY_BIN=/workspace/mmat/main/target/debug/delivery
 
-CMD ["cargo", "watch", "-w", "src", "-w", "web", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "run --bin mmat -- --addr 0.0.0.0:8080"]
+CMD ["cargo", "watch", "-w", "src", "-w", "web", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "build --bin delivery", "-x", "run --bin frontend -- --addr 0.0.0.0:8080"]
 
 FROM rust-base AS builder
 
@@ -33,7 +34,7 @@ COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY src ./src
 COPY web ./web
 
-RUN cargo build --release --bin mmat
+RUN cargo build --release --bin frontend --bin delivery
 
 FROM debian:trixie-slim AS runtime
 
@@ -44,7 +45,8 @@ RUN apt-get update \
     && mkdir -p /data/mmat \
     && chown -R mmat:mmat /data/mmat
 
-COPY --from=builder /workspace/mmat/main/target/release/mmat /usr/local/bin/mmat
+COPY --from=builder /workspace/mmat/main/target/release/frontend /usr/local/bin/frontend
+COPY --from=builder /workspace/mmat/main/target/release/delivery /usr/local/bin/delivery
 
 USER mmat
 WORKDIR /data/mmat
@@ -55,8 +57,9 @@ ENV RUST_LOG=info \
     MMAT_EMBEDDING_BASE_URL=https://api.openai.com/v1 \
     MMAT_EMBEDDING_MODEL=text-embedding-3-small \
     MMAT_EMBEDDING_DIMENSION=1536 \
-    MMAT_LLM_BASE_URL=http://host.docker.internal:1234/v1
+    MMAT_LLM_BASE_URL=http://host.docker.internal:1234/v1 \
+    MMAT_DELIVERY_BIN=/usr/local/bin/delivery
 
 EXPOSE 8080
 
-CMD ["mmat", "--addr", "0.0.0.0:8080"]
+CMD ["frontend", "--addr", "0.0.0.0:8080"]

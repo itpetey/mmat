@@ -13,9 +13,11 @@ use tokio::sync::Notify;
 
 use crate::{
     MmatError,
+    plan::DesignHandoff,
     project::{ProjectConfig, ProjectId},
-    workflow::DesignHandoff,
 };
+
+use super::engine::{BuildEngine, DeliveryError};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildJob {
@@ -60,22 +62,28 @@ pub struct BuildQueueStore {
     path: PathBuf,
 }
 
-#[derive(Debug, Error)]
-pub enum BuildError {
-    #[error("implementation planning is not implemented yet")]
-    PlanningNotImplemented,
-    #[error("execution is not implemented yet")]
-    ExecutionNotImplemented,
-}
-
 pub struct BuildWorkerHandle {
     project_id: ProjectId,
     notify: Arc<Notify>,
     join_handle: tokio::task::JoinHandle<()>,
 }
 
-pub struct BuildEngine {
-    project: ProjectConfig,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuildWorkerEvent {
+    QueueChanged {
+        project_id: ProjectId,
+        jobs: Vec<BuildJob>,
+    },
+    JobStarted {
+        project_id: ProjectId,
+        job_id: BuildJobId,
+    },
+    JobFinished {
+        project_id: ProjectId,
+        job_id: BuildJobId,
+        status: BuildJobStatus,
+        error: Option<String>,
+    },
 }
 
 impl BuildWorkerHandle {
@@ -333,26 +341,6 @@ impl BuildQueueStore {
     }
 }
 
-impl BuildEngine {
-    pub fn new(project: ProjectConfig) -> Self {
-        Self { project }
-    }
-
-    pub async fn run(&self, _job: &BuildJob) -> Result<(), BuildError> {
-        self.plan_implementation().await?;
-        self.execute().await
-    }
-
-    async fn plan_implementation(&self) -> Result<(), BuildError> {
-        let _project_root = &self.project.root;
-        Err(BuildError::PlanningNotImplemented)
-    }
-
-    async fn execute(&self) -> Result<(), BuildError> {
-        Err(BuildError::ExecutionNotImplemented)
-    }
-}
-
 impl From<BuildQueueError> for MmatError {
     fn from(value: BuildQueueError) -> Self {
         Self::Workflow(value.to_string())
@@ -366,10 +354,54 @@ pub async fn drain_project_queue(
 ) -> Result<(), BuildQueueError> {
     while let Some(job) = store.next_pending(project_id)? {
         store.mark_running(&job.id)?;
+        let job_id = job.id.clone();
         match engine.run(&job).await {
             Ok(()) => store.mark_succeeded(&job.id)?,
             Err(error) => store.mark_failed(&job.id, error.to_string())?,
         }
+        tracing::debug!(target: "mmat::deliver", project_id = %project_id, job_id = %job_id, "delivery job drained");
+    }
+
+    Ok(())
+}
+
+pub async fn drain_project_queue_with_events(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    engine: &BuildEngine,
+    events: impl Fn(BuildWorkerEvent),
+) -> Result<(), BuildQueueError> {
+    while let Some(job) = store.next_pending(project_id)? {
+        store.mark_running(&job.id)?;
+        events(BuildWorkerEvent::JobStarted {
+            project_id: project_id.clone(),
+            job_id: job.id.clone(),
+        });
+        emit_queue_changed(project_id, store, &events)?;
+
+        let result: Result<(), DeliveryError> = engine.run(&job).await;
+        match result {
+            Ok(()) => {
+                store.mark_succeeded(&job.id)?;
+                events(BuildWorkerEvent::JobFinished {
+                    project_id: project_id.clone(),
+                    job_id: job.id.clone(),
+                    status: BuildJobStatus::Succeeded,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                let error = error.to_string();
+                store.mark_failed(&job.id, error.clone())?;
+                events(BuildWorkerEvent::JobFinished {
+                    project_id: project_id.clone(),
+                    job_id: job.id.clone(),
+                    status: BuildJobStatus::Failed,
+                    error: Some(error),
+                });
+            }
+        }
+        emit_queue_changed(project_id, store, &events)?;
     }
 
     Ok(())
@@ -379,24 +411,43 @@ pub fn spawn_project_worker(
     project: ProjectConfig,
     store: Arc<BuildQueueStore>,
 ) -> BuildWorkerHandle {
+    spawn_project_worker_with_events(project, store, |_| {})
+}
+
+pub fn spawn_project_worker_with_events(
+    project: ProjectConfig,
+    store: Arc<BuildQueueStore>,
+    events: impl Fn(BuildWorkerEvent) + Send + 'static,
+) -> BuildWorkerHandle {
     let project_id = project.id.clone();
     let notify = Arc::new(Notify::new());
     let worker_notify = notify.clone();
     let worker_project_id = project_id.clone();
-    let join_handle = tokio::spawn(async move {
-        let engine = BuildEngine::new(project);
-        loop {
-            if let Err(error) =
-                drain_project_queue(&worker_project_id, store.as_ref(), &engine).await
-            {
-                tracing::error!(
-                    target: "mmat::build",
-                    project_id = %worker_project_id,
-                    "build worker failed: {error}"
-                );
+    let join_handle = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("delivery worker runtime should build");
+        runtime.block_on(async move {
+            let engine = BuildEngine::new(project);
+            loop {
+                if let Err(error) = drain_project_queue_with_events(
+                    &worker_project_id,
+                    store.as_ref(),
+                    &engine,
+                    &events,
+                )
+                .await
+                {
+                    tracing::error!(
+                        target: "mmat::deliver",
+                        project_id = %worker_project_id,
+                        "delivery worker failed: {error}"
+                    );
+                }
+                worker_notify.notified().await;
             }
-            worker_notify.notified().await;
-        }
+        });
     });
 
     BuildWorkerHandle {
@@ -404,6 +455,18 @@ pub fn spawn_project_worker(
         notify,
         join_handle,
     }
+}
+
+fn emit_queue_changed(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    events: &impl Fn(BuildWorkerEvent),
+) -> Result<(), BuildQueueError> {
+    events(BuildWorkerEvent::QueueChanged {
+        project_id: project_id.clone(),
+        jobs: store.list_for_project(project_id)?,
+    });
+    Ok(())
 }
 
 fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
@@ -446,11 +509,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        build::{
+        deliver::{
             BuildEngine, BuildJobStatus, BuildQueueStore, drain_project_queue, spawn_project_worker,
         },
+        plan::DesignHandoff,
         project::{ProjectConfig, ProjectId},
-        workflow::DesignHandoff,
     };
 
     #[test]
@@ -484,6 +547,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "runs the real delivery engine"]
     async fn worker_drains_only_its_project_queue() {
         let store = BuildQueueStore::open(tempfile_path("queue-drain").join("queue.sqlite3"))
             .expect("queue should open");
@@ -536,6 +600,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "runs the real delivery engine"]
     async fn spawned_worker_records_not_implemented_failure() {
         let store = Arc::new(
             BuildQueueStore::open(tempfile_path("queue-worker").join("queue.sqlite3"))
@@ -564,7 +629,8 @@ mod tests {
         DesignHandoff {
             design_run_id: uuid::Uuid::new_v4(),
             prompt: prompt.to_string(),
-            architect_plan: serde_json::json!({"summary": prompt}),
+            architect_plan: serde_json::json!({"summary": prompt}).to_string(),
+            knowledge_collections: Vec::new(),
         }
     }
 

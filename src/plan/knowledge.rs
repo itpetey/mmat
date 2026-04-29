@@ -24,11 +24,11 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::{
-    project::prefix_collection_id,
-    workflow::{
+    plan::{
         WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
         parser::decode_outcome,
     },
+    project::prefix_collection_id,
 };
 
 type KnowledgeStep<C, R, E> =
@@ -181,6 +181,10 @@ impl KnowledgeInput {
 impl MaterialisedKnowledgeGroup {
     pub(super) fn as_knowledge_group(&self) -> KnowledgeGroup {
         self.group.clone()
+    }
+
+    pub(super) fn is_scoped_to(&self, stage: WorkflowStageId) -> bool {
+        self.stages.contains(&stage)
     }
 }
 

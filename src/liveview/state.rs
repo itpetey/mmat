@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::sync::{oneshot, watch};
 
 use crate::{
-    build::{BuildJob, BuildJobStatus},
+    deliver::{BuildJob, BuildJobStatus},
     liveview::event::{FrontendEvent, RunSummaryEvent},
     project::{NewProject, ProjectConfig, ProjectId, ProjectRegistryStore},
 };
@@ -733,9 +733,9 @@ mod tests {
     use tokio::sync::oneshot;
 
     use crate::{
-        build::{BuildJob, BuildJobId, BuildJobStatus},
+        deliver::{BuildJob, BuildJobId, BuildJobStatus},
+        plan::DesignHandoff,
         project::{ProjectConfig, ProjectId},
-        workflow::DesignHandoff,
     };
 
     use super::{ComposerMode, ConversationEntry, PendingPrompt, UiEvent, UiState};
@@ -892,7 +892,8 @@ mod tests {
             handoff: DesignHandoff {
                 design_run_id: uuid::Uuid::new_v4(),
                 prompt: prompt.to_string(),
-                architect_plan: serde_json::json!({"summary": prompt}),
+                architect_plan: serde_json::json!({"summary": prompt}).to_string(),
+                knowledge_collections: Vec::new(),
             },
             error: None,
             created_at: 1,

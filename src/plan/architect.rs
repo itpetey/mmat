@@ -7,7 +7,7 @@ use naaf_llm::{AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, Llm
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::workflow::{
+use crate::plan::{
     WorkflowBuildError, WorkflowTaskError, discovery::DiscoveryOutput,
     knowledge::StageKnowledgeSession, parser::decode_outcome, solutions::SelectedSolution,
 };
@@ -110,7 +110,7 @@ where
 
 pub(super) fn step_with_knowledge_tools<C, R, E>(
     agent: &LlmAgent<C, R, E>,
-    knowledge_backend: std::sync::Arc<crate::workflow::knowledge::QdrantKnowledgeBackend<R>>,
+    knowledge_backend: std::sync::Arc<crate::plan::knowledge::QdrantKnowledgeBackend<R>>,
 ) -> ArchitectStep<C, R, E>
 where
     C: LlmClient<Runtime = R> + Clone + 'static,
@@ -158,7 +158,7 @@ where
                     Ok(a) => a,
                     Err(e) => {
                         return Err(AdaptorError::Build(WorkflowBuildError::Knowledge(
-                            crate::workflow::knowledge::KnowledgeError::Knowledge(format!(
+                            crate::plan::knowledge::KnowledgeError::Knowledge(format!(
                                 "failed to get agent for group {}: {e}",
                                 group.collection
                             )),
@@ -297,7 +297,7 @@ fn validate<R>(_runtime: &R, _input: ArchitectInput, plan: ArchitectPlan) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::{WorkflowStageId, solutions::SolutionBranch};
+    use crate::plan::{WorkflowStageId, solutions::SolutionBranch};
 
     fn sample_input() -> ArchitectInput {
         ArchitectInput::new(
@@ -316,7 +316,7 @@ mod tests {
                 choice_label: "recommended".to_string(),
                 branch_sources: vec![SolutionBranch::Recommended],
                 title: "Recommended design".to_string(),
-                summary: "Use native workflow modules".to_string(),
+                summary: "Use native plan modules".to_string(),
                 architecture: vec!["Keep stage ownership local".to_string()],
                 delivery_plan: vec!["Port remaining stages".to_string()],
                 technologies: vec!["Rust".to_string()],
