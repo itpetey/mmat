@@ -3,6 +3,7 @@ x-base-env: &base-env
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   MMAT_KNOWLEDGE_SQLITE_PATH: /data/mmat/knowledge.sqlite3
   MMAT_QDRANT_URL: http://qdrant:6333
+  MMAT_DATA_DIR: /data/mmat
   MMAT_QDRANT_API_KEY: ${MMAT_QDRANT_API_KEY:-}
   MMAT_EMBEDDING_API_KEY: ${MMAT_EMBEDDING_API_KEY:-}
   MMAT_EMBEDDING_BASE_URL: ${MMAT_EMBEDDING_BASE_URL:-https://api.openai.com/v1}

@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::MmatError;
 
 const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
+const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -111,7 +112,7 @@ impl ProjectConfig {
 
         Ok(Self {
             qdrant_collection_prefix: default_collection_prefix(&id),
-            data_dir: root.join(".mmat"),
+            data_dir: default_data_dir_for_root(&root),
             repo_label: Some(name.clone()),
             enabled: true,
             id,
@@ -146,7 +147,9 @@ impl ProjectRegistryStore {
         project: NewProject,
     ) -> Result<ProjectConfig, ProjectRegistryError> {
         let root = normalise_root(project.root)?;
-        let data_dir = project.data_dir.unwrap_or_else(|| root.join(".mmat"));
+        let data_dir = project
+            .data_dir
+            .unwrap_or_else(|| default_data_dir_for_root(&root));
         let id = ProjectId::generated();
         let qdrant_collection_prefix = project
             .qdrant_collection_prefix
@@ -178,7 +181,7 @@ impl ProjectRegistryStore {
         match self.get_project(&default_id) {
             Ok(mut existing) => {
                 existing.root = root;
-                existing.data_dir = existing.root.join(".mmat");
+                existing.data_dir = default_data_dir_for_root(&existing.root);
                 existing.name = existing
                     .root
                     .file_name()
@@ -377,6 +380,21 @@ fn default_registry_path() -> Result<PathBuf, ProjectRegistryError> {
     }
 
     Ok(env::current_dir()?.join(".mmat").join("projects.sqlite3"))
+}
+
+pub fn default_data_dir_for_root(root: &Path) -> PathBuf {
+    if let Some(base) = env::var(DATA_DIR_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let project_slug = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("default");
+        return PathBuf::from(base).join(project_slug);
+    }
+
+    root.join(".mmat")
 }
 
 fn normalise_root(root: PathBuf) -> Result<PathBuf, ProjectRegistryError> {

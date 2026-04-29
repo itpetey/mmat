@@ -877,7 +877,7 @@ mod tests {
             id: project_id,
             name: id.to_string(),
             root: root.clone(),
-            data_dir: root.join(".mmat"),
+            data_dir: crate::project::default_data_dir_for_root(&root),
             enabled: true,
             qdrant_collection_prefix: format!("p_{id}"),
             repo_label: Some(id.to_string()),
