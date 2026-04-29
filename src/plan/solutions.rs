@@ -24,7 +24,7 @@ const MAX_BRANCH_ATTEMPTS: usize = 3;
 const MAX_COLLECT_ATTEMPTS: usize = 3;
 pub const BRANCH_SYSTEM_PROMPT: &str = "You are a solution branch planner for MMAT. Your job is to produce one distinct implementation direction that can be compared with alternatives.";
 pub const COLLECT_SYSTEM_PROMPT: &str = "You are the solution collection stage for MMAT. Your job is to compare candidate branches, preserve the tradeoffs, and recommend either one branch or a coherent hybrid.";
-pub const MODEL: &str = "openai/gpt-5.5";
+pub const MODEL: &str = "gpt-5.5";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SolutionBranchInput {

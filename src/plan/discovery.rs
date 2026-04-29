@@ -11,7 +11,7 @@ type DiscoveryStep<C, R, E> =
     Step<R, DiscoveryInput, DiscoveryOutput, DiscoveryFinding, DiscoveryStepError<C, R, E>>;
 type DiscoveryStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
-pub const MODEL: &str = "openai/gpt-5.5";
+pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
