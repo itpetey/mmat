@@ -36,7 +36,7 @@ type KnowledgeStep<C, R, E> =
 type KnowledgeStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
 const MAX_PLANNING_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "qwen/qwen3.6-27b";
+pub const MODEL: &str = "openai/gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are the knowledge planning stage for MMAT. Your job is to identify the minimum useful knowledge groups for downstream work, scope each group to the stages that need it, and name the concrete sources that should be materialised.";
 pub const UPSTREAM_NAAF_FOLLOW_UPS: &[&str] = &[
     "Add first-class web and paper acquisition helpers to naaf-knowledge.",

@@ -16,7 +16,7 @@ pub(super) type ArchitectStep<C, R, E> =
     Step<R, ArchitectInput, ArchitectPlan, ArchitectFinding, WorkflowTaskError<C, R, E>>;
 
 const MAX_ARCHITECT_ATTEMPTS: usize = 3;
-pub const MODEL: &str = "qwen/qwen3.6-27b";
+pub const MODEL: &str = "openai/gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff. If useful, you may request references to existing knowledge groups that have been materialised using `@knowledge_search` tool.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

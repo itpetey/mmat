@@ -1,3 +1,26 @@
+x-base-env: &base-env
+  RUST_LOG: ${RUST_LOG:-info}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  MMAT_KNOWLEDGE_SQLITE_PATH: /data/mmat/knowledge.sqlite3
+  MMAT_QDRANT_URL: http://qdrant:6333
+  MMAT_QDRANT_API_KEY: ${MMAT_QDRANT_API_KEY:-}
+  MMAT_EMBEDDING_API_KEY: ${MMAT_EMBEDDING_API_KEY:-}
+  MMAT_EMBEDDING_BASE_URL: ${MMAT_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+  MMAT_EMBEDDING_MODEL: ${MMAT_EMBEDDING_MODEL:-text-embedding-3-small}
+  MMAT_EMBEDDING_DIMENSION: ${MMAT_EMBEDDING_DIMENSION:-1536}
+  MMAT_KNOWLEDGE_REPO: ${MMAT_KNOWLEDGE_REPO:-mmat}
+  MMAT_PROJECT_ROOT: ${MMAT_PROJECT_ROOT:-/workspace/project}
+
+x-builder-env: &builder-env
+  <<: *base-env
+  MMAT_LLM_API_KEY: ${MMAT_BUILDER_LLM_API_KEY:-}
+  MMAT_LLM_BASE_URL: ${MMAT_BUILDER_LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+
+x-frontend-env: &frontend-env
+  <<: *base-env
+  MMAT_LLM_API_KEY: ${MMAT_FRONTEND_LLM_API_KEY:-}
+  MMAT_LLM_BASE_URL: ${MMAT_FRONTEND_LLM_BASE_URL:-https://api.openai.com/v1}
+
 services:
   builder:
     profiles:
@@ -8,20 +31,8 @@ services:
       target: dev
     depends_on:
       - qdrant
-    environment: &mmat-env
-      RUST_LOG: ${RUST_LOG:-info}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      MMAT_LLM_API_KEY: ${MMAT_LLM_API_KEY:-}
-      MMAT_LLM_BASE_URL: ${MMAT_LLM_BASE_URL:-http://host.docker.internal:1234/v1}
-      MMAT_KNOWLEDGE_SQLITE_PATH: /data/mmat/knowledge.sqlite3
-      MMAT_QDRANT_URL: http://qdrant:6333
-      MMAT_QDRANT_API_KEY: ${MMAT_QDRANT_API_KEY:-}
-      MMAT_EMBEDDING_API_KEY: ${MMAT_EMBEDDING_API_KEY:-}
-      MMAT_EMBEDDING_BASE_URL: ${MMAT_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
-      MMAT_EMBEDDING_MODEL: ${MMAT_EMBEDDING_MODEL:-text-embedding-3-small}
-      MMAT_EMBEDDING_DIMENSION: ${MMAT_EMBEDDING_DIMENSION:-1536}
-      MMAT_KNOWLEDGE_REPO: ${MMAT_KNOWLEDGE_REPO:-mmat}
-      MMAT_PROJECT_ROOT: ${MMAT_PROJECT_ROOT:-/workspace/project}
+    environment:
+      <<: *builder-env
       MMAT_DELIVERY_BIN: /workspace/mmat/main/target/debug/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -55,7 +66,7 @@ services:
       qdrant:
         condition: service_started
     environment:
-      <<: *mmat-env
+      <<: *frontend-env
       MMAT_DELIVERY_BIN: /workspace/mmat/main/target/debug/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -85,7 +96,7 @@ services:
     depends_on:
       - qdrant
     environment:
-      <<: *mmat-env
+      <<: *builder-env
       MMAT_DELIVERY_BIN: /usr/local/bin/delivery
     command: ["sh", "-lc", "test -x /usr/local/bin/delivery && sleep infinity"]
     volumes:
@@ -113,7 +124,7 @@ services:
       qdrant:
         condition: service_started
     environment:
-      <<: *mmat-env
+      <<: *frontend-env
       MMAT_DELIVERY_BIN: /usr/local/bin/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
