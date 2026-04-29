@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace/mmat/main
+WORKDIR /workspace/mmat
 
 FROM rust-base AS dev
 
@@ -19,17 +19,13 @@ ENV RUST_LOG=info \
     MMAT_EMBEDDING_MODEL=text-embedding-3-small \
     MMAT_EMBEDDING_DIMENSION=1536 \
     MMAT_LLM_BASE_URL=http://host.docker.internal:1234/v1 \
-    MMAT_DELIVERY_BIN=/workspace/mmat/main/target/debug/delivery
+    MMAT_DELIVERY_BIN=/workspace/mmat/target/debug/delivery
 
 CMD ["cargo", "watch", "-w", "src", "-w", "web", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "build --bin delivery", "-x", "run --bin frontend -- --addr 0.0.0.0:8080"]
 
 FROM rust-base AS builder
 
-WORKDIR /workspace
-COPY --from=naaf Cargo.toml /workspace/naaf/main/Cargo.toml
-COPY --from=naaf crates/ /workspace/naaf/main/crates
-
-WORKDIR /workspace/mmat/main
+WORKDIR /workspace/mmat
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY src ./src
 COPY web ./web
@@ -45,8 +41,8 @@ RUN apt-get update \
     && mkdir -p /data/mmat \
     && chown -R mmat:mmat /data/mmat
 
-COPY --from=builder /workspace/mmat/main/target/release/frontend /usr/local/bin/frontend
-COPY --from=builder /workspace/mmat/main/target/release/delivery /usr/local/bin/delivery
+COPY --from=builder /workspace/mmat/target/release/frontend /usr/local/bin/frontend
+COPY --from=builder /workspace/mmat/target/release/delivery /usr/local/bin/delivery
 
 USER mmat
 WORKDIR /data/mmat

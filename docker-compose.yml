@@ -34,21 +34,31 @@ services:
       - qdrant
     environment:
       <<: *builder-env
-      MMAT_DELIVERY_BIN: /workspace/mmat/main/target/debug/delivery
+      MMAT_DELIVERY_BIN: /workspace/mmat/target/debug/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
-      - .:/workspace/mmat/main
-      - ../../naaf/main/crates:/workspace/naaf/main/crates:ro
-      - ../../naaf/main/Cargo.toml:/workspace/naaf/main/Cargo.toml:ro
+      - .:/workspace/mmat
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - mmat-target:/workspace/mmat/main/target
+      - mmat-target:/workspace/mmat/target
       - mmat-data-dev:/data/mmat
       - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
-    command: ["cargo", "watch", "-w", "src", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "build --bin delivery"]
+    command:
+      [
+        "cargo",
+        "watch",
+        "-w",
+        "src",
+        "-w",
+        "Cargo.toml",
+        "-w",
+        "Cargo.lock",
+        "-x",
+        "build --bin delivery",
+      ]
     healthcheck:
-      test: ["CMD", "test", "-x", "/workspace/mmat/main/target/debug/delivery"]
+      test: ["CMD", "test", "-x", "/workspace/mmat/target/debug/delivery"]
       interval: 5s
       timeout: 2s
       retries: 30
@@ -68,21 +78,33 @@ services:
         condition: service_started
     environment:
       <<: *frontend-env
-      MMAT_DELIVERY_BIN: /workspace/mmat/main/target/debug/delivery
+      MMAT_DELIVERY_BIN: /workspace/mmat/target/debug/delivery
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - "${MMAT_DEV_PORT:-8080}:8080"
     volumes:
-      - .:/workspace/mmat/main
-      - ../../naaf/main/crates:/workspace/naaf/main/crates:ro
-      - ../../naaf/main/Cargo.toml:/workspace/naaf/main/Cargo.toml:ro
+      - .:/workspace/mmat
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - mmat-target:/workspace/mmat/main/target
+      - mmat-target:/workspace/mmat/target
       - mmat-data-dev:/data/mmat
       - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
-    command: ["cargo", "watch", "-w", "src", "-w", "web", "-w", "Cargo.toml", "-w", "Cargo.lock", "-x", "run --bin frontend -- --addr 0.0.0.0:8080"]
+    command:
+      [
+        "cargo",
+        "watch",
+        "-w",
+        "src",
+        "-w",
+        "web",
+        "-w",
+        "Cargo.toml",
+        "-w",
+        "Cargo.lock",
+        "-x",
+        "run --bin frontend -- --addr 0.0.0.0:8080",
+      ]
     restart: unless-stopped
 
   builder-prod:
@@ -92,8 +114,6 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-      additional_contexts:
-        naaf: ../../naaf/main
     depends_on:
       - qdrant
     environment:
@@ -117,8 +137,6 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-      additional_contexts:
-        naaf: ../../naaf/main
     depends_on:
       builder-prod:
         condition: service_healthy
