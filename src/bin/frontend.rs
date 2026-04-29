@@ -5,8 +5,8 @@ use ipc_channel::ipc::IpcOneShotServer;
 use mmat::{
     deliver::ipc::{DeliveryHandshake, DeliveryToFrontend, FrontendSender, FrontendToDelivery},
     liveview::{
-        FrontendEvent, LiveViewAppBuilder, RunSummaryEvent, UiState, init_liveview_tracing,
-        spawn_event_translator,
+        ConversationHistoryStore, FrontendEvent, LiveViewAppBuilder, RunSummaryEvent, UiState,
+        init_liveview_tracing, spawn_event_translator,
     },
     plan,
     project::{ProjectConfig, ProjectId, ProjectRegistryStore},
@@ -188,10 +188,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let projects = registry_store
         .list_projects()
         .map_err(|e| format!("Failed to list projects: {e}"))?;
+    let conversation_store = Arc::new(
+        ConversationHistoryStore::open_default()
+            .map_err(|e| format!("Failed to open conversation history: {e}"))?,
+    );
 
-    let ui_state = Arc::new(UiState::with_projects(
+    let ui_state = Arc::new(UiState::with_projects_and_conversation_store(
         projects.clone(),
         Some(registry_store.clone()),
+        Some(conversation_store),
     ));
 
     let (event_tx, ready_handle, instruction_rx, event_rx) = LiveViewAppBuilder::default()

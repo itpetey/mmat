@@ -387,7 +387,7 @@ fn render_conversation_entry(index: usize, entry: &ConversationEntry) -> Element
         },
         ConversationEntry::AssistantQuestion { question } => rsx! {
             div { key: "conv-{index}", class: "conversation-entry question",
-                span { class: "entry-role", "model" }
+                span { class: "entry-role", "agent" }
                 span { class: "entry-body", "{question}" }
             }
         },
@@ -401,7 +401,7 @@ fn render_conversation_entry(index: usize, entry: &ConversationEntry) -> Element
         },
         ConversationEntry::AssistantMessage { text, .. } => rsx! {
             div { key: "conv-{index}", class: "conversation-entry assistant",
-                span { class: "entry-role", "agent" }
+                span { class: "entry-role", "thinking" }
                 span { class: "entry-body", "{text}" }
             }
         },

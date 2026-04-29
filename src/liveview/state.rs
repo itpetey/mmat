@@ -1,11 +1,15 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    env, fs,
     path::PathBuf,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::{oneshot, watch};
 
 use crate::{
@@ -15,6 +19,8 @@ use crate::{
 };
 
 const EVENT_HISTORY_CAP: usize = 256;
+const CONVERSATION_STORE_ENV: &str = "MMAT_CONVERSATION_SQLITE_PATH";
+const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct UiSnapshot {
@@ -35,6 +41,7 @@ pub struct UiState {
     active_project_id: Mutex<ProjectId>,
     project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
     registry_store: Option<Arc<ProjectRegistryStore>>,
+    conversation_store: Option<Arc<ConversationHistoryStore>>,
     pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
     next_event_id: Mutex<u64>,
     version_tx: watch::Sender<u64>,
@@ -46,7 +53,7 @@ pub struct UiEventEntry {
     pub event: UiEvent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConversationEntry {
     UserMessage { text: String },
     AssistantQuestion { question: String },
@@ -129,6 +136,92 @@ struct ProjectUiState {
     queue: Vec<BuildJobSnapshot>,
 }
 
+#[derive(Debug, Error)]
+pub enum ConversationHistoryError {
+    #[error("conversation history failed: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("conversation history io failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("conversation history serialisation failed: {0}")]
+    Serde(#[from] serde_json::Error),
+}
+
+#[derive(Debug)]
+pub struct ConversationHistoryStore {
+    path: PathBuf,
+}
+
+impl ConversationHistoryStore {
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, ConversationHistoryError> {
+        let path = path.into();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let store = Self { path };
+        store.initialise()?;
+        Ok(store)
+    }
+
+    pub fn open_default() -> Result<Self, ConversationHistoryError> {
+        Self::open(default_conversation_history_path()?)
+    }
+
+    pub fn load(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<VecDeque<ConversationEntry>, ConversationHistoryError> {
+        let Some(entries_json) = self
+            .connection()?
+            .query_row(
+                "SELECT entries_json FROM project_conversations WHERE project_id = ?1",
+                [project_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            return Ok(VecDeque::new());
+        };
+
+        serde_json::from_str(&entries_json).map_err(ConversationHistoryError::from)
+    }
+
+    pub fn save(
+        &self,
+        project_id: &ProjectId,
+        entries: &VecDeque<ConversationEntry>,
+    ) -> Result<(), ConversationHistoryError> {
+        self.connection()?.execute(
+            "INSERT INTO project_conversations (project_id, entries_json, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(project_id) DO UPDATE SET
+                 entries_json = excluded.entries_json,
+                 updated_at = excluded.updated_at",
+            params![
+                project_id.as_str(),
+                serde_json::to_string(entries)?,
+                now_unix_seconds(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn initialise(&self) -> Result<(), ConversationHistoryError> {
+        self.connection()?.execute_batch(
+            "CREATE TABLE IF NOT EXISTS project_conversations (
+                 project_id TEXT PRIMARY KEY NOT NULL,
+                 entries_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )?;
+        Ok(())
+    }
+
+    fn connection(&self) -> Result<Connection, ConversationHistoryError> {
+        Ok(Connection::open(&self.path)?)
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self::new()
@@ -148,6 +241,14 @@ impl UiState {
         projects: Vec<ProjectConfig>,
         registry_store: Option<Arc<ProjectRegistryStore>>,
     ) -> Self {
+        Self::with_projects_and_conversation_store(projects, registry_store, None)
+    }
+
+    pub fn with_projects_and_conversation_store(
+        projects: Vec<ProjectConfig>,
+        registry_store: Option<Arc<ProjectRegistryStore>>,
+        conversation_store: Option<Arc<ConversationHistoryStore>>,
+    ) -> Self {
         let (version_tx, _version_rx) = watch::channel(0);
         let projects = if projects.is_empty() {
             vec![
@@ -166,7 +267,29 @@ impl UiState {
             .clone();
         let project_states = projects
             .iter()
-            .map(|project| (project.id.clone(), ProjectUiState::default()))
+            .map(|project| {
+                let conversation_history = conversation_store
+                    .as_ref()
+                    .map(|store| store.load(&project.id))
+                    .transpose()
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(
+                            project_id = %project.id,
+                            %error,
+                            "failed to load conversation history"
+                        );
+                        None
+                    })
+                    .unwrap_or_default();
+
+                (
+                    project.id.clone(),
+                    ProjectUiState {
+                        conversation_history,
+                        ..ProjectUiState::default()
+                    },
+                )
+            })
             .collect();
 
         Self {
@@ -174,6 +297,7 @@ impl UiState {
             active_project_id: Mutex::new(active_project_id),
             project_states: Mutex::new(project_states),
             registry_store,
+            conversation_store,
             pending_initial_input: Mutex::new(None),
             next_event_id: Mutex::new(0),
             version_tx,
@@ -273,7 +397,9 @@ impl UiState {
                 },
             );
         }
+        let conversation = conv.clone();
         drop(states);
+        self.persist_project_conversation(project_id, &conversation);
         self.bump_version();
     }
 
@@ -305,7 +431,9 @@ impl UiState {
                 },
             );
         }
+        let conversation = conv.clone();
         drop(states);
+        self.persist_project_conversation(project_id, &conversation);
         self.bump_version();
     }
 
@@ -365,8 +493,12 @@ impl UiState {
             changed = true;
         }
 
+        let conversation = changed.then(|| conv.clone());
         drop(states);
         if changed {
+            if let Some(conversation) = conversation {
+                self.persist_project_conversation(project_id, &conversation);
+            }
             self.bump_version();
         }
     }
@@ -379,8 +511,10 @@ impl UiState {
     pub fn record_project_assistant_message(&self, project_id: &ProjectId, text: String) {
         let trimmed = text.trim();
         if trimmed.is_empty() || trimmed.starts_with('{') || trimmed.starts_with('[') {
-            let changed = self.finish_or_remove_project_incomplete_assistant_message(project_id);
-            if changed {
+            if let Some(conversation) =
+                self.finish_or_remove_project_incomplete_assistant_message(project_id)
+            {
+                self.persist_project_conversation(project_id, &conversation);
                 self.bump_version();
             }
             return;
@@ -406,18 +540,20 @@ impl UiState {
                 },
             );
         }
+        let conversation = conv.clone();
         drop(states);
+        self.persist_project_conversation(project_id, &conversation);
         self.bump_version();
     }
 
     fn finish_or_remove_project_incomplete_assistant_message(
         &self,
         project_id: &ProjectId,
-    ) -> bool {
+    ) -> Option<VecDeque<ConversationEntry>> {
         let mut states = self.project_states.lock();
         let state = states.entry(project_id.clone()).or_default();
         let conv = &mut state.conversation_history;
-        let Some(index) = conv.iter().rposition(|entry| {
+        let index = conv.iter().rposition(|entry| {
             matches!(
                 entry,
                 ConversationEntry::AssistantMessage {
@@ -425,9 +561,7 @@ impl UiState {
                     ..
                 }
             )
-        }) else {
-            return false;
-        };
+        })?;
 
         if matches!(
             conv.get(index),
@@ -435,15 +569,15 @@ impl UiState {
                 if Self::looks_like_structured_payload(text)
         ) {
             conv.remove(index);
-            return true;
+            return Some(conv.clone());
         }
 
         if let Some(ConversationEntry::AssistantMessage { complete, .. }) = conv.get_mut(index) {
             *complete = true;
-            return true;
+            return Some(conv.clone());
         }
 
-        false
+        None
     }
 
     fn looks_like_structured_payload(text: &str) -> bool {
@@ -481,8 +615,10 @@ impl UiState {
                 ConversationEntry::AssistantQuestion { question },
             );
         }
+        let conversation = state.conversation_history.clone();
 
         drop(states);
+        self.persist_project_conversation(project_id, &conversation);
         self.bump_version();
     }
 
@@ -602,6 +738,7 @@ impl UiState {
             .lock()
             .entry(project_id.clone())
             .or_default();
+        self.persist_project_conversation(&project_id, &VecDeque::new());
         *self.active_project_id.lock() = project_id.clone();
         self.bump_version();
         Ok(project_id)
@@ -626,7 +763,9 @@ impl UiState {
         let mut states = self.project_states.lock();
         let state = states.entry(project_id.clone()).or_default();
         Self::push_conversation_entry_locked(&mut state.conversation_history, entry);
+        let conversation = state.conversation_history.clone();
         drop(states);
+        self.persist_project_conversation(project_id, &conversation);
         self.bump_version();
     }
 
@@ -639,6 +778,45 @@ impl UiState {
         }
         conv.push_back(entry);
     }
+
+    fn persist_project_conversation(
+        &self,
+        project_id: &ProjectId,
+        conversation: &VecDeque<ConversationEntry>,
+    ) {
+        if let Some(store) = &self.conversation_store
+            && let Err(error) = store.save(project_id, conversation)
+        {
+            tracing::warn!(%project_id, %error, "failed to save conversation history");
+        }
+    }
+}
+
+fn default_conversation_history_path() -> Result<PathBuf, ConversationHistoryError> {
+    if let Some(path) = env::var(CONVERSATION_STORE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Some(base) = env::var(DATA_DIR_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(PathBuf::from(base).join("conversations.sqlite3"));
+    }
+
+    Ok(env::current_dir()?
+        .join(".mmat")
+        .join("conversations.sqlite3"))
+}
+
+fn now_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 impl From<RunSummaryEvent> for RunSummary {
@@ -751,6 +929,8 @@ fn worker_summary(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use tokio::sync::oneshot;
 
     use crate::{
@@ -759,7 +939,9 @@ mod tests {
         project::{ProjectConfig, ProjectId},
     };
 
-    use super::{ComposerMode, ConversationEntry, PendingPrompt, UiEvent, UiState};
+    use super::{
+        ComposerMode, ConversationEntry, ConversationHistoryStore, PendingPrompt, UiEvent, UiState,
+    };
 
     #[test]
     fn initial_input_resolves_and_records_user_message() {
@@ -923,6 +1105,43 @@ mod tests {
                 .iter()
                 .any(|worker| worker.project_id == first.id)
         );
+    }
+
+    #[test]
+    fn conversation_history_restores_from_store() {
+        let project = project("persisted");
+        let path = std::env::temp_dir().join(format!(
+            "mmat-conversation-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Arc::new(
+            ConversationHistoryStore::open(&path).expect("conversation store should open"),
+        );
+        let state =
+            UiState::with_projects_and_conversation_store(vec![project.clone()], None, Some(store));
+
+        state.record_project_user_message(&project.id, "Keep me".to_string());
+        state.record_project_assistant_message(&project.id, "Still here".to_string());
+
+        let restored_store = Arc::new(
+            ConversationHistoryStore::open(&path).expect("conversation store should reopen"),
+        );
+        let restored = UiState::with_projects_and_conversation_store(
+            vec![project],
+            None,
+            Some(restored_store),
+        );
+        let snapshot = restored.snapshot();
+
+        assert_eq!(snapshot.conversation.len(), 2);
+        assert!(matches!(
+            snapshot.conversation.front(),
+            Some(ConversationEntry::UserMessage { text }) if text == "Keep me"
+        ));
+        assert!(matches!(
+            snapshot.conversation.back(),
+            Some(ConversationEntry::AssistantMessage { text, complete: true }) if text == "Still here"
+        ));
     }
 
     fn project(id: &str) -> ProjectConfig {

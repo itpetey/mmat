@@ -6,8 +6,9 @@ pub use server::{
     InstructionReceiver, LiveViewAppBuilder, LiveViewError, LiveViewHandle, LiveViewReadyHandle,
 };
 pub use state::{
-    BuildJobSnapshot, ComposerMode, ConversationEntry, PendingPrompt, PendingPromptSnapshot,
-    ProjectPrompt, ProjectWorkerSnapshot, RunSummary, UiEvent, UiEventEntry, UiSnapshot, UiState,
+    BuildJobSnapshot, ComposerMode, ConversationEntry, ConversationHistoryError,
+    ConversationHistoryStore, PendingPrompt, PendingPromptSnapshot, ProjectPrompt,
+    ProjectWorkerSnapshot, RunSummary, UiEvent, UiEventEntry, UiSnapshot, UiState,
 };
 pub use translator::spawn_event_translator;
 

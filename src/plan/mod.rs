@@ -433,7 +433,8 @@ where
     R::Error: Debug + Display + 'static,
     E: Debug + Display + 'static,
 {
-    let discovery = discovery::step(agent).map_findings(WorkflowFinding::from);
+    let discovery = discovery::step_with_repository_tools(agent, workspace_root.clone())
+        .map_findings(WorkflowFinding::from);
     let knowledge = knowledge::step_with_lint(
         agent,
         knowledge_store.clone(),

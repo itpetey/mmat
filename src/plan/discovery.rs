@@ -1,9 +1,17 @@
-use std::fmt::{Debug, Display};
+use std::{
+    convert::Infallible,
+    fmt::{Debug, Display},
+    path::PathBuf,
+};
 
 use futures::future;
-use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn};
-use naaf_llm::{HumanIO, HumanQuestion, LlmAgent, LlmClient, TaskError};
+use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
+use naaf_llm::{
+    AdaptorError, CompletionRequest, Executor, HumanIO, HumanQuestion, LlmAgent, LlmClient,
+    Message, TaskError, ToolRegistry,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::plan::{WorkflowBuildError, WorkflowTaskError, parser::decode_outcome};
 
@@ -24,6 +32,8 @@ pub(super) struct DiscoveryInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryOutput {
+    #[serde(default)]
+    pub(super) assistant_message: String,
     pub(super) ready_for_solution: bool,
     pub(super) problem_statement: String,
     pub(super) goals: Vec<String>,
@@ -88,7 +98,9 @@ impl Display for DiscoveryFinding {
             Self::MissingProblemStatement => write!(f, "missing problem statement"),
             Self::MissingGoals => write!(f, "missing goals"),
             Self::MissingConstraints => write!(f, "missing constraints"),
-            Self::UnresolvedBlockingAmbiguity => write!(f, "unresolved blocking ambiguity"),
+            Self::UnresolvedBlockingAmbiguity => {
+                write!(f, "discovery is still in progress")
+            }
             Self::NoClarificationQuestions => {
                 write!(f, "no clarification questions despite not being ready")
             }
@@ -96,6 +108,7 @@ impl Display for DiscoveryFinding {
     }
 }
 
+#[cfg(test)]
 pub(super) fn step<C, R, E>(agent: &LlmAgent<C, R, E>) -> DiscoveryStep<C, R, E>
 where
     C: LlmClient<Runtime = R> + 'static,
@@ -121,6 +134,97 @@ where
     }))
     .retry_policy(RetryPolicy::unlimited())
     .build_persistent()
+}
+
+pub(super) fn step_with_repository_tools<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    workspace_root: PathBuf,
+) -> DiscoveryStep<C, R, E>
+where
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
+    E: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+{
+    let client = (*agent.executor().client()).clone();
+    let system_prompt = format!(
+        "{}\n\nYou have access to repository tools rooted at the selected project: `glob_paths`, `search_files`, and `read_file`. Use them before making claims about existing project code, structure, documentation, or dependencies.",
+        SYSTEM_PROMPT
+    );
+
+    let task = task_fn(move |runtime: &R, input: DiscoveryInput| {
+        let client = client.clone();
+        let system_prompt = system_prompt.clone();
+        let workspace_root = workspace_root.clone();
+        Box::pin(async move {
+            let request = CompletionRequest::new(
+                MODEL.to_string(),
+                vec![
+                    Message::system(system_prompt),
+                    Message::user(build_prompt(input)),
+                ],
+            )
+            .with_metadata(json!({
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "discovery_output",
+                        "strict": false,
+                        "schema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }));
+
+            let mut tools = ToolRegistry::<R, Infallible>::new();
+            register_repository_tools(&mut tools, workspace_root);
+            let executor = Executor::with_tools(client, tools);
+            let outcome = executor.execute(runtime, request).await.map_err(|error| {
+                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                    "executor failed: {error}"
+                )))
+            })?;
+
+            decode_outcome(outcome).map_err(AdaptorError::Decode)
+        })
+    });
+
+    Step::builder(task)
+        .validate(check_fn(|r, _, o| Box::pin(future::ok(validate(r, o)))))
+        .repair_with(repair_fn(|r, a| {
+            Box::pin(async move {
+                repair(r, a)
+                    .await
+                    .map_err(|error| TaskError::Build(WorkflowBuildError::Human(error)))
+            })
+        }))
+        .retry_policy(RetryPolicy::unlimited())
+        .build_persistent()
+}
+
+fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
+where
+    R: 'static,
+{
+    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
+        workspace_root,
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
+    }
 }
 
 fn build_prompt(input: DiscoveryInput) -> String {
@@ -174,7 +278,15 @@ fn build_prompt(input: DiscoveryInput) -> String {
             .to_string(),
     );
     lines.push(
-        "The JSON object must use this exact shape: {\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}."
+        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}."
+            .to_string(),
+    );
+    lines.push(
+        "Use assistant_message for concise, conversational exploration that can be shown to the user before the next question. It may summarise repository findings or reflect the current idea."
+            .to_string(),
+    );
+    lines.push(
+        "It is normal to take many discovery turns. Keep ready_for_solution false while exploring, and ask focused open_questions that guide the user toward a concrete, solutionable problem statement."
             .to_string(),
     );
     lines.push(
@@ -201,10 +313,20 @@ where
         .expect("discovery repair requires an attempt");
     let mut answers = latest_attempt.input.answers.clone();
 
-    for question in &latest_attempt.output.open_questions {
+    for (index, question) in latest_attempt.output.open_questions.iter().enumerate() {
+        let display_question =
+            if index == 0 && !latest_attempt.output.assistant_message.trim().is_empty() {
+                format!(
+                    "{}\n\n{}",
+                    latest_attempt.output.assistant_message.trim(),
+                    question.prompt
+                )
+            } else {
+                question.prompt.clone()
+            };
         let reply = runtime
             .ask(HumanQuestion {
-                question: question.prompt.clone(),
+                question: display_question,
                 choices: if question.choices.is_empty() {
                     None
                 } else {
@@ -229,16 +351,18 @@ where
 fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
     let mut findings = Vec::new();
 
-    if output.problem_statement.trim().is_empty() {
-        findings.push(DiscoveryFinding::MissingProblemStatement);
-    }
+    if output.ready_for_solution {
+        if output.problem_statement.trim().is_empty() {
+            findings.push(DiscoveryFinding::MissingProblemStatement);
+        }
 
-    if output.goals.iter().all(|item| item.trim().is_empty()) {
-        findings.push(DiscoveryFinding::MissingGoals);
-    }
+        if output.goals.iter().all(|item| item.trim().is_empty()) {
+            findings.push(DiscoveryFinding::MissingGoals);
+        }
 
-    if output.constraints.iter().all(|item| item.trim().is_empty()) {
-        findings.push(DiscoveryFinding::MissingConstraints);
+        if output.constraints.iter().all(|item| item.trim().is_empty()) {
+            findings.push(DiscoveryFinding::MissingConstraints);
+        }
     }
 
     if !output.ready_for_solution || !output.open_questions.is_empty() {
@@ -254,18 +378,21 @@ fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, convert::Infallible, sync::Arc};
+    use std::{collections::VecDeque, convert::Infallible, fs, sync::Arc};
 
     use futures::future::LocalBoxFuture;
-    use naaf_llm::{AssistantMessage, CompletionRequest, CompletionResponse, HumanAnswer, Message};
+    use naaf_llm::{
+        AssistantMessage, CompletionRequest, CompletionResponse, HumanAnswer, Message, ToolCall,
+    };
     use parking_lot::Mutex;
 
     use super::*;
 
     #[derive(Clone)]
     struct ScriptedClient {
-        responses: Arc<Mutex<VecDeque<String>>>,
+        responses: Arc<Mutex<VecDeque<AssistantMessage>>>,
         prompts: Arc<Mutex<Vec<String>>>,
+        requests: Arc<Mutex<Vec<CompletionRequest>>>,
     }
 
     struct AnsweringRuntime {
@@ -276,13 +403,31 @@ mod tests {
     impl ScriptedClient {
         fn new(responses: impl IntoIterator<Item = String>) -> Self {
             Self {
+                responses: Arc::new(Mutex::new(
+                    responses
+                        .into_iter()
+                        .map(AssistantMessage::from_text)
+                        .collect(),
+                )),
+                prompts: Arc::new(Mutex::new(Vec::new())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn with_messages(responses: impl IntoIterator<Item = AssistantMessage>) -> Self {
+            Self {
                 responses: Arc::new(Mutex::new(responses.into_iter().collect())),
                 prompts: Arc::new(Mutex::new(Vec::new())),
+                requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
         fn prompts(&self) -> Vec<String> {
             self.prompts.lock().clone()
+        }
+
+        fn requests(&self) -> Vec<CompletionRequest> {
+            self.requests.lock().clone()
         }
     }
 
@@ -318,17 +463,14 @@ mod tests {
                 .next_back()
                 .expect("request should include a user prompt");
             self.prompts.lock().push(prompt);
+            self.requests.lock().push(request);
             let response = self
                 .responses
                 .lock()
                 .pop_front()
                 .expect("scripted response should exist");
 
-            Box::pin(async move {
-                Ok(CompletionResponse::new(AssistantMessage::from_text(
-                    response,
-                )))
-            })
+            Box::pin(async move { Ok(CompletionResponse::new(response)) })
         }
     }
 
@@ -352,6 +494,7 @@ mod tests {
 
     fn complete_output() -> DiscoveryOutput {
         DiscoveryOutput {
+            assistant_message: "I have enough context to hand this off.".to_string(),
             ready_for_solution: true,
             problem_statement: "Rewrite MMAT".to_string(),
             goals: vec!["Keep the plan inspectable".to_string()],
@@ -366,6 +509,7 @@ mod tests {
 
     fn incomplete_output() -> DiscoveryOutput {
         DiscoveryOutput {
+            assistant_message: "I need to understand the idea a bit more.".to_string(),
             ready_for_solution: false,
             problem_statement: "The idea is not yet clear".to_string(),
             goals: vec!["Clarify the idea".to_string()],
@@ -386,8 +530,10 @@ mod tests {
         let prompt = build_prompt(DiscoveryInput::new("Hi"));
 
         assert!(prompt.contains("Return only one JSON object"));
+        assert!(prompt.contains("\"assistant_message\":string"));
         assert!(prompt.contains("\"ready_for_solution\":boolean"));
         assert!(prompt.contains("\"open_questions\""));
+        assert!(prompt.contains("many discovery turns"));
         assert!(prompt.contains("Do not include markdown"));
     }
 
@@ -411,6 +557,21 @@ mod tests {
     }
 
     #[test]
+    fn validation_allows_incomplete_handoff_while_discovery_continues() {
+        let mut output = incomplete_output();
+        output.problem_statement = String::new();
+        output.goals = Vec::new();
+        output.constraints = Vec::new();
+
+        let findings = validate(&(), output);
+
+        assert!(!findings.contains(&DiscoveryFinding::MissingProblemStatement));
+        assert!(!findings.contains(&DiscoveryFinding::MissingGoals));
+        assert!(!findings.contains(&DiscoveryFinding::MissingConstraints));
+        assert!(findings.contains(&DiscoveryFinding::UnresolvedBlockingAmbiguity));
+    }
+
+    #[test]
     fn discovery_output_defaults_missing_optional_handoff_fields() {
         let output: DiscoveryOutput = serde_json::from_str(
             r#"{
@@ -427,6 +588,7 @@ mod tests {
         assert_eq!(output.assumptions, Vec::<String>::new());
         assert_eq!(output.risks, Vec::<String>::new());
         assert_eq!(output.notes, Vec::<String>::new());
+        assert_eq!(output.assistant_message, String::new());
         assert_eq!(output.open_questions[0].choices, Vec::<String>::new());
     }
 
@@ -447,12 +609,64 @@ mod tests {
         assert_eq!(output, complete_output());
         assert_eq!(
             runtime.questions(),
-            vec!["What are we building?".to_string()]
+            vec!["I need to understand the idea a bit more.\n\nWhat are we building?".to_string()]
         );
 
         let prompts = client.prompts();
         assert_eq!(prompts.len(), 2);
         assert!(prompts[1].contains("Answered clarifications:"));
         assert!(prompts[1].contains("What are we building? => A local-first plan tool"));
+    }
+
+    #[tokio::test]
+    async fn repository_tool_step_exposes_and_executes_project_root_tools() {
+        let root = std::env::temp_dir().join(format!("mmat-discovery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("temporary project root should be created");
+        fs::write(root.join("README.md"), "# Demo\nProject summary\n")
+            .expect("temporary project file should be written");
+
+        let client = ScriptedClient::with_messages(vec![
+            AssistantMessage::with_tool_calls(
+                None,
+                vec![ToolCall {
+                    call_id: "read-1".to_string(),
+                    tool_name: "read_file".to_string(),
+                    arguments: serde_json::json!({
+                        "path": "README.md",
+                        "max_lines": 10,
+                    }),
+                }],
+            ),
+            AssistantMessage::from_text(
+                serde_json::to_string(&complete_output()).expect("output should serialise"),
+            ),
+        ]);
+        let agent = LlmAgent::new(client.clone());
+        let runtime = AnsweringRuntime::new(Vec::<String>::new());
+
+        let output = step_with_repository_tools(&agent, root.clone())
+            .run(&runtime, DiscoveryInput::new("Summarise the project code"))
+            .await
+            .expect("discovery should execute repository tools");
+
+        assert_eq!(output, complete_output());
+        let requests = client.requests();
+        assert_eq!(requests.len(), 2);
+        let tool_names = requests[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_names, vec!["glob_paths", "read_file", "search_files"]);
+        assert!(requests[1].messages.iter().any(|message| {
+            matches!(
+                message,
+                Message::Tool(tool)
+                    if tool.tool_name == "read_file"
+                        && tool.content.to_string().contains("Project summary")
+            )
+        }));
+
+        fs::remove_dir_all(&root).expect("temporary project root should be removed");
     }
 }

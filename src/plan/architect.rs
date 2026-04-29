@@ -371,6 +371,7 @@ mod tests {
     fn sample_input() -> ArchitectInput {
         ArchitectInput::new(
             DiscoveryOutput {
+                assistant_message: String::new(),
                 ready_for_solution: true,
                 problem_statement: "Rewrite MMAT".to_string(),
                 goals: vec!["Keep stages readable".to_string()],
