@@ -72,7 +72,7 @@ Run the fast development service stack with Docker Compose:
 
 ```bash
 cp .env.example .env
-MMAT_HOST_PROJECT_ROOT=/path/to/target/repository
+# Edit .env and set MMAT_HOST_PROJECT_ROOT=/path/to/target/repository
 docker compose --profile dev up --build builder frontend
 ```
 
@@ -80,7 +80,7 @@ Then open `http://127.0.0.1:8080`.
 
 The development services bind-mount this checkout and the sibling NAAF crates into the container, stores Cargo registry/git data and build artefacts in named volumes, and runs `cargo watch`. Source changes under `src/`, `web/`, `Cargo.toml`, or `Cargo.lock` recompile and restart the web server without rebuilding the image.
 
-Set `MMAT_HOST_PROJECT_ROOT` to the host repository that MMAT should plan and deliver against. Compose mounts it at `MMAT_PROJECT_ROOT` inside the containers, defaulting to `/workspace/project`, and the frontend registers that path as the default project. Delivery edits are written through that bind mount.
+Set `MMAT_HOST_PROJECT_ROOT` to the host repository that MMAT should plan and deliver against. Compose mounts it at `MMAT_PROJECT_ROOT` inside the containers, defaulting to `/workspace/project`, and the frontend registers that container path as the default project. Ask the LLM about files by relative path within the repository, or by the container path under `/workspace/project`; host paths such as `/home/user/project` are not visible inside Docker. Delivery edits are written through that bind mount.
 
 Use the same dev container for checks:
 
@@ -99,7 +99,7 @@ docker compose --profile dev build builder frontend
 For a packaged image that copies code into the container, run:
 
 ```bash
-MMAT_HOST_PROJECT_ROOT=/path/to/target/repository
+# Edit .env and set MMAT_HOST_PROJECT_ROOT=/path/to/target/repository
 docker compose --profile prod up --build builder-prod frontend-prod
 ```
 
