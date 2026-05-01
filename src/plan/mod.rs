@@ -152,12 +152,16 @@ struct ArchitectStageInput {
 
 impl KnowledgeRuntimeConfig {
     pub fn from_env() -> Result<Self, MmatError> {
-        let workspace_root = env::current_dir().map_err(|error| {
-            MmatError::Config(format!("failed to resolve current workspace: {error}"))
-        })?;
+        let workspace_root = read_env("MMAT_PROJECT_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| env::current_dir().expect("failed to resolve current workspace"));
         let sqlite_path = read_env("MMAT_KNOWLEDGE_SQLITE_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|| workspace_root.join(".mmat").join("knowledge.sqlite3"));
+            .unwrap_or_else(|| {
+                read_env("MMAT_DATA_PATH")
+                    .map(|base| PathBuf::from(base).join("knowledge.sqlite3"))
+                    .unwrap_or_else(|| workspace_root.join(".mmat").join("knowledge.sqlite3"))
+            });
         let embedding_dimension = match read_env("MMAT_EMBEDDING_DIMENSION") {
             Some(value) => value.parse::<usize>().map_err(|error| {
                 MmatError::Config(format!(

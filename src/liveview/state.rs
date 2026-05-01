@@ -19,7 +19,7 @@ use crate::{
 };
 
 const CONVERSATION_STORE_ENV: &str = "MMAT_CONVERSATION_SQLITE_PATH";
-const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
+const DATA_PATH_ENV: &str = "MMAT_DATA_PATH";
 const EVENT_HISTORY_CAP: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -894,7 +894,7 @@ fn default_conversation_history_path() -> Result<PathBuf, ConversationHistoryErr
         return Ok(PathBuf::from(path));
     }
 
-    if let Some(base) = env::var(DATA_DIR_ENV)
+    if let Some(base) = env::var(DATA_PATH_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
     {

@@ -80,7 +80,7 @@ Then open `http://127.0.0.1:8080`.
 
 The development services bind-mount this checkout and the sibling NAAF crates into the container, stores Cargo registry/git data and build artefacts in named volumes, and runs `cargo watch`. Source changes under `src/`, `web/`, `Cargo.toml`, or `Cargo.lock` recompile and restart the web server without rebuilding the image.
 
-Set `MMAT_HOST_PROJECT_ROOT` to the host repository that MMAT should plan and deliver against. Compose mounts it at `MMAT_PROJECT_ROOT` inside the containers, defaulting to `/workspace/project`, and the frontend registers that container path as the default project. Ask the LLM about files by relative path within the repository, or by the container path under `/workspace/project`; host paths such as `/home/user/project` are not visible inside Docker. Delivery edits are written through that bind mount.
+Set `MMAT_HOST_PROJECT_ROOT` to the host repository that MMAT should plan and deliver against. Compose mounts it at `MMAT_PROJECT_PATH` inside the containers, defaulting to `/workspace/project`, and the frontend registers that container path as the default project. Ask the LLM about files by relative path within the repository, or by the container path under `/workspace/project`; host paths such as `/home/user/project` are not visible inside Docker. Delivery edits are written through that bind mount.
 
 Use the same dev container for checks:
 
@@ -138,7 +138,7 @@ Knowledge materialisation uses persistent storage by default:
 Override those defaults with:
 
 ```bash
-MMAT_KNOWLEDGE_SQLITE_PATH=.mmat/knowledge.sqlite3
+MMAT_DATA_PATH=.mmat
 MMAT_QDRANT_URL=http://127.0.0.1:6333
 MMAT_QDRANT_API_KEY=
 MMAT_EMBEDDING_API_KEY=$OPENAI_API_KEY
@@ -149,7 +149,7 @@ MMAT_KNOWLEDGE_REPO=mmat
 cargo run --bin frontend
 ```
 
-For Docker Compose, set the same values in `.env`; inside the Compose network Qdrant is reached through `http://qdrant:6333` and SQLite is stored at `/data/mmat/knowledge.sqlite3`.
+For Docker Compose, set the same values in `.env`; inside the Compose network Qdrant is reached through `http://qdrant:6333` and SQLite is stored under `/data/mmat`.
 
 To verify the implemented plan foundation:
 

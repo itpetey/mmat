@@ -83,7 +83,7 @@ impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
 }
 
 fn default_project_root() -> Result<std::path::PathBuf, std::io::Error> {
-    match std::env::var("MMAT_PROJECT_ROOT")
+    match std::env::var("MMAT_PROJECT_PATH")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {

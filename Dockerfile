@@ -13,7 +13,7 @@ FROM rust-base AS dev
 RUN cargo install cargo-watch --locked
 
 ENV RUST_LOG=info \
-    MMAT_KNOWLEDGE_SQLITE_PATH=/data/mmat/knowledge.sqlite3 \
+    MMAT_DATA_PATH=/data/mmat \
     MMAT_QDRANT_URL=http://qdrant:6333 \
     MMAT_EMBEDDING_BASE_URL=https://api.openai.com/v1 \
     MMAT_EMBEDDING_MODEL=text-embedding-3-small \
@@ -48,7 +48,7 @@ USER mmat
 WORKDIR /data/mmat
 
 ENV RUST_LOG=info \
-    MMAT_KNOWLEDGE_SQLITE_PATH=/data/mmat/knowledge.sqlite3 \
+    MMAT_DATA_PATH=/data/mmat \
     MMAT_QDRANT_URL=http://qdrant:6333 \
     MMAT_EMBEDDING_BASE_URL=https://api.openai.com/v1 \
     MMAT_EMBEDDING_MODEL=text-embedding-3-small \

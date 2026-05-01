@@ -1,16 +1,15 @@
 x-base-env: &base-env
   RUST_LOG: ${RUST_LOG:-info}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  MMAT_KNOWLEDGE_SQLITE_PATH: /data/mmat/knowledge.sqlite3
   MMAT_QDRANT_URL: http://qdrant:6333
-  MMAT_DATA_DIR: /data/mmat
+  MMAT_DATA_PATH: /data/mmat
   MMAT_QDRANT_API_KEY: ${MMAT_QDRANT_API_KEY:-}
   MMAT_EMBEDDING_API_KEY: ${MMAT_EMBEDDING_API_KEY:-}
   MMAT_EMBEDDING_BASE_URL: ${MMAT_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
   MMAT_EMBEDDING_MODEL: ${MMAT_EMBEDDING_MODEL:-text-embedding-3-small}
   MMAT_EMBEDDING_DIMENSION: ${MMAT_EMBEDDING_DIMENSION:-1536}
   MMAT_KNOWLEDGE_REPO: ${MMAT_KNOWLEDGE_REPO:-mmat}
-  MMAT_PROJECT_ROOT: ${MMAT_PROJECT_ROOT:-/workspace/project}
+  MMAT_PROJECT_PATH: ${MMAT_PROJECT_PATH:-/workspace/project}
 
 x-builder-env: &builder-env
   <<: *base-env
@@ -43,7 +42,7 @@ services:
       - cargo-git:/usr/local/cargo/git
       - mmat-target:/workspace/mmat/target
       - mmat-data-dev:/data/mmat
-      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_PATH:-/workspace/project}
     command:
       [
         "cargo",
@@ -89,7 +88,7 @@ services:
       - cargo-git:/usr/local/cargo/git
       - mmat-target:/workspace/mmat/target
       - mmat-data-dev:/data/mmat
-      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_PATH:-/workspace/project}
     command:
       [
         "cargo",
@@ -122,7 +121,7 @@ services:
     command: ["sh", "-lc", "test -x /usr/local/bin/delivery && sleep infinity"]
     volumes:
       - mmat-data:/data/mmat
-      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_PATH:-/workspace/project}
     healthcheck:
       test: ["CMD", "test", "-x", "/usr/local/bin/delivery"]
       interval: 5s
@@ -151,7 +150,7 @@ services:
       - "${MMAT_PORT:-8080}:8080"
     volumes:
       - mmat-data:/data/mmat
-      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_ROOT:-/workspace/project}
+      - ${MMAT_HOST_PROJECT_ROOT:-.}:${MMAT_PROJECT_PATH:-/workspace/project}
     command: ["frontend", "--addr", "0.0.0.0:8080"]
     restart: unless-stopped
 
