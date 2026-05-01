@@ -14,6 +14,7 @@ use crate::MmatError;
 
 const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
 const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
+const HOST_PROJECT_ROOT_ENV: &str = "MMAT_HOST_PROJECT_ROOT";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ProjectId(String);
@@ -37,6 +38,8 @@ pub enum ProjectRegistryError {
     Io(#[from] std::io::Error),
     #[error("project root already exists in registry: {0}")]
     DuplicateRoot(String),
+    #[error("project root escapes MMAT_HOST_PROJECT_ROOT: {0}")]
+    RootNotAllowed(String),
     #[error("project not found: {0}")]
     NotFound(ProjectId),
     #[error("invalid project id: {0}")]
@@ -398,12 +401,70 @@ fn default_registry_path() -> Result<PathBuf, ProjectRegistryError> {
 }
 
 fn normalise_root(root: PathBuf) -> Result<PathBuf, ProjectRegistryError> {
+    let host_root = env::var(HOST_PROJECT_ROOT_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+
+    if host_root.is_some() {
+        return coerce_to_host_root_with_host(&root, host_root.as_deref());
+    }
+
     if root.exists() {
         Ok(root.canonicalize()?)
     } else if root.is_absolute() {
-        Ok(root)
+        Ok(normalize_path(&root))
     } else {
-        Ok(env::current_dir()?.join(root))
+        Ok(normalize_path(&env::current_dir()?.join(root)))
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => result.push(other),
+        }
+    }
+    result
+}
+
+fn coerce_to_host_root_with_host(
+    path: &Path,
+    host_root: Option<&Path>,
+) -> Result<PathBuf, ProjectRegistryError> {
+    let host_root = match host_root {
+        Some(path) => path,
+        None => return Ok(path.to_path_buf()),
+    };
+
+    let canonical_host = if host_root.exists() {
+        host_root.canonicalize()?
+    } else if host_root.is_absolute() {
+        host_root.to_path_buf()
+    } else {
+        env::current_dir()?.join(host_root)
+    };
+
+    let relative: PathBuf = if path.has_root() {
+        path.components().skip(1).collect()
+    } else {
+        path.to_path_buf()
+    };
+
+    let joined = canonical_host.join(&relative);
+    let normalized = normalize_path(&joined);
+
+    if normalized.starts_with(&canonical_host) {
+        Ok(normalized)
+    } else {
+        Err(ProjectRegistryError::RootNotAllowed(
+            normalized.display().to_string(),
+        ))
     }
 }
 
@@ -435,9 +496,14 @@ fn sanitise_collection_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
     use super::{
         NewProject, ProjectConfig, ProjectId, ProjectRegistryError, ProjectRegistryStore,
-        prefix_collection_id,
+        coerce_to_host_root_with_host, normalise_root, prefix_collection_id,
     };
 
     #[test]
@@ -513,5 +579,112 @@ mod tests {
 
     fn tempfile_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("mmat-{name}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn coerce_to_host_root_without_host_returns_path_unchanged() {
+        let path = PathBuf::from("/some/path");
+        let result = coerce_to_host_root_with_host(&path, None).expect("coercion should succeed");
+        assert_eq!(result, path);
+    }
+
+    #[test]
+    fn coerce_absolute_path_outside_host_to_subdirectory() {
+        let temp = tempfile_path("coerce-absolute-outside");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let result = coerce_to_host_root_with_host(Path::new("/bar"), Some(&host))
+            .expect("coercion should succeed");
+        assert_eq!(result, host.canonicalize().unwrap().join("bar"));
+    }
+
+    #[test]
+    fn coerce_relative_parent_path_is_rejected() {
+        let temp = tempfile_path("coerce-relative-parent");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let error = coerce_to_host_root_with_host(Path::new("../bar"), Some(&host))
+            .expect_err("relative parent should be rejected");
+        assert!(matches!(error, ProjectRegistryError::RootNotAllowed(_)));
+    }
+
+    #[test]
+    fn coerce_relative_current_path_to_subdirectory() {
+        let temp = tempfile_path("coerce-relative-current");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let result = coerce_to_host_root_with_host(Path::new("./bar"), Some(&host))
+            .expect("coercion should succeed");
+        assert_eq!(result, host.canonicalize().unwrap().join("bar"));
+    }
+
+    #[test]
+    fn coerce_many_parent_dirs_is_rejected() {
+        let temp = tempfile_path("coerce-many-parents");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let error = coerce_to_host_root_with_host(Path::new("../../../bar"), Some(&host))
+            .expect_err("many parent dirs should be rejected");
+        assert!(matches!(error, ProjectRegistryError::RootNotAllowed(_)));
+    }
+
+    #[test]
+    fn coerce_nested_escapes_to_subdirectory() {
+        let temp = tempfile_path("coerce-nested-escapes");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let result = coerce_to_host_root_with_host(Path::new("bar/../foo"), Some(&host))
+            .expect("coercion should succeed");
+        assert_eq!(result, host.canonicalize().unwrap().join("foo"));
+    }
+
+    #[test]
+    fn coerce_many_nested_escapes_to_subdirectory() {
+        let temp = tempfile_path("coerce-many-nested-escapes");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        assert!(coerce_to_host_root_with_host(Path::new("bar/../../foo"), Some(&host)).is_err());
+    }
+
+    #[test]
+    fn coerce_preserves_multiple_normal_components() {
+        let temp = tempfile_path("coerce-multiple-components");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let result = coerce_to_host_root_with_host(Path::new("/a/b/c"), Some(&host))
+            .expect("coercion should succeed");
+        assert_eq!(
+            result,
+            host.canonicalize().unwrap().join("a").join("b").join("c")
+        );
+    }
+
+    #[test]
+    fn coerce_only_navigation_components_is_rejected() {
+        let temp = tempfile_path("coerce-only-nav");
+        let host = temp.join("host");
+        fs::create_dir_all(&host).expect("host dir should be created");
+
+        let error = coerce_to_host_root_with_host(Path::new("../../.."), Some(&host))
+            .expect_err("only navigation components should be rejected");
+        assert!(matches!(error, ProjectRegistryError::RootNotAllowed(_)));
+    }
+
+    #[test]
+    fn normalise_root_resolves_dotdot_for_nonexistent_paths() {
+        let temp = tempfile_path("normalise-nonexistent");
+        let base = temp.join("base");
+        fs::create_dir_all(&base).expect("base dir should be created");
+
+        let input = base.join("foo").join("..").join("bar");
+        let result = normalise_root(input).expect("normalisation should succeed");
+        assert_eq!(result, base.join("bar"));
     }
 }
