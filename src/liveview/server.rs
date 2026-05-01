@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::info;
 
 use crate::liveview::{
-    assets::{APP_CSS, INDEX_HTML},
+    assets::{APP_CSS, INDEX_HTML, MOTION_CONTROL_FONT},
     components::{RootApp, RootAppProps},
     event::{EventReceiver, EventSender},
     state::{ProjectPrompt, UiState},
@@ -117,6 +117,10 @@ fn build_router(ui_state: Arc<UiState>) -> Router {
 
     Router::new()
         .route("/", get(move || async move { Html(index_html()) }))
+        .route(
+            "/MotionControlNeueLite.otf",
+            get(|| async { ([("content-type", "font/otf")], MOTION_CONTROL_FONT) }),
+        )
         .route(
             LIVEVIEW_PATH,
             get(move |ws: WebSocketUpgrade| {

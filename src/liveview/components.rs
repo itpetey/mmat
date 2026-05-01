@@ -78,7 +78,7 @@ impl PartialEq for ComposerProps {
 pub(super) fn RootApp(props: RootAppProps) -> Element {
     let mut snapshot = use_signal(|| props.ui_state.snapshot());
     let state_for_future = props.ui_state.clone();
-    let mut show_reasoning = use_signal(|| true);
+    let mut show_reasoning = use_signal(|| false);
     let mut local_reasoning_overrides = use_signal(HashMap::<u64, bool>::new);
 
     use_future(move || {
@@ -98,7 +98,7 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
         div { class: "mmat-root",
             div { class: "mmat-shell",
                 div { class: "mmat-header",
-                    pre { class: "mmat-logo", "aria-hidden": "true", "|\\/| |\\/|  /\\  T\n|  | |  | /--\\ |" }
+                    pre { class: "mmat-logo", "aria-hidden": "true", "makemeathing" }
                     div { display: "flex", align_items: "center", gap: "0.5rem",
                         button {
                             class: if show_reasoning_value { "reasoning-toggle active" } else { "reasoning-toggle" },
@@ -119,7 +119,6 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
                 div { class: "mmat-content",
                     div { class: "mmat-project-bar",
                         div { class: "active-project",
-                            span { class: "project-label", "project" }
                             span { class: "project-name", "{snapshot_value.active_project.name}" }
                             span { class: "project-root", "{snapshot_value.active_project.root.display()}" }
                         }
@@ -160,13 +159,25 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
 fn Composer(props: ComposerProps) -> Element {
     let mut input = use_signal(String::new);
     let is_working = matches!(props.mode, ComposerMode::Working);
-    let placeholder = match props.mode {
-        ComposerMode::InitialPrompt => "Describe what you want to build...",
-        ComposerMode::Reply => "Type your reply...",
-        ComposerMode::Working => "Working... You can draft the next message here.",
-    };
 
     let key_submit_state = props.ui_state.clone();
+    let reset_input = input;
+    use_effect(move || {
+        if reset_input.read().is_empty() {
+            spawn(async move {
+                let _ = document::eval(
+                    r#"
+                    const textarea = document.querySelector('.composer-textarea');
+                    if (textarea) {
+                        textarea.style.height = 'auto';
+                    }
+                "#,
+                )
+                .await;
+            });
+        }
+    });
+
     let choices = props
         .pending_prompt
         .as_ref()
@@ -199,9 +210,9 @@ fn Composer(props: ComposerProps) -> Element {
             textarea {
                 class: "composer-textarea",
                 value: "{input}",
-                disabled: is_working,
-                placeholder: "{placeholder}",
+                placeholder: "Cmd+Enter to submit...",
                 rows: "2",
+                autofocus: true,
                 oninput: move |event| input.set(event.value()),
                 onkeydown: move |event| {
                     let modifiers = event.modifiers();
@@ -216,7 +227,6 @@ fn Composer(props: ComposerProps) -> Element {
                 },
             }
         }
-        div { class: "composer-hint", "Cmd+Enter to submit" }
     }
 }
 
@@ -252,30 +262,29 @@ fn ProjectSwitcher(props: ProjectSwitcherProps) -> Element {
 #[allow(non_snake_case)]
 fn QueuePanel(props: QueuePanelProps) -> Element {
     rsx! {
-        div { class: "queue-panel",
-            div { class: "queue-active",
-                span { class: "queue-title", "queue" }
-                if props.queue.is_empty() {
-                    span { class: "queue-empty", "empty" }
-                }
-                for job in props.queue {
-                    div { class: "queue-job",
-                        span { class: "queue-status {job.status}", "{job.status}" }
-                        span { class: "queue-prompt", "{job.prompt}" }
-                        if let Some(error) = &job.error {
-                            span { class: "queue-error", "{error}" }
+        if !props.queue.is_empty() {
+            div { class: "queue-panel",
+                div { class: "queue-active",
+                    span { class: "queue-title", "queue" }
+                    for job in props.queue {
+                        div { class: "queue-job",
+                            span { class: "queue-status {job.status}", "{job.status}" }
+                            span { class: "queue-prompt", "{job.prompt}" }
+                            if let Some(error) = &job.error {
+                                span { class: "queue-error", "{error}" }
+                            }
                         }
                     }
                 }
-            }
-            if !props.worker_summary.is_empty() {
-                div { class: "queue-global",
-                    for worker in props.worker_summary {
-                        div { class: "worker-summary",
-                            span { class: "worker-name", "{worker.project_name}" }
-                            span { class: "worker-count", "p {worker.pending}" }
-                            span { class: "worker-count", "r {worker.running}" }
-                            span { class: "worker-count failed", "f {worker.failed}" }
+                if !props.worker_summary.is_empty() {
+                    div { class: "queue-global",
+                        for worker in props.worker_summary {
+                            div { class: "worker-summary",
+                                span { class: "worker-name", "{worker.project_name}" }
+                                span { class: "worker-count", "p {worker.pending}" }
+                                span { class: "worker-count", "r {worker.running}" }
+                                span { class: "worker-count failed", "f {worker.failed}" }
+                            }
                         }
                     }
                 }
