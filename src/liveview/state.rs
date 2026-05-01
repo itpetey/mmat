@@ -306,10 +306,9 @@ impl ConversationHistoryStore {
 
 impl UiState {
     pub fn new() -> Self {
-        let default_project = ProjectConfig::default_for_root(
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        )
-        .expect("default project config should be valid");
+        let default_project =
+            ProjectConfig::default_for_root(crate::project::default_project_path())
+                .expect("default project config should be valid");
         Self::with_projects(vec![default_project], None)
     }
 
@@ -328,10 +327,8 @@ impl UiState {
         let (version_tx, _version_rx) = watch::channel(0);
         let projects = if projects.is_empty() {
             vec![
-                ProjectConfig::default_for_root(
-                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                )
-                .expect("default project config should be valid"),
+                ProjectConfig::default_for_root(crate::project::default_project_path())
+                    .expect("default project config should be valid"),
             ]
         } else {
             projects

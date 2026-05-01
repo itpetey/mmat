@@ -82,14 +82,8 @@ impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
     }
 }
 
-fn default_project_root() -> Result<std::path::PathBuf, std::io::Error> {
-    match std::env::var("MMAT_PROJECT_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        Some(root) => Ok(root.into()),
-        None => std::env::current_dir(),
-    }
+fn default_project_root() -> std::path::PathBuf {
+    mmat::project::default_project_path()
 }
 
 fn delivery_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
@@ -189,10 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     registry_store
-        .ensure_default_project(
-            default_project_root()
-                .map_err(|e| format!("Failed to resolve default project root: {e}",))?,
-        )
+        .ensure_default_project(default_project_root())
         .map_err(|e| format!("Failed to ensure default project: {e}"))?;
 
     let projects = registry_store

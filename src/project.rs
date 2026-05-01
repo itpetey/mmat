@@ -367,6 +367,14 @@ pub fn default_data_dir_for_root(root: &Path) -> PathBuf {
     root.join(".mmat")
 }
 
+pub fn default_project_path() -> PathBuf {
+    env::var(PROJECT_PATH_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
 pub fn prefix_collection_id(prefix: &str, collection: &str) -> String {
     let prefix = sanitise_collection_component(prefix);
     let collection = sanitise_collection_component(collection);
