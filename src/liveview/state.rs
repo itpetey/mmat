@@ -18,40 +18,9 @@ use crate::{
     project::{NewProject, ProjectConfig, ProjectId, ProjectRegistryStore},
 };
 
-const EVENT_HISTORY_CAP: usize = 256;
 const CONVERSATION_STORE_ENV: &str = "MMAT_CONVERSATION_SQLITE_PATH";
 const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct UiSnapshot {
-    pub projects: Vec<ProjectConfig>,
-    pub active_project: ProjectConfig,
-    pub history: VecDeque<UiEventEntry>,
-    pub conversation: VecDeque<ConversationEntry>,
-    pub pending_prompt: Option<PendingPromptSnapshot>,
-    pub composer_mode: ComposerMode,
-    pub run_summary: Option<RunSummary>,
-    pub queue: Vec<BuildJobSnapshot>,
-    pub worker_summary: Vec<ProjectWorkerSnapshot>,
-}
-
-#[derive(Debug)]
-pub struct UiState {
-    projects: Mutex<Vec<ProjectConfig>>,
-    active_project_id: Mutex<ProjectId>,
-    project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
-    registry_store: Option<Arc<ProjectRegistryStore>>,
-    conversation_store: Option<Arc<ConversationHistoryStore>>,
-    pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
-    next_event_id: Mutex<u64>,
-    version_tx: watch::Sender<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct UiEventEntry {
-    pub id: u64,
-    pub event: UiEvent,
-}
+const EVENT_HISTORY_CAP: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConversationEntry {
@@ -59,6 +28,7 @@ pub enum ConversationEntry {
     AssistantQuestion { question: String },
     AssistantReasoning { text: String, complete: bool },
     AssistantMessage { text: String, complete: bool },
+    ToolUse { name: String, arguments: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -83,6 +53,12 @@ pub enum UiEvent {
     ComponentStarted { component: String, name: String },
     ComponentCompleted { component: String, name: String },
     ComponentFailed { component: String, name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiEventEntry {
+    pub id: u64,
+    pub event: UiEvent,
 }
 
 #[derive(Debug)]
@@ -127,6 +103,19 @@ pub struct RunSummary {
     pub next_step: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiSnapshot {
+    pub projects: Vec<ProjectConfig>,
+    pub active_project: ProjectConfig,
+    pub history: VecDeque<UiEventEntry>,
+    pub conversation: VecDeque<ConversationEntry>,
+    pub pending_prompt: Option<PendingPromptSnapshot>,
+    pub composer_mode: ComposerMode,
+    pub run_summary: Option<RunSummary>,
+    pub queue: Vec<BuildJobSnapshot>,
+    pub worker_summary: Vec<ProjectWorkerSnapshot>,
+}
+
 #[derive(Debug, Default)]
 struct ProjectUiState {
     event_history: VecDeque<UiEventEntry>,
@@ -149,6 +138,99 @@ pub enum ConversationHistoryError {
 #[derive(Debug)]
 pub struct ConversationHistoryStore {
     path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct UiState {
+    projects: Mutex<Vec<ProjectConfig>>,
+    active_project_id: Mutex<ProjectId>,
+    project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
+    registry_store: Option<Arc<ProjectRegistryStore>>,
+    conversation_store: Option<Arc<ConversationHistoryStore>>,
+    pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
+    next_event_id: Mutex<u64>,
+    version_tx: watch::Sender<u64>,
+}
+
+impl From<&FrontendEvent> for UiEvent {
+    fn from(event: &FrontendEvent) -> Self {
+        match event {
+            FrontendEvent::ProjectScoped { event, .. } => UiEvent::from(event.as_ref()),
+            FrontendEvent::StepStarted { task_label } => Self::StepStarted {
+                task_label: task_label.clone(),
+            },
+            FrontendEvent::StepCompleted {
+                task_label,
+                attempts,
+            } => Self::StepCompleted {
+                task_label: task_label.clone(),
+                attempts: *attempts,
+            },
+            FrontendEvent::StepFailed { task_label, stage } => Self::StepFailed {
+                task_label: task_label.clone(),
+                stage: stage.clone(),
+            },
+            FrontendEvent::ComponentStarted { component, name } => Self::ComponentStarted {
+                component: component.clone(),
+                name: name.clone(),
+            },
+            FrontendEvent::ComponentCompleted { component, name } => Self::ComponentCompleted {
+                component: component.clone(),
+                name: name.clone(),
+            },
+            FrontendEvent::ComponentFailed { component, name } => Self::ComponentFailed {
+                component: component.clone(),
+                name: name.clone(),
+            },
+            FrontendEvent::Log { level, message, .. } => Self::Log {
+                level: level.to_string(),
+                message: message.clone(),
+            },
+            FrontendEvent::ToolCallStarted { name, .. } => Self::Log {
+                level: "INFO".to_string(),
+                message: format!("tool call started: {name}"),
+            },
+            FrontendEvent::StepAttemptStarted { .. }
+            | FrontendEvent::StepAttemptValidated { .. }
+            | FrontendEvent::StepRepairStarted { .. }
+            | FrontendEvent::StepRejected { .. }
+            | FrontendEvent::AssistantReasoningDelta { .. }
+            | FrontendEvent::AssistantMessageDelta { .. }
+            | FrontendEvent::AssistantResponseCompleted { .. }
+            | FrontendEvent::HumanPrompt { .. }
+            | FrontendEvent::RunSummary(_)
+            | FrontendEvent::Quit => Self::Log {
+                level: "INFO".to_string(),
+                message: event.to_string(),
+            },
+        }
+    }
+}
+
+impl From<BuildJob> for BuildJobSnapshot {
+    fn from(value: BuildJob) -> Self {
+        Self {
+            id: value.id.to_string(),
+            status: value.status.as_str().to_string(),
+            prompt: value.handoff.prompt,
+            error: value.error,
+        }
+    }
+}
+
+impl From<RunSummaryEvent> for RunSummary {
+    fn from(value: RunSummaryEvent) -> Self {
+        Self {
+            project_id: value.project_id,
+            run_id: value.run_id,
+            project_root: value.project_root,
+            run_root: value.run_root,
+            prompt: value.prompt,
+            status: value.status,
+            current_stage: value.current_stage,
+            next_step: value.next_step,
+        }
+    }
 }
 
 impl ConversationHistoryStore {
@@ -219,12 +301,6 @@ impl ConversationHistoryStore {
 
     fn connection(&self) -> Result<Connection, ConversationHistoryError> {
         Ok(Connection::open(&self.path)?)
-    }
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -506,6 +582,18 @@ impl UiState {
     pub fn record_assistant_message(&self, text: String) {
         let project_id = self.active_project_id.lock().clone();
         self.record_project_assistant_message(&project_id, text);
+    }
+
+    pub fn record_tool_use(&self, name: String, arguments: String) {
+        let project_id = self.active_project_id.lock().clone();
+        self.record_project_tool_use(&project_id, name, arguments);
+    }
+
+    pub fn record_project_tool_use(&self, project_id: &ProjectId, name: String, arguments: String) {
+        self.push_project_conversation_entry(
+            project_id,
+            ConversationEntry::ToolUse { name, arguments },
+        );
     }
 
     pub fn record_project_assistant_message(&self, project_id: &ProjectId, text: String) {
@@ -792,6 +880,12 @@ impl UiState {
     }
 }
 
+impl Default for UiState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn default_conversation_history_path() -> Result<PathBuf, ConversationHistoryError> {
     if let Some(path) = env::var(CONVERSATION_STORE_ENV)
         .ok()
@@ -817,83 +911,6 @@ fn now_unix_seconds() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
-}
-
-impl From<RunSummaryEvent> for RunSummary {
-    fn from(value: RunSummaryEvent) -> Self {
-        Self {
-            project_id: value.project_id,
-            run_id: value.run_id,
-            project_root: value.project_root,
-            run_root: value.run_root,
-            prompt: value.prompt,
-            status: value.status,
-            current_stage: value.current_stage,
-            next_step: value.next_step,
-        }
-    }
-}
-
-impl From<&FrontendEvent> for UiEvent {
-    fn from(event: &FrontendEvent) -> Self {
-        match event {
-            FrontendEvent::ProjectScoped { event, .. } => UiEvent::from(event.as_ref()),
-            FrontendEvent::StepStarted { task_label } => Self::StepStarted {
-                task_label: task_label.clone(),
-            },
-            FrontendEvent::StepCompleted {
-                task_label,
-                attempts,
-            } => Self::StepCompleted {
-                task_label: task_label.clone(),
-                attempts: *attempts,
-            },
-            FrontendEvent::StepFailed { task_label, stage } => Self::StepFailed {
-                task_label: task_label.clone(),
-                stage: stage.clone(),
-            },
-            FrontendEvent::ComponentStarted { component, name } => Self::ComponentStarted {
-                component: component.clone(),
-                name: name.clone(),
-            },
-            FrontendEvent::ComponentCompleted { component, name } => Self::ComponentCompleted {
-                component: component.clone(),
-                name: name.clone(),
-            },
-            FrontendEvent::ComponentFailed { component, name } => Self::ComponentFailed {
-                component: component.clone(),
-                name: name.clone(),
-            },
-            FrontendEvent::Log { level, message, .. } => Self::Log {
-                level: level.to_string(),
-                message: message.clone(),
-            },
-            FrontendEvent::StepAttemptStarted { .. }
-            | FrontendEvent::StepAttemptValidated { .. }
-            | FrontendEvent::StepRepairStarted { .. }
-            | FrontendEvent::StepRejected { .. }
-            | FrontendEvent::AssistantReasoningDelta { .. }
-            | FrontendEvent::AssistantMessageDelta { .. }
-            | FrontendEvent::AssistantResponseCompleted { .. }
-            | FrontendEvent::HumanPrompt { .. }
-            | FrontendEvent::RunSummary(_)
-            | FrontendEvent::Quit => Self::Log {
-                level: "INFO".to_string(),
-                message: event.to_string(),
-            },
-        }
-    }
-}
-
-impl From<BuildJob> for BuildJobSnapshot {
-    fn from(value: BuildJob) -> Self {
-        Self {
-            id: value.id.to_string(),
-            status: value.status.as_str().to_string(),
-            prompt: value.handoff.prompt,
-            error: value.error,
-        }
-    }
 }
 
 fn worker_summary(

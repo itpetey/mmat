@@ -62,6 +62,16 @@ impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
     }
 
     fn on_response_complete(&self, _runtime: &R, message: &AssistantMessage) {
+        for tool_call in &message.tool_calls {
+            let _ = send_project_event(
+                &self.event_tx,
+                &self.project_id,
+                FrontendEvent::ToolCallStarted {
+                    name: tool_call.tool_name.clone(),
+                    arguments: tool_call.arguments.to_string(),
+                },
+            );
+        }
         let _ = send_project_event(
             &self.event_tx,
             &self.project_id,

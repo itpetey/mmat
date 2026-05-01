@@ -24,6 +24,28 @@ impl UiLogLayer {
     }
 }
 
+impl<S> Layer<S> for UiLogLayer
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let metadata = event.metadata();
+        let mut visitor = EventFieldVisitor::default();
+        event.record(&mut visitor);
+
+        let message = visitor.into_message();
+        if message.trim().is_empty() {
+            return;
+        }
+
+        let _ = self.event_tx.send(FrontendEvent::Log {
+            level: *metadata.level(),
+            target: metadata.target().to_string(),
+            message,
+        });
+    }
+}
+
 impl EventFieldVisitor {
     fn into_message(self) -> String {
         let Some(message) = self.message else {
@@ -65,28 +87,6 @@ impl field::Visit for EventFieldVisitor {
 
     fn record_u64(&mut self, field: &field::Field, value: u64) {
         self.record_value(field, value);
-    }
-}
-
-impl<S> Layer<S> for UiLogLayer
-where
-    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        let metadata = event.metadata();
-        let mut visitor = EventFieldVisitor::default();
-        event.record(&mut visitor);
-
-        let message = visitor.into_message();
-        if message.trim().is_empty() {
-            return;
-        }
-
-        let _ = self.event_tx.send(FrontendEvent::Log {
-            level: *metadata.level(),
-            target: metadata.target().to_string(),
-            message,
-        });
     }
 }
 

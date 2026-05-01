@@ -5,11 +5,13 @@ use std::{
     fs,
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 use naaf_core::{Step, StepReport, task_fn};
 use naaf_llm::{
-    HumanIO, LlmAgent, LlmClient, OpenAiClient, OpenAiConfig, OpenAiStreamObserver, TaskError,
+    CompletionRequest, ExecutionOutcome, Executor, ExecutorError, HumanIO, LlmAgent, LlmClient,
+    OpenAiClient, OpenAiConfig, OpenAiStreamObserver, TaskError,
 };
 use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
 use serde::{Deserialize, Serialize};
@@ -31,18 +33,16 @@ type WorkflowTaskError<C, R, E> = TaskError<
     serde_json::Error,
 >;
 
+#[cfg(not(test))]
+const EXECUTOR_RETRY_BASE_DELAY_MS: u64 = 1000;
+#[cfg(test)]
+const EXECUTOR_RETRY_BASE_DELAY_MS: u64 = 1;
 const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_EMBEDDING_DIMENSION: usize = 1536;
 const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
-
-pub struct GreenfieldReport {
-    run_id: uuid::Uuid,
-    result: WorkflowRunResult,
-    step_report: StepReport<WorkflowFinding>,
-    design_handoff: Option<DesignHandoff>,
-}
+const MAX_EXECUTOR_RETRIES: usize = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnowledgeRuntimeConfig {
@@ -110,6 +110,13 @@ enum WorkflowRunResult {
     },
 }
 
+pub struct GreenfieldReport {
+    run_id: uuid::Uuid,
+    result: WorkflowRunResult,
+    step_report: StepReport<WorkflowFinding>,
+    design_handoff: Option<DesignHandoff>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct KnowledgeMaterialisationInput {
     discovery: discovery::DiscoveryOutput,
@@ -141,6 +148,81 @@ struct ArchitectStageInput {
     discovery: discovery::DiscoveryOutput,
     selected_solution: solutions::SelectedSolution,
     materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
+}
+
+impl KnowledgeRuntimeConfig {
+    pub fn from_env() -> Result<Self, MmatError> {
+        let workspace_root = env::current_dir().map_err(|error| {
+            MmatError::Config(format!("failed to resolve current workspace: {error}"))
+        })?;
+        let sqlite_path = read_env("MMAT_KNOWLEDGE_SQLITE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace_root.join(".mmat").join("knowledge.sqlite3"));
+        let embedding_dimension = match read_env("MMAT_EMBEDDING_DIMENSION") {
+            Some(value) => value.parse::<usize>().map_err(|error| {
+                MmatError::Config(format!(
+                    "invalid MMAT_EMBEDDING_DIMENSION `{value}`: {error}"
+                ))
+            })?,
+            None => DEFAULT_EMBEDDING_DIMENSION,
+        };
+
+        Ok(Self {
+            sqlite_path,
+            qdrant_url: read_env("MMAT_QDRANT_URL")
+                .unwrap_or_else(|| DEFAULT_QDRANT_URL.to_string()),
+            qdrant_api_key: read_env("MMAT_QDRANT_API_KEY"),
+            embedding_api_key: read_env("MMAT_EMBEDDING_API_KEY")
+                .or_else(|| read_env("OPENAI_API_KEY"))
+                .unwrap_or_default(),
+            embedding_base_url: read_env("MMAT_EMBEDDING_BASE_URL")
+                .unwrap_or_else(|| DEFAULT_EMBEDDING_BASE_URL.to_string()),
+            embedding_model: read_env("MMAT_EMBEDDING_MODEL")
+                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
+            embedding_dimension,
+            repo: read_env("MMAT_KNOWLEDGE_REPO"),
+            workspace_root,
+            qdrant_collection_prefix: read_env("MMAT_QDRANT_COLLECTION_PREFIX")
+                .unwrap_or_else(|| "p_default".to_string()),
+        })
+    }
+
+    pub fn from_project(project: &ProjectConfig) -> Result<Self, MmatError> {
+        let mut config = Self::from_env()?;
+        config.sqlite_path = project.data_dir.join("knowledge.sqlite3");
+        config.workspace_root = project.root.clone();
+        config.repo = project.repo_label.clone();
+        config.qdrant_collection_prefix = project.qdrant_collection_prefix.clone();
+        Ok(config)
+    }
+
+    fn open_store(&self) -> Result<SqliteKnowledgeGroupStore, MmatError> {
+        if let Some(parent) = self.sqlite_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                MmatError::Config(format!(
+                    "failed to create SQLite knowledge directory `{}`: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let path = self.sqlite_path.to_string_lossy().into_owned();
+        SqliteKnowledgeGroupStore::open(&path)
+            .map_err(|error| MmatError::Workflow(error.to_string()))
+    }
+
+    fn qdrant_backend<R>(&self) -> knowledge::QdrantKnowledgeBackend<R> {
+        knowledge::QdrantKnowledgeBackend::new(knowledge::QdrantKnowledgeBackendConfig {
+            url: self.qdrant_url.clone(),
+            api_key: self.qdrant_api_key.clone(),
+            embedding_api_key: self.embedding_api_key.clone(),
+            embedding_base_url: self.embedding_base_url.clone(),
+            embedding_model: self.embedding_model.clone(),
+            embedding_dimension: self.embedding_dimension,
+            repo: self.repo.clone(),
+            workspace_root: self.workspace_root.clone(),
+        })
+    }
 }
 
 impl From<discovery::DiscoveryFinding> for WorkflowFinding {
@@ -218,81 +300,6 @@ impl WorkflowStageId {
 impl std::fmt::Display for WorkflowStageId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-impl KnowledgeRuntimeConfig {
-    pub fn from_env() -> Result<Self, MmatError> {
-        let workspace_root = env::current_dir().map_err(|error| {
-            MmatError::Config(format!("failed to resolve current workspace: {error}"))
-        })?;
-        let sqlite_path = read_env("MMAT_KNOWLEDGE_SQLITE_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| workspace_root.join(".mmat").join("knowledge.sqlite3"));
-        let embedding_dimension = match read_env("MMAT_EMBEDDING_DIMENSION") {
-            Some(value) => value.parse::<usize>().map_err(|error| {
-                MmatError::Config(format!(
-                    "invalid MMAT_EMBEDDING_DIMENSION `{value}`: {error}"
-                ))
-            })?,
-            None => DEFAULT_EMBEDDING_DIMENSION,
-        };
-
-        Ok(Self {
-            sqlite_path,
-            qdrant_url: read_env("MMAT_QDRANT_URL")
-                .unwrap_or_else(|| DEFAULT_QDRANT_URL.to_string()),
-            qdrant_api_key: read_env("MMAT_QDRANT_API_KEY"),
-            embedding_api_key: read_env("MMAT_EMBEDDING_API_KEY")
-                .or_else(|| read_env("OPENAI_API_KEY"))
-                .unwrap_or_default(),
-            embedding_base_url: read_env("MMAT_EMBEDDING_BASE_URL")
-                .unwrap_or_else(|| DEFAULT_EMBEDDING_BASE_URL.to_string()),
-            embedding_model: read_env("MMAT_EMBEDDING_MODEL")
-                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
-            embedding_dimension,
-            repo: read_env("MMAT_KNOWLEDGE_REPO"),
-            workspace_root,
-            qdrant_collection_prefix: read_env("MMAT_QDRANT_COLLECTION_PREFIX")
-                .unwrap_or_else(|| "p_default".to_string()),
-        })
-    }
-
-    pub fn from_project(project: &ProjectConfig) -> Result<Self, MmatError> {
-        let mut config = Self::from_env()?;
-        config.sqlite_path = project.data_dir.join("knowledge.sqlite3");
-        config.workspace_root = project.root.clone();
-        config.repo = project.repo_label.clone();
-        config.qdrant_collection_prefix = project.qdrant_collection_prefix.clone();
-        Ok(config)
-    }
-
-    fn open_store(&self) -> Result<SqliteKnowledgeGroupStore, MmatError> {
-        if let Some(parent) = self.sqlite_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                MmatError::Config(format!(
-                    "failed to create SQLite knowledge directory `{}`: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
-
-        let path = self.sqlite_path.to_string_lossy().into_owned();
-        SqliteKnowledgeGroupStore::open(&path)
-            .map_err(|error| MmatError::Workflow(error.to_string()))
-    }
-
-    fn qdrant_backend<R>(&self) -> knowledge::QdrantKnowledgeBackend<R> {
-        knowledge::QdrantKnowledgeBackend::new(knowledge::QdrantKnowledgeBackendConfig {
-            url: self.qdrant_url.clone(),
-            api_key: self.qdrant_api_key.clone(),
-            embedding_api_key: self.embedding_api_key.clone(),
-            embedding_base_url: self.embedding_base_url.clone(),
-            embedding_model: self.embedding_model.clone(),
-            embedding_dimension: self.embedding_dimension,
-            repo: self.repo.clone(),
-            workspace_root: self.workspace_root.clone(),
-        })
     }
 }
 
@@ -398,6 +405,39 @@ where
         step_report,
         design_handoff,
     })
+}
+
+pub(crate) async fn execute_with_turn_limit_retry<C, R, E>(
+    executor: &Executor<C, R, E>,
+    runtime: &R,
+    request: CompletionRequest,
+) -> Result<ExecutionOutcome, ExecutorError<C::Error, E>>
+where
+    C: LlmClient<Runtime = R>,
+    C::Error: 'static,
+    E: 'static,
+{
+    let mut delay = Duration::from_millis(EXECUTOR_RETRY_BASE_DELAY_MS);
+    for attempt in 1..=MAX_EXECUTOR_RETRIES {
+        match executor.execute(runtime, request.clone()).await {
+            Ok(result) => return Ok(result),
+            Err(ExecutorError::TurnLimitExceeded { max_turns }) => {
+                if attempt == MAX_EXECUTOR_RETRIES {
+                    return Err(ExecutorError::TurnLimitExceeded { max_turns });
+                }
+                tracing::warn!(
+                    attempt,
+                    max_attempts = MAX_EXECUTOR_RETRIES,
+                    max_turns,
+                    "executor hit turn limit, backing off and retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
 }
 
 fn architect_input_from_stage(input: ArchitectStageInput) -> architect::ArchitectInput {
@@ -611,11 +651,20 @@ fn workflow_llm_config() -> OpenAiConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use futures::future::LocalBoxFuture;
+    use naaf_llm::{
+        AssistantMessage, CompletionRequest, CompletionResponse, Executor, ExecutorConfig,
+        ExecutorError, LlmClient, Message, Tool, ToolCall, ToolRegistry,
+    };
 
     use crate::project::{ProjectConfig, ProjectId};
 
-    use super::KnowledgeRuntimeConfig;
+    use super::{KnowledgeRuntimeConfig, MAX_EXECUTOR_RETRIES, execute_with_turn_limit_retry};
 
     #[test]
     fn project_runtime_config_uses_project_paths_and_prefix() {
@@ -640,5 +689,158 @@ mod tests {
         );
         assert_eq!(config.qdrant_collection_prefix, "p_runtime");
         assert_eq!(config.repo.as_deref(), Some("runtime-repo"));
+    }
+
+    struct CountingClient {
+        calls: std::sync::Arc<AtomicUsize>,
+        fail_until: usize,
+    }
+
+    impl LlmClient for CountingClient {
+        type Runtime = ();
+        type Error = std::convert::Infallible;
+
+        fn complete<'a>(
+            &'a self,
+            _runtime: &'a Self::Runtime,
+            _request: CompletionRequest,
+        ) -> LocalBoxFuture<'a, Result<CompletionResponse, Self::Error>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if call < self.fail_until {
+                    Ok(CompletionResponse::new(AssistantMessage::with_tool_calls(
+                        None,
+                        vec![ToolCall {
+                            call_id: format!("call-{call}"),
+                            tool_name: "noop".to_string(),
+                            arguments: serde_json::json!({}),
+                        }],
+                    )))
+                } else {
+                    Ok(CompletionResponse::new(AssistantMessage::from_text(
+                        "success",
+                    )))
+                }
+            })
+        }
+    }
+
+    struct NoopTool;
+
+    impl Tool for NoopTool {
+        type Runtime = ();
+        type Error = std::convert::Infallible;
+
+        fn spec(&self) -> naaf_llm::ToolSpec {
+            naaf_llm::ToolSpec {
+                name: "noop".to_string(),
+                description: "does nothing".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                }),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _runtime: &'a Self::Runtime,
+            _arguments: serde_json::Value,
+        ) -> LocalBoxFuture<'a, Result<serde_json::Value, Self::Error>> {
+            Box::pin(async move { Ok(serde_json::json!({})) })
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_retry_succeeds_after_backoff() {
+        let client = CountingClient {
+            calls: std::sync::Arc::new(AtomicUsize::new(0)),
+            fail_until: 1,
+        };
+        let calls = std::sync::Arc::clone(&client.calls);
+        let mut tools = ToolRegistry::new();
+        tools.register(NoopTool).expect("register noop tool");
+        let executor = Executor::with_tools(client, tools).with_config(ExecutorConfig::new(1));
+
+        let result = execute_with_turn_limit_retry(
+            &executor,
+            &(),
+            CompletionRequest::new("test", vec![Message::user("hi")]),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().final_message().content.as_deref(),
+            Some("success")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_retry_fails_after_max_retries() {
+        let client = CountingClient {
+            calls: std::sync::Arc::new(AtomicUsize::new(0)),
+            fail_until: usize::MAX,
+        };
+        let calls = std::sync::Arc::clone(&client.calls);
+        let mut tools = ToolRegistry::new();
+        tools.register(NoopTool).expect("register noop tool");
+        let executor = Executor::with_tools(client, tools).with_config(ExecutorConfig::new(1));
+
+        let result = execute_with_turn_limit_retry(
+            &executor,
+            &(),
+            CompletionRequest::new("test", vec![Message::user("hi")]),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ExecutorError::TurnLimitExceeded { max_turns: 1 })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_EXECUTOR_RETRIES);
+    }
+
+    #[derive(Debug, Clone)]
+    struct FakeError(&'static str);
+
+    impl std::fmt::Display for FakeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl std::error::Error for FakeError {}
+
+    struct ErrorClient;
+
+    impl LlmClient for ErrorClient {
+        type Runtime = ();
+        type Error = FakeError;
+
+        fn complete<'a>(
+            &'a self,
+            _runtime: &'a Self::Runtime,
+            _request: CompletionRequest,
+        ) -> LocalBoxFuture<'a, Result<CompletionResponse, Self::Error>> {
+            Box::pin(async move { Err(FakeError("client failure")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_retry_returns_non_turn_limit_errors_immediately() {
+        let executor = Executor::new(ErrorClient);
+        let result = execute_with_turn_limit_retry(
+            &executor,
+            &(),
+            CompletionRequest::new("test", vec![Message::user("hi")]),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ExecutorError::Client(FakeError("client failure")))
+        ));
     }
 }

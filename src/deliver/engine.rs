@@ -77,13 +77,15 @@ struct ToolAdapter<T> {
     inner: T,
 }
 
-impl NoopEventSink {
-    fn log_inner(&self, _project: &ProjectConfig, _level: tracing::Level, _message: String) {}
+impl From<MmatError> for DeliveryError {
+    fn from(value: MmatError) -> Self {
+        Self::Config(value.to_string())
+    }
 }
 
-impl BuildEventSink for NoopEventSink {
-    fn log(&self, project: &ProjectConfig, level: tracing::Level, message: String) {
-        self.log_inner(project, level, message);
+impl From<Infallible> for DeliveryError {
+    fn from(value: Infallible) -> Self {
+        match value {}
     }
 }
 
@@ -442,6 +444,16 @@ impl BuildEngine {
     }
 }
 
+impl NoopEventSink {
+    fn log_inner(&self, _project: &ProjectConfig, _level: tracing::Level, _message: String) {}
+}
+
+impl BuildEventSink for NoopEventSink {
+    fn log(&self, project: &ProjectConfig, level: tracing::Level, message: String) {
+        self.log_inner(project, level, message);
+    }
+}
+
 impl DeliveryRuntime {
     fn new(project: ProjectConfig) -> Result<Self, DeliveryError> {
         let artefacts =
@@ -521,18 +533,6 @@ where
                 .await
                 .map_err(|error| DeliveryError::Workflow(format!("tool failed: {error:?}")))
         })
-    }
-}
-
-impl From<MmatError> for DeliveryError {
-    fn from(value: MmatError) -> Self {
-        Self::Config(value.to_string())
-    }
-}
-
-impl From<Infallible> for DeliveryError {
-    fn from(value: Infallible) -> Self {
-        match value {}
     }
 }
 

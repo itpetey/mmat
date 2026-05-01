@@ -29,7 +29,7 @@ use thiserror::Error;
 use crate::{
     plan::{
         WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
-        parser::decode_outcome,
+        execute_with_turn_limit_retry, parser::decode_outcome,
     },
     project::prefix_collection_id,
 };
@@ -60,20 +60,6 @@ pub(super) trait KnowledgeBackend: 'static {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KnowledgeInput {
-    discovery: DiscoveryOutput,
-    findings: Vec<KnowledgeFinding>,
-    last_plan: Option<KnowledgePlan>,
-    turn: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct KnowledgePlan {
-    groups: Vec<KnowledgeGroupPlan>,
-    upstream_follow_ups: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KnowledgeFinding {
     EmptyPlan,
     DuplicateCollectionName(String),
@@ -85,35 +71,6 @@ pub enum KnowledgeFinding {
 }
 
 pub(super) struct MetadataOnlyKnowledgeBackend;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct KnowledgeGroupPlan {
-    template: KnowledgeGroupTemplate,
-    instance_name: String,
-    description: String,
-    tags: Vec<String>,
-    query_hints: Vec<String>,
-    stages: Vec<WorkflowStageId>,
-    sources: Vec<KnowledgeSource>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct MaterialisedKnowledgeGroup {
-    group: KnowledgeGroup,
-    template: KnowledgeGroupTemplate,
-    stages: Vec<WorkflowStageId>,
-    sources: Vec<KnowledgeSource>,
-    ingested_sources: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct KnowledgeSource {
-    kind: KnowledgeSourceKind,
-    label: String,
-    location: Option<String>,
-    content: Option<String>,
-    recursive: bool,
-}
 
 #[derive(Debug, Error)]
 pub(super) enum KnowledgeError {
@@ -151,6 +108,49 @@ enum KnowledgeSourceKind {
     ResearchPaper,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct KnowledgeSource {
+    kind: KnowledgeSourceKind,
+    label: String,
+    location: Option<String>,
+    content: Option<String>,
+    recursive: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct KnowledgeGroupPlan {
+    template: KnowledgeGroupTemplate,
+    instance_name: String,
+    description: String,
+    tags: Vec<String>,
+    query_hints: Vec<String>,
+    stages: Vec<WorkflowStageId>,
+    sources: Vec<KnowledgeSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KnowledgePlan {
+    groups: Vec<KnowledgeGroupPlan>,
+    upstream_follow_ups: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgeInput {
+    discovery: DiscoveryOutput,
+    findings: Vec<KnowledgeFinding>,
+    last_plan: Option<KnowledgePlan>,
+    turn: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct MaterialisedKnowledgeGroup {
+    group: KnowledgeGroup,
+    template: KnowledgeGroupTemplate,
+    stages: Vec<WorkflowStageId>,
+    sources: Vec<KnowledgeSource>,
+    ingested_sources: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct QdrantKnowledgeBackendConfig {
     pub(super) url: String,
@@ -170,43 +170,54 @@ pub(super) struct QdrantKnowledgeBackend<R> {
     workspace_root: Option<PathBuf>,
 }
 
-impl KnowledgeInput {
-    pub(super) fn new(discovery: DiscoveryOutput) -> Self {
-        Self {
-            discovery,
-            findings: Vec::new(),
-            last_plan: None,
-            turn: 0,
+impl Display for KnowledgeFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyPlan => write!(f, "knowledge plan produced no groups"),
+            Self::DuplicateCollectionName(collection) => {
+                write!(
+                    f,
+                    "knowledge plan generated a colliding collection name `{collection}`"
+                )
+            }
+            Self::GroupWithoutStages(group) => {
+                write!(
+                    f,
+                    "knowledge group `{group}` is not scoped to any downstream stage"
+                )
+            }
+            Self::GroupWithoutSources(group) => {
+                write!(f, "knowledge group `{group}` has no sources")
+            }
+            Self::MissingStageCoverage(stage) => {
+                write!(f, "knowledge plan does not cover the `{stage}` stage")
+            }
+            Self::LintFailed(error) => {
+                write!(f, "knowledge lint check failed: {error}")
+            }
+            Self::LintFindings(count) => {
+                write!(f, "knowledge lint found {count} issue(s)")
+            }
         }
     }
 }
 
-impl MaterialisedKnowledgeGroup {
-    pub(super) fn as_knowledge_group(&self) -> KnowledgeGroup {
-        self.group.clone()
+impl KnowledgeBackend for MetadataOnlyKnowledgeBackend {
+    fn initialise_group<'a>(
+        &'a self,
+        _group: &'a MaterialisedKnowledgeGroup,
+    ) -> LocalBoxFuture<'a, Result<(), KnowledgeError>> {
+        Box::pin(async move { Ok(()) })
     }
 
-    pub(super) fn is_scoped_to(&self, stage: WorkflowStageId) -> bool {
-        self.stages.contains(&stage)
-    }
-}
-
-impl PartialEq for MaterialisedKnowledgeGroup {
-    fn eq(&self, other: &Self) -> bool {
-        self.group.collection == other.group.collection
-            && self.group.name == other.group.name
-            && self.group.description == other.group.description
-            && self.group.tags == other.group.tags
-            && self.group.query_hints == other.group.query_hints
-            && self.group.metadata == other.group.metadata
-            && self.template == other.template
-            && self.stages == other.stages
-            && self.sources == other.sources
-            && self.ingested_sources == other.ingested_sources
+    fn ingest_source<'a>(
+        &'a self,
+        _group: &'a MaterialisedKnowledgeGroup,
+        _source: &'a KnowledgeSource,
+    ) -> LocalBoxFuture<'a, Result<(), KnowledgeError>> {
+        Box::pin(async move { Ok(()) })
     }
 }
-
-impl Eq for MaterialisedKnowledgeGroup {}
 
 impl KnowledgeGroupTemplate {
     fn slug(&self) -> &'static str {
@@ -240,38 +251,6 @@ impl KnowledgeGroupTemplate {
             Self::DiscoveryTranscript => "Clarifications and intent captured during discovery.",
             Self::WebResearch => "Externally gathered web research relevant to the change.",
             Self::Papers => "Paper and long-form research material relevant to the change.",
-        }
-    }
-}
-
-impl Display for KnowledgeFinding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyPlan => write!(f, "knowledge plan produced no groups"),
-            Self::DuplicateCollectionName(collection) => {
-                write!(
-                    f,
-                    "knowledge plan generated a colliding collection name `{collection}`"
-                )
-            }
-            Self::GroupWithoutStages(group) => {
-                write!(
-                    f,
-                    "knowledge group `{group}` is not scoped to any downstream stage"
-                )
-            }
-            Self::GroupWithoutSources(group) => {
-                write!(f, "knowledge group `{group}` has no sources")
-            }
-            Self::MissingStageCoverage(stage) => {
-                write!(f, "knowledge plan does not cover the `{stage}` stage")
-            }
-            Self::LintFailed(error) => {
-                write!(f, "knowledge lint check failed: {error}")
-            }
-            Self::LintFindings(count) => {
-                write!(f, "knowledge lint found {count} issue(s)")
-            }
         }
     }
 }
@@ -369,6 +348,44 @@ impl KnowledgeSource {
         }
     }
 }
+
+impl KnowledgeInput {
+    pub(super) fn new(discovery: DiscoveryOutput) -> Self {
+        Self {
+            discovery,
+            findings: Vec::new(),
+            last_plan: None,
+            turn: 0,
+        }
+    }
+}
+
+impl MaterialisedKnowledgeGroup {
+    pub(super) fn as_knowledge_group(&self) -> KnowledgeGroup {
+        self.group.clone()
+    }
+
+    pub(super) fn is_scoped_to(&self, stage: WorkflowStageId) -> bool {
+        self.stages.contains(&stage)
+    }
+}
+
+impl PartialEq for MaterialisedKnowledgeGroup {
+    fn eq(&self, other: &Self) -> bool {
+        self.group.collection == other.group.collection
+            && self.group.name == other.group.name
+            && self.group.description == other.group.description
+            && self.group.tags == other.group.tags
+            && self.group.query_hints == other.group.query_hints
+            && self.group.metadata == other.group.metadata
+            && self.template == other.template
+            && self.stages == other.stages
+            && self.sources == other.sources
+            && self.ingested_sources == other.ingested_sources
+    }
+}
+
+impl Eq for MaterialisedKnowledgeGroup {}
 
 impl<R> QdrantKnowledgeBackend<R> {
     pub(super) fn new(config: QdrantKnowledgeBackendConfig) -> Self {
@@ -505,23 +522,6 @@ impl<R: 'static> KnowledgeBackend for QdrantKnowledgeBackend<R> {
     }
 }
 
-impl KnowledgeBackend for MetadataOnlyKnowledgeBackend {
-    fn initialise_group<'a>(
-        &'a self,
-        _group: &'a MaterialisedKnowledgeGroup,
-    ) -> LocalBoxFuture<'a, Result<(), KnowledgeError>> {
-        Box::pin(async move { Ok(()) })
-    }
-
-    fn ingest_source<'a>(
-        &'a self,
-        _group: &'a MaterialisedKnowledgeGroup,
-        _source: &'a KnowledgeSource,
-    ) -> LocalBoxFuture<'a, Result<(), KnowledgeError>> {
-        Box::pin(async move { Ok(()) })
-    }
-}
-
 pub(super) fn build_stage_knowledge_session(
     stage: WorkflowStageId,
     base_system_prompt: &str,
@@ -651,11 +651,13 @@ where
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
             let executor = Executor::with_tools(client, tools);
-            let outcome = executor.execute(runtime, request).await.map_err(|error| {
-                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
-                    "executor failed: {error}"
-                )))
-            })?;
+            let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
+                .await
+                .map_err(|error| {
+                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                        "executor failed: {error}"
+                    )))
+                })?;
 
             decode_outcome(outcome).map_err(AdaptorError::Decode)
         })
@@ -671,27 +673,6 @@ where
         }))
         .retry_policy(RetryPolicy::new(MAX_PLANNING_ATTEMPTS))
         .build_persistent()
-}
-
-fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
-where
-    R: 'static,
-{
-    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
-        workspace_root.clone(),
-    )) {
-        tracing::warn!(%error, "failed to register repository read tool");
-    }
-    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
-        workspace_root.clone(),
-    )) {
-        tracing::warn!(%error, "failed to register repository glob tool");
-    }
-    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
-        workspace_root,
-    )) {
-        tracing::warn!(%error, "failed to register repository search tool");
-    }
 }
 
 fn build_prompt(input: KnowledgeInput) -> String {
@@ -929,6 +910,27 @@ where
     }
 
     Ok(materialised)
+}
+
+fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
+where
+    R: 'static,
+{
+    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
+        workspace_root,
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
+    }
 }
 
 async fn repair(

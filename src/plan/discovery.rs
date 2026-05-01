@@ -13,7 +13,9 @@ use naaf_llm::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::plan::{WorkflowBuildError, WorkflowTaskError, parser::decode_outcome};
+use crate::plan::{
+    WorkflowBuildError, WorkflowTaskError, execute_with_turn_limit_retry, parser::decode_outcome,
+};
 
 type DiscoveryStep<C, R, E> =
     Step<R, DiscoveryInput, DiscoveryOutput, DiscoveryFinding, DiscoveryStepError<C, R, E>>;
@@ -23,11 +25,10 @@ pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct DiscoveryInput {
-    initial_prompt: String,
-    answers: Vec<DiscoveryAnswer>,
-    findings: Vec<DiscoveryFinding>,
-    last_output: Option<DiscoveryOutput>,
+pub(super) struct DiscoveryQuestion {
+    pub(super) prompt: String,
+    #[serde(default)]
+    pub(super) choices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,13 +50,6 @@ pub(super) struct DiscoveryOutput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct DiscoveryQuestion {
-    pub(super) prompt: String,
-    #[serde(default)]
-    pub(super) choices: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryAnswer {
     pub(super) question: String,
     pub(super) answer: String,
@@ -70,6 +64,14 @@ pub(super) enum DiscoveryFinding {
     NoClarificationQuestions,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct DiscoveryInput {
+    initial_prompt: String,
+    answers: Vec<DiscoveryAnswer>,
+    findings: Vec<DiscoveryFinding>,
+    last_output: Option<DiscoveryOutput>,
+}
+
 impl DiscoveryOutput {
     #[cfg(test)]
     pub fn is_ready(&self) -> bool {
@@ -78,17 +80,6 @@ impl DiscoveryOutput {
             && !self.problem_statement.trim().is_empty()
             && !self.goals.iter().any(|item| item.trim().is_empty())
             && !self.constraints.iter().any(|item| item.trim().is_empty())
-    }
-}
-
-impl DiscoveryInput {
-    pub(super) fn new(initial_prompt: impl Into<String>) -> Self {
-        Self {
-            initial_prompt: initial_prompt.into(),
-            answers: Vec::new(),
-            findings: Vec::new(),
-            last_output: None,
-        }
     }
 }
 
@@ -104,6 +95,17 @@ impl Display for DiscoveryFinding {
             Self::NoClarificationQuestions => {
                 write!(f, "no clarification questions despite not being ready")
             }
+        }
+    }
+}
+
+impl DiscoveryInput {
+    pub(super) fn new(initial_prompt: impl Into<String>) -> Self {
+        Self {
+            initial_prompt: initial_prompt.into(),
+            answers: Vec::new(),
+            findings: Vec::new(),
+            last_output: None,
         }
     }
 }
@@ -183,11 +185,13 @@ where
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
             let executor = Executor::with_tools(client, tools);
-            let outcome = executor.execute(runtime, request).await.map_err(|error| {
-                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
-                    "executor failed: {error}"
-                )))
-            })?;
+            let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
+                .await
+                .map_err(|error| {
+                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                        "executor failed: {error}"
+                    )))
+                })?;
 
             decode_outcome(outcome).map_err(AdaptorError::Decode)
         })
@@ -204,27 +208,6 @@ where
         }))
         .retry_policy(RetryPolicy::unlimited())
         .build_persistent()
-}
-
-fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
-where
-    R: 'static,
-{
-    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
-        workspace_root.clone(),
-    )) {
-        tracing::warn!(%error, "failed to register repository read tool");
-    }
-    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
-        workspace_root.clone(),
-    )) {
-        tracing::warn!(%error, "failed to register repository glob tool");
-    }
-    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
-        workspace_root,
-    )) {
-        tracing::warn!(%error, "failed to register repository search tool");
-    }
 }
 
 fn build_prompt(input: DiscoveryInput) -> String {
@@ -299,6 +282,27 @@ fn build_prompt(input: DiscoveryInput) -> String {
     );
 
     lines.join("\n")
+}
+
+fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
+where
+    R: 'static,
+{
+    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
+        workspace_root,
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
+    }
 }
 
 async fn repair<R>(

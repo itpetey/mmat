@@ -18,6 +18,44 @@ use crate::{
     project::{ProjectConfig, ProjectId},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct BuildJobId(String);
+
+#[derive(Debug, Error)]
+pub enum BuildQueueError {
+    #[error("build queue failed: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("build queue io failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("build queue JSON failed: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("build job not found: {0}")]
+    NotFound(BuildJobId),
+    #[error("unknown build job status: {0}")]
+    UnknownStatus(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuildJobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildJob {
+    pub id: BuildJobId,
+    pub project_id: ProjectId,
+    pub status: BuildJobStatus,
+    pub handoff: DesignHandoff,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildWorkerEvent {
     QueueChanged {
@@ -36,44 +74,6 @@ pub enum BuildWorkerEvent {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BuildJob {
-    pub id: BuildJobId,
-    pub project_id: ProjectId,
-    pub status: BuildJobStatus,
-    pub handoff: DesignHandoff,
-    pub error: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub started_at: Option<i64>,
-    pub completed_at: Option<i64>,
-}
-
-#[derive(Debug, Error)]
-pub enum BuildQueueError {
-    #[error("build queue failed: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("build queue io failed: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("build queue JSON failed: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("build job not found: {0}")]
-    NotFound(BuildJobId),
-    #[error("unknown build job status: {0}")]
-    UnknownStatus(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct BuildJobId(String);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuildJobStatus {
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-}
-
 #[derive(Clone, Debug)]
 pub struct BuildQueueStore {
     path: PathBuf,
@@ -83,26 +83,6 @@ pub struct BuildWorkerHandle {
     project_id: ProjectId,
     notify: Arc<Notify>,
     join_handle: tokio::task::JoinHandle<()>,
-}
-
-impl BuildWorkerHandle {
-    pub fn project_id(&self) -> &ProjectId {
-        &self.project_id
-    }
-
-    pub fn notify(&self) {
-        self.notify.notify_one();
-    }
-
-    pub fn abort(&self) {
-        self.join_handle.abort();
-    }
-}
-
-impl std::fmt::Display for BuildJobId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
 }
 
 impl BuildJobId {
@@ -116,6 +96,12 @@ impl BuildJobId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl std::fmt::Display for BuildJobId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -337,6 +323,20 @@ impl BuildQueueStore {
 
     fn connection(&self) -> Result<Connection, BuildQueueError> {
         Ok(Connection::open(&self.path)?)
+    }
+}
+
+impl BuildWorkerHandle {
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+
+    pub fn notify(&self) {
+        self.notify.notify_one();
+    }
+
+    pub fn abort(&self) {
+        self.join_handle.abort();
     }
 }
 

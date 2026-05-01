@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::plan::{
     WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
-    knowledge::StageKnowledgeSession, parser::decode_outcome,
+    execute_with_turn_limit_retry, knowledge::StageKnowledgeSession, parser::decode_outcome,
 };
 
 pub(super) type SolutionBranchStep<C, R, E> =
@@ -35,33 +35,16 @@ pub const COLLECT_SYSTEM_PROMPT: &str = "You are the solution collection stage f
 pub const MODEL: &str = "gpt-5.5";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SolutionBranchInput {
-    branch: SolutionBranch,
-    solution: SolutionInput,
-    turn: usize,
-    findings: Vec<SolutionBranchFinding>,
-    prior_draft: Option<SolutionDraft>,
+pub(super) struct SolutionInput {
+    discovery: DiscoveryOutput,
+    knowledge: StageKnowledgeSession,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SolutionCollectInput {
-    drafts: Vec<SolutionDraft>,
-    turn: usize,
-    findings: Vec<SolutionCollectFinding>,
-    prior_collection: Option<SolutionCollection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SolutionCollection {
-    pub(super) drafts: Vec<SolutionDraft>,
-    pub(super) recommendation: SolutionRecommendation,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SolutionRecommendation {
-    recommended_branch: Option<SolutionBranch>,
-    recommended_hybrid: Option<HybridSolution>,
-    rationale: String,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) enum SolutionBranch {
+    Conservative,
+    Recommended,
+    Ambitious,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +70,19 @@ struct HybridSolution {
     technologies: Vec<String>,
     rationale: String,
     risks: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SolutionRecommendation {
+    recommended_branch: Option<SolutionBranch>,
+    recommended_hybrid: Option<HybridSolution>,
+    rationale: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SolutionCollection {
+    pub(super) drafts: Vec<SolutionDraft>,
+    pub(super) recommendation: SolutionRecommendation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +119,15 @@ pub(super) enum SolutionBranchFinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SolutionBranchInput {
+    branch: SolutionBranch,
+    solution: SolutionInput,
+    turn: usize,
+    findings: Vec<SolutionBranchFinding>,
+    prior_draft: Option<SolutionDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum SolutionCollectFinding {
     EmptyDrafts,
     MissingDraftBranch(SolutionBranch),
@@ -134,28 +139,11 @@ pub(super) enum SolutionCollectFinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SolutionInput {
-    discovery: DiscoveryOutput,
-    knowledge: StageKnowledgeSession,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(super) enum SolutionBranch {
-    Conservative,
-    Recommended,
-    Ambitious,
-}
-
-impl SolutionBranchInput {
-    pub(super) fn new(branch: SolutionBranch, solution: SolutionInput) -> Self {
-        Self {
-            branch,
-            solution,
-            turn: 0,
-            findings: Vec::new(),
-            prior_draft: None,
-        }
-    }
+pub(super) struct SolutionCollectInput {
+    drafts: Vec<SolutionDraft>,
+    turn: usize,
+    findings: Vec<SolutionCollectFinding>,
+    prior_collection: Option<SolutionCollection>,
 }
 
 impl SolutionInput {
@@ -163,17 +151,6 @@ impl SolutionInput {
         Self {
             discovery,
             knowledge,
-        }
-    }
-}
-
-impl SolutionCollectInput {
-    pub(super) fn new(drafts: Vec<SolutionDraft>) -> Self {
-        Self {
-            drafts,
-            turn: 0,
-            findings: Vec::new(),
-            prior_collection: None,
         }
     }
 }
@@ -224,6 +201,18 @@ impl Display for SolutionBranchFinding {
     }
 }
 
+impl SolutionBranchInput {
+    pub(super) fn new(branch: SolutionBranch, solution: SolutionInput) -> Self {
+        Self {
+            branch,
+            solution,
+            turn: 0,
+            findings: Vec::new(),
+            prior_draft: None,
+        }
+    }
+}
+
 impl Display for SolutionCollectFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -262,6 +251,17 @@ impl Display for SolutionCollectFinding {
                     branch.slug()
                 )
             }
+        }
+    }
+}
+
+impl SolutionCollectInput {
+    pub(super) fn new(drafts: Vec<SolutionDraft>) -> Self {
+        Self {
+            drafts,
+            turn: 0,
+            findings: Vec::new(),
+            prior_collection: None,
         }
     }
 }
@@ -313,11 +313,13 @@ where
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
             let executor = Executor::with_tools(client, tools);
-            let outcome = executor.execute(runtime, request).await.map_err(|error| {
-                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
-                    "executor failed: {error}"
-                )))
-            })?;
+            let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
+                .await
+                .map_err(|error| {
+                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                        "executor failed: {error}"
+                    )))
+                })?;
 
             decode_outcome(outcome).map_err(AdaptorError::Decode)
         })
@@ -332,27 +334,6 @@ where
         }))
         .retry_policy(RetryPolicy::new(MAX_BRANCH_ATTEMPTS))
         .build_persistent()
-}
-
-fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
-where
-    R: 'static,
-{
-    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
-        workspace_root.clone(),
-    )) {
-        tracing::warn!(%error, "failed to register repository read tool");
-    }
-    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
-        workspace_root.clone(),
-    )) {
-        tracing::warn!(%error, "failed to register repository glob tool");
-    }
-    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
-        workspace_root,
-    )) {
-        tracing::warn!(%error, "failed to register repository search tool");
-    }
 }
 
 pub(super) fn choice_step<C, R, E>()
@@ -671,6 +652,27 @@ fn parse_solution_choice<H>(
         _ => Err(WorkflowBuildError::InvalidChoice(format!(
             "unrecognised solution choice `{trimmed}`"
         ))),
+    }
+}
+
+fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)
+where
+    R: 'static,
+{
+    if let Err(error) = tools.register(naaf_llm::repository::ReadFileTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::GlobPathsTool::<R>::new(
+        workspace_root.clone(),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(naaf_llm::repository::SearchFilesTool::<R>::new(
+        workspace_root,
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
     }
 }
 

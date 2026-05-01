@@ -30,6 +30,7 @@ naaf-persistence-sqlite = { git = "https://github.com/itpetey/naaf" }
 naaf-qdrant = { git = "https://github.com/itpetey/naaf" }
 naaf-workspace = { git = "https://github.com/itpetey/naaf" }
 parking_lot = "0.12"
+pulldown-cmark = "0.13"
 rusqlite = "0.39"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["std"] }

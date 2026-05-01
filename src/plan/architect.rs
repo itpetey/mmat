@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 
 use crate::plan::{
     WorkflowBuildError, WorkflowTaskError, discovery::DiscoveryOutput,
-    knowledge::StageKnowledgeSession, parser::decode_outcome, solutions::SelectedSolution,
+    execute_with_turn_limit_retry, knowledge::StageKnowledgeSession, parser::decode_outcome,
+    solutions::SelectedSolution,
 };
 
 pub(super) type ArchitectStep<C, R, E> =
@@ -24,18 +25,6 @@ pub(super) type ArchitectStep<C, R, E> =
 const MAX_ARCHITECT_ATTEMPTS: usize = 3;
 pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff. If useful, you may request references to existing knowledge groups that have been materialised using `@knowledge_search` tool.";
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct ArchitectInput {
-    discovery: DiscoveryOutput,
-    selected_solution: SelectedSolution,
-    knowledge: StageKnowledgeSession,
-    #[serde(default)]
-    materialised: Vec<naaf_knowledge::KnowledgeGroup>,
-    turn: usize,
-    findings: Vec<ArchitectFinding>,
-    prior_plan: Option<ArchitectPlan>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ArchitectPlan {
@@ -53,6 +42,38 @@ pub(super) enum ArchitectFinding {
     ImplementationGuidance,
     PlanningNotes,
     Risks,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct ArchitectInput {
+    discovery: DiscoveryOutput,
+    selected_solution: SelectedSolution,
+    knowledge: StageKnowledgeSession,
+    #[serde(default)]
+    materialised: Vec<naaf_knowledge::KnowledgeGroup>,
+    turn: usize,
+    findings: Vec<ArchitectFinding>,
+    prior_plan: Option<ArchitectPlan>,
+}
+
+struct KnowledgeToolAdapter<T> {
+    inner: T,
+}
+
+impl Display for ArchitectFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Summary => write!(f, "architect plan is missing a summary"),
+            Self::ArchitectureDecisions => {
+                write!(f, "architect plan is missing architecture decisions")
+            }
+            Self::ImplementationGuidance => {
+                write!(f, "architect plan is missing implementation guidance")
+            }
+            Self::PlanningNotes => write!(f, "architect plan is missing planning notes"),
+            Self::Risks => write!(f, "architect plan is missing risks"),
+        }
+    }
 }
 
 impl ArchitectInput {
@@ -74,19 +95,35 @@ impl ArchitectInput {
     }
 }
 
-impl Display for ArchitectFinding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Summary => write!(f, "architect plan is missing a summary"),
-            Self::ArchitectureDecisions => {
-                write!(f, "architect plan is missing architecture decisions")
-            }
-            Self::ImplementationGuidance => {
-                write!(f, "architect plan is missing implementation guidance")
-            }
-            Self::PlanningNotes => write!(f, "architect plan is missing planning notes"),
-            Self::Risks => write!(f, "architect plan is missing risks"),
-        }
+impl<T> KnowledgeToolAdapter<T> {
+    fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R, T> Tool for KnowledgeToolAdapter<T>
+where
+    T: Tool<Runtime = R>,
+    T::Error: Debug,
+{
+    type Runtime = R;
+    type Error = naaf_knowledge::KnowledgeError;
+
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+
+    fn call<'a>(
+        &'a self,
+        runtime: &'a Self::Runtime,
+        arguments: Value,
+    ) -> LocalBoxFuture<'a, Result<Value, Self::Error>> {
+        Box::pin(async move {
+            self.inner
+                .call(runtime, arguments)
+                .await
+                .map_err(|error| naaf_knowledge::KnowledgeError::Query(format!("{error:?}")))
+        })
     }
 }
 
@@ -190,11 +227,13 @@ where
             let executor: Executor<C, R, naaf_knowledge::KnowledgeError> =
                 Executor::with_tools(client, tools);
 
-            let outcome = executor.execute(_runtime, request).await.map_err(|e| {
-                AdaptorError::Build(WorkflowBuildError::Workflow(format!(
-                    "executor failed: {e}"
-                )))
-            })?;
+            let outcome = execute_with_turn_limit_retry(&executor, _runtime, request)
+                .await
+                .map_err(|e| {
+                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                        "executor failed: {e}"
+                    )))
+                })?;
 
             decode_outcome(outcome).map_err(AdaptorError::Decode)
         })
@@ -207,65 +246,6 @@ where
         }))
         .retry_policy(RetryPolicy::new(MAX_ARCHITECT_ATTEMPTS))
         .build_persistent()
-}
-
-struct KnowledgeToolAdapter<T> {
-    inner: T,
-}
-
-impl<T> KnowledgeToolAdapter<T> {
-    fn new(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
-impl<R, T> Tool for KnowledgeToolAdapter<T>
-where
-    T: Tool<Runtime = R>,
-    T::Error: Debug,
-{
-    type Runtime = R;
-    type Error = naaf_knowledge::KnowledgeError;
-
-    fn spec(&self) -> ToolSpec {
-        self.inner.spec()
-    }
-
-    fn call<'a>(
-        &'a self,
-        runtime: &'a Self::Runtime,
-        arguments: Value,
-    ) -> LocalBoxFuture<'a, Result<Value, Self::Error>> {
-        Box::pin(async move {
-            self.inner
-                .call(runtime, arguments)
-                .await
-                .map_err(|error| naaf_knowledge::KnowledgeError::Query(format!("{error:?}")))
-        })
-    }
-}
-
-fn register_repository_tools<R>(
-    tools: &mut ToolRegistry<R, naaf_knowledge::KnowledgeError>,
-    workspace_root: PathBuf,
-) where
-    R: 'static,
-{
-    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
-        naaf_llm::repository::ReadFileTool::<R>::new(workspace_root.clone()),
-    )) {
-        tracing::warn!(%error, "failed to register repository read tool");
-    }
-    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
-        naaf_llm::repository::GlobPathsTool::<R>::new(workspace_root.clone()),
-    )) {
-        tracing::warn!(%error, "failed to register repository glob tool");
-    }
-    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
-        naaf_llm::repository::SearchFilesTool::<R>::new(workspace_root),
-    )) {
-        tracing::warn!(%error, "failed to register repository search tool");
-    }
 }
 
 fn build_prompt(input: ArchitectInput) -> String {
@@ -317,6 +297,29 @@ fn build_prompt(input: ArchitectInput) -> String {
 
 fn has_non_empty_entries(values: &[String]) -> bool {
     values.iter().any(|value| !value.trim().is_empty())
+}
+
+fn register_repository_tools<R>(
+    tools: &mut ToolRegistry<R, naaf_knowledge::KnowledgeError>,
+    workspace_root: PathBuf,
+) where
+    R: 'static,
+{
+    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
+        naaf_llm::repository::ReadFileTool::<R>::new(workspace_root.clone()),
+    )) {
+        tracing::warn!(%error, "failed to register repository read tool");
+    }
+    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
+        naaf_llm::repository::GlobPathsTool::<R>::new(workspace_root.clone()),
+    )) {
+        tracing::warn!(%error, "failed to register repository glob tool");
+    }
+    if let Err(error) = tools.register(KnowledgeToolAdapter::new(
+        naaf_llm::repository::SearchFilesTool::<R>::new(workspace_root),
+    )) {
+        tracing::warn!(%error, "failed to register repository search tool");
+    }
 }
 
 async fn repair(

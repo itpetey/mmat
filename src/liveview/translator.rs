@@ -124,6 +124,13 @@ fn dispatch_event(
                 ui_state.finish_assistant_reasoning();
             }
         }
+        FrontendEvent::ToolCallStarted { name, arguments } => {
+            if let Some(project_id) = &project_id {
+                ui_state.record_project_tool_use(project_id, name, arguments);
+            } else {
+                ui_state.record_tool_use(name, arguments);
+            }
+        }
         FrontendEvent::HumanPrompt {
             question,
             choices,

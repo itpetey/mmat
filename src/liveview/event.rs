@@ -7,6 +7,18 @@ use crate::project::ProjectId;
 pub type EventReceiver = mpsc::UnboundedReceiver<FrontendEvent>;
 pub type EventSender = mpsc::UnboundedSender<FrontendEvent>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummaryEvent {
+    pub project_id: ProjectId,
+    pub run_id: String,
+    pub project_root: String,
+    pub run_root: String,
+    pub prompt: String,
+    pub status: String,
+    pub current_stage: String,
+    pub next_step: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum FrontendEvent {
     ProjectScoped {
@@ -69,6 +81,10 @@ pub enum FrontendEvent {
     AssistantResponseCompleted {
         message: Option<String>,
     },
+    ToolCallStarted {
+        name: String,
+        arguments: String,
+    },
     HumanPrompt {
         question: String,
         choices: Vec<String>,
@@ -76,18 +92,6 @@ pub enum FrontendEvent {
     },
     RunSummary(RunSummaryEvent),
     Quit,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunSummaryEvent {
-    pub project_id: ProjectId,
-    pub run_id: String,
-    pub project_root: String,
-    pub run_root: String,
-    pub prompt: String,
-    pub status: String,
-    pub current_stage: String,
-    pub next_step: Option<String>,
 }
 
 impl fmt::Display for FrontendEvent {
@@ -138,6 +142,7 @@ impl fmt::Display for FrontendEvent {
             Self::AssistantReasoningDelta { .. } => write!(f, "assistant reasoning delta"),
             Self::AssistantMessageDelta { .. } => write!(f, "assistant message delta"),
             Self::AssistantResponseCompleted { .. } => write!(f, "assistant response completed"),
+            Self::ToolCallStarted { name, .. } => write!(f, "tool call started: {name}"),
             Self::HumanPrompt { question, .. } => write!(f, "? {question}"),
             Self::RunSummary(summary) => write!(
                 f,

@@ -1,6 +1,10 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 use dioxus::prelude::*;
+use pulldown_cmark::{Options, Parser};
 
 use crate::liveview::{
     BuildJobSnapshot, ComposerMode, ConversationEntry, PendingPromptSnapshot,
@@ -74,6 +78,8 @@ impl PartialEq for ComposerProps {
 pub(super) fn RootApp(props: RootAppProps) -> Element {
     let mut snapshot = use_signal(|| props.ui_state.snapshot());
     let state_for_future = props.ui_state.clone();
+    let mut show_reasoning = use_signal(|| true);
+    let mut local_reasoning_overrides = use_signal(HashMap::<u64, bool>::new);
 
     use_future(move || {
         let state = state_for_future.clone();
@@ -86,16 +92,28 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
     });
 
     let snapshot_value = snapshot.read().clone();
+    let show_reasoning_value = *show_reasoning.read();
 
     rsx! {
         div { class: "mmat-root",
             div { class: "mmat-shell",
                 div { class: "mmat-header",
                     pre { class: "mmat-logo", "aria-hidden": "true", "|\\/| |\\/|  /\\  T\n|  | |  | /--\\ |" }
-                    ProjectSwitcher {
-                        ui_state: props.ui_state.clone(),
-                        projects: snapshot_value.projects.clone(),
-                        active_project_id: snapshot_value.active_project.id.clone(),
+                    div { display: "flex", align_items: "center", gap: "0.5rem",
+                        button {
+                            class: if show_reasoning_value { "reasoning-toggle active" } else { "reasoning-toggle" },
+                            r#type: "button",
+                            onclick: move |_| {
+                                show_reasoning.set(!show_reasoning_value);
+                                local_reasoning_overrides.set(HashMap::new());
+                            },
+                            if show_reasoning_value { "thinking on" } else { "thinking off" }
+                        }
+                        ProjectSwitcher {
+                            ui_state: props.ui_state.clone(),
+                            projects: snapshot_value.projects.clone(),
+                            active_project_id: snapshot_value.active_project.id.clone(),
+                        }
                     }
                 }
                 div { class: "mmat-content",
@@ -112,7 +130,7 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
                             div { class: "conversation-entry connecting", "Ready for a new run." }
                         }
                         for (index, entry) in snapshot_value.conversation.iter().enumerate() {
-                            {render_conversation_entry(index, entry)}
+                            {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
                         }
                         if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
                             if let Some(summary) = &snapshot_value.run_summary {
@@ -377,7 +395,12 @@ fn log_level_class(event: &UiEvent) -> &'static str {
     }
 }
 
-fn render_conversation_entry(index: usize, entry: &ConversationEntry) -> Element {
+fn render_conversation_entry(
+    index: usize,
+    entry: &ConversationEntry,
+    show_reasoning: bool,
+    mut local_overrides: Signal<HashMap<u64, bool>>,
+) -> Element {
     match entry {
         ConversationEntry::UserMessage { text } => rsx! {
             div { key: "conv-{index}", class: "conversation-entry user",
@@ -385,27 +408,104 @@ fn render_conversation_entry(index: usize, entry: &ConversationEntry) -> Element
                 span { class: "entry-body", "{text}" }
             }
         },
-        ConversationEntry::AssistantQuestion { question } => rsx! {
-            div { key: "conv-{index}", class: "conversation-entry question",
-                span { class: "entry-role", "agent" }
-                span { class: "entry-body", "{question}" }
+        ConversationEntry::AssistantQuestion { question } => {
+            let html = render_markdown(question);
+            rsx! {
+                div { key: "conv-{index}", class: "conversation-entry question",
+                    span { class: "entry-role", "agent" }
+                    span { class: "entry-body markdown-body", dangerous_inner_html: "{html}" }
+                }
             }
-        },
-        ConversationEntry::AssistantReasoning { text, complete } => rsx! {
-            div {
-                key: "conv-{index}",
-                class: if *complete { "conversation-entry reasoning" } else { "conversation-entry reasoning pending" },
-                span { class: "entry-role", if *complete { "trace" } else { "trace*" } }
-                span { class: "entry-body", "{text}" }
+        }
+        ConversationEntry::AssistantReasoning { text, complete } => {
+            let entry_key = index as u64;
+            let expanded = local_overrides
+                .read()
+                .get(&entry_key)
+                .copied()
+                .unwrap_or(show_reasoning);
+            let role_label = if *complete { "trace" } else { "trace*" };
+            rsx! {
+                div {
+                    key: "conv-{index}",
+                    class: if *complete { "conversation-entry reasoning" } else { "conversation-entry reasoning pending" },
+                    span {
+                        class: "entry-role entry-role-toggle",
+                        onclick: move |_| {
+                            let mut overrides = local_overrides.read().clone();
+                            let current = overrides.get(&entry_key).copied().unwrap_or(show_reasoning);
+                            overrides.insert(entry_key, !current);
+                            local_overrides.set(overrides);
+                        },
+                        "{role_label}"
+                    }
+                    if expanded {
+                        span { class: "entry-body", "{text}" }
+                    } else {
+                        if *complete {
+                            span { class: "entry-body", "..." }
+                        } else {
+                            span { class: "entry-body",
+                                span { class: "reasoning-loading",
+                                    span { class: "reasoning-loading-dot" }
+                                    span { class: "reasoning-loading-dot" }
+                                    span { class: "reasoning-loading-dot" }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        },
-        ConversationEntry::AssistantMessage { text, .. } => rsx! {
-            div { key: "conv-{index}", class: "conversation-entry assistant",
-                span { class: "entry-role", "thinking" }
-                span { class: "entry-body", "{text}" }
+        }
+        ConversationEntry::AssistantMessage { text, complete: _ } => {
+            let entry_key = index as u64;
+            let expanded = local_overrides
+                .read()
+                .get(&entry_key)
+                .copied()
+                .unwrap_or(show_reasoning);
+            let role_label = "thinking";
+            rsx! {
+                div { key: "conv-{index}", class: "conversation-entry assistant",
+                    span {
+                        class: "entry-role entry-role-toggle",
+                        onclick: move |_| {
+                            let mut overrides = local_overrides.read().clone();
+                            let current = overrides.get(&entry_key).copied().unwrap_or(show_reasoning);
+                            overrides.insert(entry_key, !current);
+                            local_overrides.set(overrides);
+                        },
+                        "{role_label}"
+                    }
+                    if expanded {
+                        span { class: "entry-body", "{text}" }
+                    } else {
+                        span { class: "entry-body", "..." }
+                    }
+                }
+            }
+        }
+        ConversationEntry::ToolUse { name, arguments } => rsx! {
+            div { key: "conv-{index}", class: "conversation-entry tool-use",
+                span { class: "entry-role", "tool" }
+                span { class: "entry-body",
+                    span { class: "tool-call-name", "{name}" }
+                    span { class: "tool-call-args", " {arguments}" }
+                }
             }
         },
     }
+}
+
+fn render_markdown(text: &str) -> String {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+    let parser = Parser::new_ext(text, options);
+    let mut html_output = String::new();
+    pulldown_cmark::html::push_html(&mut html_output, parser);
+    html_output
 }
 
 fn submit_composer_input(input: &mut Signal<String>, ui_state: &Arc<UiState>) {

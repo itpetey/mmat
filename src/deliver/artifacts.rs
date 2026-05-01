@@ -33,17 +33,6 @@ pub enum DeliveryArtifact {
     Outcome,
 }
 
-impl DeliveryArtifact {
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::ExecutionPlan => "execution-plan",
-            Self::EvidenceLog => "evidence-log",
-            Self::FinalReview => "final-review",
-            Self::Outcome => "delivery-outcome",
-        }
-    }
-}
-
 impl DeliveryArtifactStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DeliveryArtifactError> {
         let path = path.into();
@@ -122,6 +111,17 @@ impl DeliveryArtifactStore {
 
     fn connection(&self) -> Result<Connection, DeliveryArtifactError> {
         Ok(Connection::open(&self.path)?)
+    }
+}
+
+impl DeliveryArtifact {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ExecutionPlan => "execution-plan",
+            Self::EvidenceLog => "evidence-log",
+            Self::FinalReview => "final-review",
+            Self::Outcome => "delivery-outcome",
+        }
     }
 }
 

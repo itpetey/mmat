@@ -17,17 +17,6 @@ pub type InstructionReceiver = oneshot::Receiver<ProjectPrompt>;
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 const LIVEVIEW_PATH: &str = "/liveview";
 
-pub struct LiveViewHandle {
-    shutdown_tx: watch::Sender<bool>,
-    join_handle: tokio::task::JoinHandle<Result<(), LiveViewError>>,
-}
-
-pub struct LiveViewReadyHandle {
-    shutdown_tx: watch::Sender<bool>,
-    join_handle: tokio::task::JoinHandle<Result<(), LiveViewError>>,
-    ready_rx: oneshot::Receiver<Result<(), std::io::Error>>,
-}
-
 pub struct LiveViewAppBuilder {
     addr: SocketAddr,
     ui_state: Arc<UiState>,
@@ -43,15 +32,15 @@ pub enum LiveViewError {
     Task(String),
 }
 
-impl Default for LiveViewAppBuilder {
-    fn default() -> Self {
-        Self {
-            addr: DEFAULT_ADDR
-                .parse()
-                .expect("default socket address should parse"),
-            ui_state: Arc::new(UiState::new()),
-        }
-    }
+pub struct LiveViewHandle {
+    shutdown_tx: watch::Sender<bool>,
+    join_handle: tokio::task::JoinHandle<Result<(), LiveViewError>>,
+}
+
+pub struct LiveViewReadyHandle {
+    shutdown_tx: watch::Sender<bool>,
+    join_handle: tokio::task::JoinHandle<Result<(), LiveViewError>>,
+    ready_rx: oneshot::Receiver<Result<(), std::io::Error>>,
 }
 
 impl LiveViewAppBuilder {
@@ -88,6 +77,26 @@ impl LiveViewAppBuilder {
     }
 }
 
+impl Default for LiveViewAppBuilder {
+    fn default() -> Self {
+        Self {
+            addr: DEFAULT_ADDR
+                .parse()
+                .expect("default socket address should parse"),
+            ui_state: Arc::new(UiState::new()),
+        }
+    }
+}
+
+impl LiveViewHandle {
+    pub async fn shutdown(self) -> Result<(), LiveViewError> {
+        let _ = self.shutdown_tx.send(true);
+        self.join_handle
+            .await
+            .map_err(|error| LiveViewError::Task(error.to_string()))?
+    }
+}
+
 impl LiveViewReadyHandle {
     pub async fn wait_for_ready(self) -> Result<LiveViewHandle, LiveViewError> {
         let ready_result = self
@@ -99,15 +108,6 @@ impl LiveViewReadyHandle {
             shutdown_tx: self.shutdown_tx,
             join_handle: self.join_handle,
         })
-    }
-}
-
-impl LiveViewHandle {
-    pub async fn shutdown(self) -> Result<(), LiveViewError> {
-        let _ = self.shutdown_tx.send(true);
-        self.join_handle
-            .await
-            .map_err(|error| LiveViewError::Task(error.to_string()))?
     }
 }
 

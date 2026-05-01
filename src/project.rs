@@ -15,6 +15,9 @@ use crate::MmatError;
 const DATA_DIR_ENV: &str = "MMAT_DATA_DIR";
 const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ProjectId(String);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub id: ProjectId,
@@ -40,9 +43,6 @@ pub enum ProjectRegistryError {
     InvalidProjectId(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ProjectId(String);
-
 #[derive(Clone, Debug)]
 pub struct NewProject {
     pub name: String,
@@ -56,12 +56,6 @@ pub struct NewProject {
 #[derive(Clone, Debug)]
 pub struct ProjectRegistryStore {
     path: PathBuf,
-}
-
-impl std::fmt::Display for ProjectId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
 }
 
 impl ProjectId {
@@ -87,16 +81,9 @@ impl ProjectId {
     }
 }
 
-impl NewProject {
-    pub fn from_root(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
-        Self {
-            name: name.into(),
-            root: root.into(),
-            data_dir: None,
-            enabled: true,
-            qdrant_collection_prefix: None,
-            repo_label: None,
-        }
+impl std::fmt::Display for ProjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -119,6 +106,19 @@ impl ProjectConfig {
             name,
             root,
         })
+    }
+}
+
+impl NewProject {
+    pub fn from_root(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        Self {
+            name: name.into(),
+            root: root.into(),
+            data_dir: None,
+            enabled: true,
+            qdrant_collection_prefix: None,
+            repo_label: None,
+        }
     }
 }
 

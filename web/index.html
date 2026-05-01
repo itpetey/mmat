@@ -9,5 +9,41 @@
     <body>
         <div id="main"></div>
         __MMAT_LIVEVIEW_GLUE__
+        <script>
+            document.addEventListener('input', function (e) {
+                if (e.target.classList.contains('composer-textarea')) {
+                    e.target.style.height = 'auto';
+                    e.target.style.height = e.target.scrollHeight + 'px';
+                }
+            });
+
+            (function () {
+                function observeConversation() {
+                    var container = document.querySelector('.mmat-conversation');
+                    if (!container) {
+                        setTimeout(observeConversation, 200);
+                        return;
+                    }
+
+                    function scrollToBottom() {
+                        container.scrollTop = container.scrollHeight;
+                    }
+
+                    var observer = new MutationObserver(function (mutations) {
+                        var shouldScroll = mutations.some(function (m) {
+                            return m.type === 'childList' && m.addedNodes.length > 0;
+                        });
+                        if (shouldScroll) {
+                            scrollToBottom();
+                        }
+                    });
+
+                    observer.observe(container, { childList: true, subtree: true });
+                    scrollToBottom();
+                }
+
+                observeConversation();
+            })();
+        </script>
     </body>
 </html>

@@ -11,30 +11,6 @@ pub type DeliverySender = ipc_channel::ipc::IpcSender<DeliveryToFrontend>;
 pub type FrontendReceiver = ipc_channel::ipc::IpcReceiver<FrontendToDelivery>;
 pub type FrontendSender = ipc_channel::ipc::IpcSender<FrontendToDelivery>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum DeliveryToFrontend {
-    Ready,
-    QueueSnapshot {
-        project_id: ProjectId,
-        jobs: Vec<BuildJob>,
-    },
-    Log {
-        project_id: ProjectId,
-        level: DeliveryLogLevel,
-        message: String,
-    },
-    JobStarted {
-        project_id: ProjectId,
-        job_id: BuildJobId,
-    },
-    JobFinished {
-        project_id: ProjectId,
-        job_id: BuildJobId,
-        status: BuildJobStatus,
-        error: Option<String>,
-    },
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeliveryHandshake {
     pub frontend_tx: FrontendSender,
@@ -57,6 +33,30 @@ pub enum DeliveryLogLevel {
     Info,
     Warn,
     Error,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum DeliveryToFrontend {
+    Ready,
+    QueueSnapshot {
+        project_id: ProjectId,
+        jobs: Vec<BuildJob>,
+    },
+    Log {
+        project_id: ProjectId,
+        level: DeliveryLogLevel,
+        message: String,
+    },
+    JobStarted {
+        project_id: ProjectId,
+        job_id: BuildJobId,
+    },
+    JobFinished {
+        project_id: ProjectId,
+        job_id: BuildJobId,
+        status: BuildJobStatus,
+        error: Option<String>,
+    },
 }
 
 impl DeliveryLogLevel {
