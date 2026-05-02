@@ -30,6 +30,7 @@ const COMPACTION_MESSAGE_THRESHOLD: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryQuestion {
+    #[serde(default)]
     pub(super) prompt: String,
     #[serde(default)]
     pub(super) choices: Vec<String>,
@@ -430,6 +431,7 @@ where
         .output
         .open_questions
         .iter()
+        .filter(|q| !q.prompt.trim().is_empty())
         .enumerate()
     {
         let display_question = if index == 0
@@ -496,7 +498,12 @@ fn validate<R>(_runtime: &R, output: &DiscoveryOutput) -> Vec<DiscoveryFinding> 
         findings.push(DiscoveryFinding::UnresolvedBlockingAmbiguity);
     }
 
-    if !output.ready_for_solution && output.open_questions.is_empty() {
+    let has_meaningful_questions = output
+        .open_questions
+        .iter()
+        .any(|q| !q.prompt.trim().is_empty());
+
+    if !output.ready_for_solution && !has_meaningful_questions {
         findings.push(DiscoveryFinding::NoClarificationQuestions);
     }
 
@@ -712,6 +719,69 @@ mod tests {
         assert_eq!(output.notes, Vec::<String>::new());
         assert_eq!(output.assistant_message, String::new());
         assert_eq!(output.open_questions[0].choices, Vec::<String>::new());
+    }
+
+    #[test]
+    fn discovery_output_deserialises_when_question_prompt_is_missing() {
+        let output: DiscoveryOutput = serde_json::from_str(
+            r#"{
+                "ready_for_solution": false,
+                "problem_statement": "Rewrite MMAT",
+                "goals": ["Keep the plan inspectable"],
+                "constraints": ["Use local models"],
+                "recommended_path": "Proceed",
+                "open_questions": [{"choices": ["a", "b"]}]
+            }"#,
+        )
+        .expect("missing question prompt should default to empty string");
+
+        assert_eq!(output.open_questions[0].prompt, String::new());
+        assert_eq!(output.open_questions[0].choices, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn validation_reports_no_clarification_questions_when_all_prompts_are_empty() {
+        let mut output = incomplete_output();
+        output.open_questions = vec![DiscoveryQuestion {
+            prompt: String::new(),
+            choices: vec!["a".to_string()],
+        }];
+
+        let findings = validate(&(), &output);
+
+        assert!(findings.contains(&DiscoveryFinding::NoClarificationQuestions));
+    }
+
+    #[tokio::test]
+    async fn repair_skips_open_questions_with_empty_prompts() {
+        let mut first_output = incomplete_output();
+        first_output.open_questions = vec![
+            DiscoveryQuestion {
+                prompt: String::new(),
+                choices: Vec::new(),
+            },
+            DiscoveryQuestion {
+                prompt: "What are we building?".to_string(),
+                choices: Vec::new(),
+            },
+        ];
+        let client = ScriptedClient::new(vec![
+            serde_json::to_string(&first_output).expect("output should serialise"),
+            serde_json::to_string(&complete_output()).expect("output should serialise"),
+        ]);
+        let agent = LlmAgent::new(client.clone());
+        let runtime = AnsweringRuntime::new(["A local-first plan tool".to_string()]);
+
+        let output = step(&agent)
+            .run(&runtime, DiscoveryInput::new("Hi"))
+            .await
+            .expect("discovery should repair using human answers");
+
+        assert_eq!(output, complete_output());
+        assert_eq!(
+            runtime.questions(),
+            vec!["I need to understand the idea a bit more.\n\nWhat are we building?".to_string()]
+        );
     }
 
     #[tokio::test]
