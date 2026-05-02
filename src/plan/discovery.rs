@@ -6,6 +6,8 @@ use std::{
 
 use futures::future;
 use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
+#[cfg(test)]
+use naaf_llm::ExecutionOutcome;
 use naaf_llm::{
     AdaptorError, CompletionRequest, Executor, HumanIO, HumanQuestion, LlmAgent, LlmClient,
     Message, TaskError, ToolRegistry,
@@ -23,6 +25,8 @@ type DiscoveryStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
 pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
+
+const COMPACTION_MESSAGE_THRESHOLD: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryQuestion {
@@ -64,12 +68,22 @@ pub(super) enum DiscoveryFinding {
     NoClarificationQuestions,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Internal task output that carries the conversation turn so it can be accumulated
+/// across repair attempts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(super) struct DiscoveryTaskOutput {
+    pub(super) output: DiscoveryOutput,
+    pub(super) conversation_turn: Vec<Message>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct DiscoveryInput {
     initial_prompt: String,
     answers: Vec<DiscoveryAnswer>,
     findings: Vec<DiscoveryFinding>,
     last_output: Option<DiscoveryOutput>,
+    messages: Vec<Message>,
+    turn_count: usize,
 }
 
 impl DiscoveryOutput {
@@ -106,6 +120,8 @@ impl DiscoveryInput {
             answers: Vec::new(),
             findings: Vec::new(),
             last_output: None,
+            messages: Vec::new(),
+            turn_count: 0,
         }
     }
 }
@@ -119,14 +135,24 @@ where
     R: HumanIO + 'static,
     R::Error: Debug + 'static,
 {
-    Step::builder(agent.json_task(
-        MODEL.into(),
-        SYSTEM_PROMPT.into(),
-        |i| Ok::<_, WorkflowBuildError<R::Error>>(build_prompt(i)),
-        decode_outcome,
-        "discovery-turn".into(),
+    Step::builder(agent.task(
+        |_runtime: &R, input: DiscoveryInput| {
+            Ok::<_, WorkflowBuildError<R::Error>>(build_request(&input, None))
+        },
+        |outcome: ExecutionOutcome| {
+            let output = decode_outcome(outcome.clone())?;
+            let conversation_turn = outcome.messages().to_vec();
+            Ok(DiscoveryTaskOutput {
+                output,
+                conversation_turn,
+            })
+        },
     ))
-    .validate(check_fn(|r, _, o| Box::pin(future::ok(validate(r, o)))))
+    .validate(check_fn(
+        |_r: &R, _input: DiscoveryInput, o: DiscoveryTaskOutput| {
+            Box::pin(future::ok(validate(_r, &o.output)))
+        },
+    ))
     .repair_with(repair_fn(|r, a| {
         Box::pin(async move {
             repair(r, a)
@@ -136,6 +162,7 @@ where
     }))
     .retry_policy(RetryPolicy::unlimited())
     .build_persistent()
+    .map(|task_output| task_output.output)
 }
 
 pub(super) fn step_with_repository_tools<C, R, E>(
@@ -160,27 +187,7 @@ where
         let system_prompt = system_prompt.clone();
         let workspace_root = workspace_root.clone();
         Box::pin(async move {
-            let request = CompletionRequest::new(
-                MODEL.to_string(),
-                vec![
-                    Message::system(system_prompt),
-                    Message::user(build_prompt(input)),
-                ],
-            )
-            .with_metadata(json!({
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "discovery_output",
-                        "strict": false,
-                        "schema": {
-                            "type": "object",
-                            "properties": {},
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }));
+            let request = build_request(&input, Some(&system_prompt));
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
@@ -193,12 +200,30 @@ where
                     )))
                 })?;
 
-            decode_outcome(outcome).map_err(AdaptorError::Decode)
+            let output: DiscoveryOutput =
+                decode_outcome(outcome.clone()).map_err(AdaptorError::Decode)?;
+
+            let input_message_count = input.messages.len();
+            let conversation_turn = outcome
+                .messages()
+                .iter()
+                .skip(input_message_count)
+                .cloned()
+                .collect();
+
+            Ok(DiscoveryTaskOutput {
+                output,
+                conversation_turn,
+            })
         })
     });
 
     Step::builder(task)
-        .validate(check_fn(|r, _, o| Box::pin(future::ok(validate(r, o)))))
+        .validate(check_fn(
+            |_r: &R, _input: DiscoveryInput, o: DiscoveryTaskOutput| {
+                Box::pin(future::ok(validate(_r, &o.output)))
+            },
+        ))
         .repair_with(repair_fn(|r, a| {
             Box::pin(async move {
                 repair(r, a)
@@ -208,52 +233,85 @@ where
         }))
         .retry_policy(RetryPolicy::unlimited())
         .build_persistent()
+        .map(|task_output| task_output.output)
 }
 
-fn build_prompt(input: DiscoveryInput) -> String {
+fn build_system_prompt_with_base(turn_count: usize, base: &str) -> String {
+    let phase_hint = if turn_count == 0 {
+        "This is the first turn. Begin by understanding the user's idea and asking focused clarifying questions."
+    } else {
+        "This is a continuation of an ongoing conversation. Do not re-summarise the problem statement, goals, or constraints unless they have changed. Focus on what is new and respond to the user's latest answers."
+    };
+    format!(
+        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns."
+    )
+}
+
+fn maybe_compact_messages(messages: &mut Vec<Message>) {
+    if messages.len() <= COMPACTION_MESSAGE_THRESHOLD {
+        return;
+    }
+
+    let system = messages
+        .first()
+        .cloned()
+        .filter(|m| matches!(m, Message::System { .. }));
+    let recent_start = messages.len().saturating_sub(8);
+    let recent = messages[recent_start..].to_vec();
+
+    let middle = &messages[system.as_ref().map_or(0, |_| 1)..recent_start];
+    let summary = format!(
+        "[Earlier conversation: {} messages covering the initial idea and approximately {} clarification turns.]",
+        middle.len(),
+        middle.len() / 2
+    );
+
+    let mut compacted = Vec::new();
+    if let Some(sys) = system {
+        compacted.push(sys);
+    }
+    compacted.push(Message::user(summary));
+    compacted.extend(recent);
+
+    *messages = compacted;
+}
+
+fn build_request(
+    input: &DiscoveryInput,
+    system_prompt_override: Option<&str>,
+) -> CompletionRequest {
+    let mut messages = input.messages.clone();
+    maybe_compact_messages(&mut messages);
+
+    if messages.is_empty() {
+        let base = system_prompt_override.unwrap_or(SYSTEM_PROMPT);
+        messages.push(Message::system(build_system_prompt_with_base(
+            input.turn_count,
+            base,
+        )));
+        messages.push(Message::user(build_initial_user_message(input)));
+    } else {
+        messages.push(Message::user(build_turn_instructions(input)));
+    }
+
+    CompletionRequest::new(MODEL.to_string(), messages).with_metadata(json!({
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "discovery_output",
+                "strict": false,
+                "schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": true
+                }
+            }
+        }
+    }))
+}
+
+fn build_initial_user_message(input: &DiscoveryInput) -> String {
     let mut lines = vec![format!("Initial prompt: {}", input.initial_prompt)];
-
-    if let Some(prior_state) = &input.last_output {
-        lines.push(String::new());
-        lines.push("Current understanding:".to_string());
-        lines.push(format!(
-            "Problem statement: {}",
-            prior_state.problem_statement
-        ));
-
-        if !prior_state.goals.is_empty() {
-            lines.push(format!("Goals: {}", prior_state.goals.join(" | ")));
-        }
-
-        if !prior_state.constraints.is_empty() {
-            lines.push(format!(
-                "Constraints: {}",
-                prior_state.constraints.join(" | ")
-            ));
-        }
-    }
-
-    if !input.findings.is_empty() {
-        lines.push(String::new());
-        lines.push("Validation findings to address in this turn:".to_string());
-        lines.extend(
-            input
-                .findings
-                .iter()
-                .map(|finding| format!("- {}", finding)),
-        );
-    }
-
-    if !input.answers.is_empty() {
-        lines.push(String::new());
-        lines.push("Answered clarifications:".to_string());
-        lines.extend(
-            input
-                .answers
-                .iter()
-                .map(|answer| format!("- {} => {}", answer.question, answer.answer)),
-        );
-    }
 
     lines.push(String::new());
     lines.push(
@@ -261,15 +319,15 @@ fn build_prompt(input: DiscoveryInput) -> String {
             .to_string(),
     );
     lines.push(
-        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}."
+        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}"
             .to_string(),
     );
     lines.push(
-        "Use assistant_message for concise, conversational exploration that can be shown to the user before the next question. It may summarise repository findings or reflect the current idea."
+        "Use assistant_message for concise, conversational exploration that can be shown to the user before the next question."
             .to_string(),
     );
     lines.push(
-        "It is normal to take many discovery turns. Keep ready_for_solution false while exploring, and ask focused open_questions that guide the user toward a concrete, solutionable problem statement."
+        "Keep ready_for_solution false while exploring, and ask focused open_questions that guide the user toward a concrete, solutionable problem statement."
             .to_string(),
     );
     lines.push(
@@ -278,6 +336,31 @@ fn build_prompt(input: DiscoveryInput) -> String {
     );
     lines.push(
         "Only mark ready_for_solution true when the hand-off is complete enough for solution generation without blocking ambiguity."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+fn build_turn_instructions(input: &DiscoveryInput) -> String {
+    let mut lines = vec![
+        "Continue the discovery conversation based on what has been discussed so far.".to_string(),
+    ];
+
+    if !input.findings.is_empty() {
+        lines.push(String::new());
+        lines.push("Address these validation findings in your response:".to_string());
+        lines.extend(
+            input
+                .findings
+                .iter()
+                .map(|finding| format!("- {}", finding)),
+        );
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Return only one JSON object with the same shape as before. Only update fields if they have changed based on the latest user answers."
             .to_string(),
     );
 
@@ -307,7 +390,7 @@ where
 
 async fn repair<R>(
     runtime: &R,
-    attempts: Vec<Attempt<DiscoveryInput, DiscoveryOutput, DiscoveryFinding>>,
+    attempts: Vec<Attempt<DiscoveryInput, DiscoveryTaskOutput, DiscoveryFinding>>,
 ) -> Result<DiscoveryInput, R::Error>
 where
     R: HumanIO + 'static,
@@ -315,19 +398,36 @@ where
     let latest_attempt = attempts
         .last()
         .expect("discovery repair requires an attempt");
+    let mut messages = latest_attempt.input.messages.clone();
+
+    // Append the assistant response and any tool results from the latest turn.
+    messages.extend(latest_attempt.output.conversation_turn.clone());
+
     let mut answers = latest_attempt.input.answers.clone();
 
-    for (index, question) in latest_attempt.output.open_questions.iter().enumerate() {
-        let display_question =
-            if index == 0 && !latest_attempt.output.assistant_message.trim().is_empty() {
-                format!(
-                    "{}\n\n{}",
-                    latest_attempt.output.assistant_message.trim(),
-                    question.prompt
-                )
-            } else {
-                question.prompt.clone()
-            };
+    for (index, question) in latest_attempt
+        .output
+        .output
+        .open_questions
+        .iter()
+        .enumerate()
+    {
+        let display_question = if index == 0
+            && !latest_attempt
+                .output
+                .output
+                .assistant_message
+                .trim()
+                .is_empty()
+        {
+            format!(
+                "{}\n\n{}",
+                latest_attempt.output.output.assistant_message.trim(),
+                question.prompt
+            )
+        } else {
+            question.prompt.clone()
+        };
         let reply = runtime
             .ask(HumanQuestion {
                 question: display_question,
@@ -340,19 +440,22 @@ where
             .await?;
         answers.push(DiscoveryAnswer {
             question: question.prompt.clone(),
-            answer: reply.content,
+            answer: reply.content.clone(),
         });
+        messages.push(Message::user(reply.content));
     }
 
     Ok(DiscoveryInput {
         initial_prompt: latest_attempt.input.initial_prompt.clone(),
         answers,
         findings: latest_attempt.findings.clone(),
-        last_output: Some(latest_attempt.output.clone()),
+        last_output: Some(latest_attempt.output.output.clone()),
+        messages,
+        turn_count: latest_attempt.input.turn_count + 1,
     })
 }
 
-fn validate<R>(_runtime: &R, output: DiscoveryOutput) -> Vec<DiscoveryFinding> {
+fn validate<R>(_runtime: &R, output: &DiscoveryOutput) -> Vec<DiscoveryFinding> {
     let mut findings = Vec::new();
 
     if output.ready_for_solution {
@@ -424,10 +527,6 @@ mod tests {
                 prompts: Arc::new(Mutex::new(Vec::new())),
                 requests: Arc::new(Mutex::new(Vec::new())),
             }
-        }
-
-        fn prompts(&self) -> Vec<String> {
-            self.prompts.lock().clone()
         }
 
         fn requests(&self) -> Vec<CompletionRequest> {
@@ -531,19 +630,18 @@ mod tests {
 
     #[test]
     fn prompt_requires_json_object() {
-        let prompt = build_prompt(DiscoveryInput::new("Hi"));
+        let prompt = build_initial_user_message(&DiscoveryInput::new("Hi"));
 
         assert!(prompt.contains("Return only one JSON object"));
         assert!(prompt.contains("\"assistant_message\":string"));
         assert!(prompt.contains("\"ready_for_solution\":boolean"));
         assert!(prompt.contains("\"open_questions\""));
-        assert!(prompt.contains("many discovery turns"));
         assert!(prompt.contains("Do not include markdown"));
     }
 
     #[test]
     fn validation_accepts_non_empty_goals_and_constraints() {
-        let findings = validate(&(), complete_output());
+        let findings = validate(&(), &complete_output());
 
         assert!(findings.is_empty());
     }
@@ -554,7 +652,7 @@ mod tests {
         output.goals = vec![String::new()];
         output.constraints = Vec::new();
 
-        let findings = validate(&(), output);
+        let findings = validate(&(), &output);
 
         assert!(findings.contains(&DiscoveryFinding::MissingGoals));
         assert!(findings.contains(&DiscoveryFinding::MissingConstraints));
@@ -567,7 +665,7 @@ mod tests {
         output.goals = Vec::new();
         output.constraints = Vec::new();
 
-        let findings = validate(&(), output);
+        let findings = validate(&(), &output);
 
         assert!(!findings.contains(&DiscoveryFinding::MissingProblemStatement));
         assert!(!findings.contains(&DiscoveryFinding::MissingGoals));
@@ -616,10 +714,27 @@ mod tests {
             vec!["I need to understand the idea a bit more.\n\nWhat are we building?".to_string()]
         );
 
-        let prompts = client.prompts();
-        assert_eq!(prompts.len(), 2);
-        assert!(prompts[1].contains("Answered clarifications:"));
-        assert!(prompts[1].contains("What are we building? => A local-first plan tool"));
+        let requests = client.requests();
+        assert_eq!(requests.len(), 2);
+
+        // First request: system + initial user message.
+        assert_eq!(requests[0].messages.len(), 2);
+        assert!(matches!(requests[0].messages[0], Message::System { .. }));
+
+        // Second request should contain the conversation history with the user's answer.
+        let second = &requests[1];
+        assert!(second.messages.len() > 2);
+        let all_text = second
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User { content } => Some(content.as_str()),
+                Message::Assistant(msg) => msg.content.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all_text.contains("A local-first plan tool"));
     }
 
     #[tokio::test]
