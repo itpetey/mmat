@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::plan::{
-    WorkflowBuildError, WorkflowTaskError, execute_with_turn_limit_retry, parser::decode_outcome,
+    WorkflowBuildError, WorkflowTaskError, execute_with_turn_limit_retry,
+    input_token_budget_for_model, parser::decode_outcome,
 };
 
 type DiscoveryStep<C, R, E> =
@@ -25,8 +26,6 @@ type DiscoveryStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
 pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
-
-const COMPACTION_MESSAGE_THRESHOLD: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DiscoveryQuestion {
@@ -248,8 +247,9 @@ fn build_system_prompt_with_base(turn_count: usize, base: &str) -> String {
     )
 }
 
-fn maybe_compact_messages(messages: &mut Vec<Message>) {
-    if messages.len() <= COMPACTION_MESSAGE_THRESHOLD {
+fn maybe_compact_messages(messages: &mut Vec<Message>, max_input_tokens: usize) {
+    let total_tokens: usize = messages.iter().map(|m| m.token_count()).sum();
+    if total_tokens <= max_input_tokens {
         return;
     }
 
@@ -259,28 +259,46 @@ fn maybe_compact_messages(messages: &mut Vec<Message>) {
         .filter(|m| matches!(m, Message::System { .. }));
     let system_end = system.as_ref().map_or(0, |_| 1);
 
-    let mut recent_start = messages.len().saturating_sub(8);
+    // Reserve tokens for the summary message itself.
+    const SUMMARY_RESERVE: usize = 30;
+    let budget = max_input_tokens
+        .saturating_sub(system.as_ref().map_or(0, |m| m.token_count()))
+        .saturating_sub(SUMMARY_RESERVE);
 
-    // Never split an assistant + tool_results group. If recent_start points into
+    // Work backwards from the end to find the oldest message we can keep
+    // while staying within the token budget.
+    let mut suffix_tokens = 0usize;
+    let mut split_point = messages.len();
+
+    for i in (system_end..messages.len()).rev() {
+        let msg_tokens = messages[i].token_count();
+        if suffix_tokens + msg_tokens > budget {
+            split_point = i + 1;
+            break;
+        }
+        suffix_tokens += msg_tokens;
+    }
+
+    // Never split an assistant + tool_results group. If split_point points into
     // tool results, move it back to include the preceding assistant so every
     // tool message in the kept suffix has its matching assistant with tool_calls.
-    if recent_start > 0 && matches!(messages.get(recent_start), Some(Message::Tool(_))) {
-        if let Some(assistant_idx) = messages[..recent_start]
+    if split_point > system_end && matches!(messages.get(split_point), Some(Message::Tool(_))) {
+        if let Some(assistant_idx) = messages[..split_point]
             .iter()
             .rposition(|m| matches!(m, Message::Assistant(_)))
         {
-            recent_start = assistant_idx;
+            split_point = assistant_idx;
         } else {
             // No assistant found before this tool result – cannot safely compact.
             return;
         }
     }
 
-    if recent_start <= system_end {
+    if split_point <= system_end {
         return;
     }
 
-    let middle = &messages[system_end..recent_start];
+    let middle = &messages[system_end..split_point];
     let summary = format!(
         "[Earlier conversation: {} messages covering the initial idea and approximately {} clarification turns.]",
         middle.len(),
@@ -292,7 +310,7 @@ fn maybe_compact_messages(messages: &mut Vec<Message>) {
         compacted.push(sys);
     }
     compacted.push(Message::user(summary));
-    compacted.extend(messages[recent_start..].iter().cloned());
+    compacted.extend(messages[split_point..].iter().cloned());
 
     *messages = compacted;
 }
@@ -302,7 +320,8 @@ fn build_request(
     system_prompt_override: Option<&str>,
 ) -> CompletionRequest {
     let mut messages = input.messages.clone();
-    maybe_compact_messages(&mut messages);
+    let max_input_tokens = input_token_budget_for_model(MODEL);
+    maybe_compact_messages(&mut messages, max_input_tokens);
 
     if messages.is_empty() {
         let base = system_prompt_override.unwrap_or(SYSTEM_PROMPT);

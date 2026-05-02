@@ -43,6 +43,38 @@ const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const MAX_EXECUTOR_RETRIES: usize = 10;
+const INPUT_TOKEN_FRACTION: f64 = 0.75;
+
+/// Returns the provider's advertised context-window size for the given model.
+///
+/// These values are the maximum tokens the model can process in a single
+/// request (input + output combined). The caller should apply
+/// [`input_token_budget_for_model`] to get a safe input-only budget.
+pub(crate) fn model_context_window(model: &str) -> usize {
+    let lower = model.to_ascii_lowercase();
+    if lower.starts_with("gpt-5.5") {
+        1_000_000
+    } else if lower.starts_with("gpt-4o") || lower.starts_with("chatgpt-4o") {
+        128_000
+    } else if lower.starts_with("gpt-4-32k") {
+        32_768
+    } else if lower.starts_with("gpt-4") {
+        8_192
+    } else if lower.starts_with("qwen") {
+        128_000
+    } else {
+        // Conservative default for unknown local / hosted models.
+        128_000
+    }
+}
+
+/// Returns a safe input-token budget for the given model.
+///
+/// This is a fraction of the model's full context window, leaving headroom
+/// for the model's output and provider formatting overhead.
+pub(crate) fn input_token_budget_for_model(model: &str) -> usize {
+    (model_context_window(model) as f64 * INPUT_TOKEN_FRACTION) as usize
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnowledgeRuntimeConfig {
@@ -437,6 +469,10 @@ where
                 );
                 tokio::time::sleep(delay).await;
                 delay *= 2;
+            }
+            Err(ExecutorError::TokenLimitExceeded { max_tokens }) => {
+                // Retrying will not reduce tokens; propagate immediately.
+                return Err(ExecutorError::TokenLimitExceeded { max_tokens });
             }
             Err(error) => return Err(error),
         }

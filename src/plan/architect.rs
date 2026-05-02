@@ -7,16 +7,16 @@ use futures::{future, future::LocalBoxFuture};
 use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 use naaf_knowledge::KnowledgeSearchTool;
 use naaf_llm::{
-    AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message, Tool,
-    ToolRegistry, ToolSpec,
+    AdaptorError, CompletionRequest, Executor, ExecutorConfig, HumanIO, LlmAgent, LlmClient,
+    Message, Tool, ToolRegistry, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::plan::{
     WorkflowBuildError, WorkflowTaskError, discovery::DiscoveryOutput,
-    execute_with_turn_limit_retry, knowledge::StageKnowledgeSession, parser::decode_outcome,
-    solutions::SelectedSolution,
+    execute_with_turn_limit_retry, input_token_budget_for_model, knowledge::StageKnowledgeSession,
+    parser::decode_outcome, solutions::SelectedSolution,
 };
 
 pub(super) type ArchitectStep<C, R, E> =
@@ -225,7 +225,10 @@ where
             }
 
             let executor: Executor<C, R, naaf_knowledge::KnowledgeError> =
-                Executor::with_tools(client, tools);
+                Executor::with_tools(client, tools).with_config(
+                    ExecutorConfig::default()
+                        .with_max_input_tokens(input_token_budget_for_model(MODEL)),
+                );
 
             let outcome = execute_with_turn_limit_retry(&executor, _runtime, request)
                 .await

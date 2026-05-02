@@ -16,8 +16,8 @@ use naaf_knowledge::{
     augment_system_prompt,
 };
 use naaf_llm::{
-    AdaptorError, CompletionRequest, Executor, HumanIO, LlmAgent, LlmClient, Message, TaskError,
-    ToolRegistry,
+    AdaptorError, CompletionRequest, Executor, ExecutorConfig, HumanIO, LlmAgent, LlmClient,
+    Message, TaskError, ToolRegistry,
 };
 use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
 use naaf_qdrant::{OpenAiEmbedder, QdrantAgent, QdrantClient};
@@ -29,7 +29,7 @@ use thiserror::Error;
 use crate::{
     plan::{
         WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
-        execute_with_turn_limit_retry, parser::decode_outcome,
+        execute_with_turn_limit_retry, input_token_budget_for_model, parser::decode_outcome,
     },
     project::prefix_collection_id,
 };
@@ -650,7 +650,10 @@ where
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
-            let executor = Executor::with_tools(client, tools);
+            let executor = Executor::with_tools(client, tools).with_config(
+                ExecutorConfig::default()
+                    .with_max_input_tokens(input_token_budget_for_model(MODEL)),
+            );
             let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
                 .await
                 .map_err(|error| {

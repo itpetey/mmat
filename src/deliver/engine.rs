@@ -23,7 +23,9 @@ use crate::{
         },
         queue::{BuildJob, BuildJobId},
     },
-    plan::{DesignHandoff, KnowledgeRuntimeConfig, parser::decode_outcome},
+    plan::{
+        DesignHandoff, KnowledgeRuntimeConfig, input_token_budget_for_model, parser::decode_outcome,
+    },
     project::ProjectConfig,
 };
 
@@ -588,8 +590,11 @@ async fn build_agent(
     }
 
     let client = OpenAiClient::new(workflow_llm_config());
-    let executor =
-        Executor::with_tools(client, tools).with_config(ExecutorConfig::new(EXECUTOR_TURNS));
+    let model = delivery_model();
+    let executor = Executor::with_tools(client, tools).with_config(
+        ExecutorConfig::new(EXECUTOR_TURNS)
+            .with_max_input_tokens(input_token_budget_for_model(&model)),
+    );
     Ok(LlmAgent::with_executor(executor))
 }
 

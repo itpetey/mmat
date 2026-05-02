@@ -7,15 +7,16 @@ use std::{
 use futures::future;
 use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 use naaf_llm::{
-    AdaptorError, CompletionRequest, Executor, HumanIO, HumanQuestion, LlmAgent, LlmClient,
-    Message, TaskError, ToolRegistry,
+    AdaptorError, CompletionRequest, Executor, ExecutorConfig, HumanIO, HumanQuestion, LlmAgent,
+    LlmClient, Message, TaskError, ToolRegistry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::plan::{
     WorkflowBuildError, WorkflowStageId, WorkflowTaskError, discovery::DiscoveryOutput,
-    execute_with_turn_limit_retry, knowledge::StageKnowledgeSession, parser::decode_outcome,
+    execute_with_turn_limit_retry, input_token_budget_for_model, knowledge::StageKnowledgeSession,
+    parser::decode_outcome,
 };
 
 pub(super) type SolutionBranchStep<C, R, E> =
@@ -312,7 +313,10 @@ where
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
-            let executor = Executor::with_tools(client, tools);
+            let executor = Executor::with_tools(client, tools).with_config(
+                ExecutorConfig::default()
+                    .with_max_input_tokens(input_token_budget_for_model(MODEL)),
+            );
             let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
                 .await
                 .map_err(|error| {
