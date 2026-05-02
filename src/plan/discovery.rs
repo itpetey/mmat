@@ -256,10 +256,30 @@ fn maybe_compact_messages(messages: &mut Vec<Message>) {
         .first()
         .cloned()
         .filter(|m| matches!(m, Message::System { .. }));
-    let recent_start = messages.len().saturating_sub(8);
-    let recent = messages[recent_start..].to_vec();
+    let system_end = system.as_ref().map_or(0, |_| 1);
 
-    let middle = &messages[system.as_ref().map_or(0, |_| 1)..recent_start];
+    let mut recent_start = messages.len().saturating_sub(8);
+
+    // Never split an assistant + tool_results group. If recent_start points into
+    // tool results, move it back to include the preceding assistant so every
+    // tool message in the kept suffix has its matching assistant with tool_calls.
+    if recent_start > 0 && matches!(messages.get(recent_start), Some(Message::Tool(_))) {
+        if let Some(assistant_idx) = messages[..recent_start]
+            .iter()
+            .rposition(|m| matches!(m, Message::Assistant(_)))
+        {
+            recent_start = assistant_idx;
+        } else {
+            // No assistant found before this tool result – cannot safely compact.
+            return;
+        }
+    }
+
+    if recent_start <= system_end {
+        return;
+    }
+
+    let middle = &messages[system_end..recent_start];
     let summary = format!(
         "[Earlier conversation: {} messages covering the initial idea and approximately {} clarification turns.]",
         middle.len(),
@@ -271,7 +291,7 @@ fn maybe_compact_messages(messages: &mut Vec<Message>) {
         compacted.push(sys);
     }
     compacted.push(Message::user(summary));
-    compacted.extend(recent);
+    compacted.extend(messages[recent_start..].iter().cloned());
 
     *messages = compacted;
 }
