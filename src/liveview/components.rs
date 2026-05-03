@@ -421,7 +421,7 @@ fn render_conversation_entry(
             let html = render_markdown(question);
             rsx! {
                 div { key: "conv-{index}", class: "conversation-entry question",
-                    span { class: "entry-role", "agent" }
+                    span { class: "entry-role", "mmat" }
                     span { class: "entry-body markdown-body", dangerous_inner_html: "{html}" }
                 }
             }
