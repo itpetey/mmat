@@ -124,30 +124,101 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
                         }
                         RegisterProjectForm { ui_state: props.ui_state.clone() }
                     }
-                    div { class: "mmat-conversation",
-                        if snapshot_value.conversation.is_empty() && matches!(snapshot_value.composer_mode, ComposerMode::InitialPrompt) {
-                            div { class: "conversation-entry connecting", "Ready for a new run." }
-                        }
-                        for (index, entry) in snapshot_value.conversation.iter().enumerate() {
-                            {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
-                        }
-                        if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
-                            if let Some(summary) = &snapshot_value.run_summary {
-                                div { class: "conversation-entry status", "{format_run_summary(summary)}" }
+                    if snapshot_value.domain_tree_nodes.is_empty() {
+                        // Single-column layout for projects without a domain tree.
+                        div { class: "mmat-conversation",
+                            if snapshot_value.conversation.is_empty() && matches!(snapshot_value.composer_mode, ComposerMode::InitialPrompt) {
+                                div { class: "conversation-entry connecting", "Ready for a new run." }
+                            }
+                            for (index, entry) in snapshot_value.conversation.iter().enumerate() {
+                                {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
+                            }
+                            if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
+                                if let Some(summary) = &snapshot_value.run_summary {
+                                    div { class: "conversation-entry status", "{format_run_summary(summary)}" }
+                                }
                             }
                         }
-                    }
-                    QueuePanel {
-                        queue: snapshot_value.queue.clone(),
-                        worker_summary: snapshot_value.worker_summary.clone(),
-                    }
-                    div { class: "mmat-composer",
-                        Composer {
-                            ui_state: props.ui_state.clone(),
-                            mode: snapshot_value.composer_mode.clone(),
-                            pending_prompt: snapshot_value.pending_prompt.clone(),
+                        QueuePanel {
+                            queue: snapshot_value.queue.clone(),
+                            worker_summary: snapshot_value.worker_summary.clone(),
                         }
-                        RawLogsDisclosure { history: snapshot_value.history.clone() }
+                        div { class: "mmat-composer",
+                            Composer {
+                                ui_state: props.ui_state.clone(),
+                                mode: snapshot_value.composer_mode.clone(),
+                                pending_prompt: snapshot_value.pending_prompt.clone(),
+                            }
+                            RawLogsDisclosure { history: snapshot_value.history.clone() }
+                        }
+                    } else {
+                        // Multi-column layout for domain-mapped projects.
+                        div { class: "mmat-multi-domain",
+                            div { class: "mmat-domain-sidebar",
+                                div { class: "domain-tree",
+                                    h3 { "Domains" }
+                                    for node in &snapshot_value.domain_tree_nodes {
+                                        div { class: "domain-tree-node",
+                                            "{node.name} ({node.status})"
+                                        }
+                                    }
+                                }
+                                if let Some(graph) = &snapshot_value.delivery_graph {
+                                    div { class: "delivery-graph-mini",
+                                        h3 { "Delivery" }
+                                        for batch in &graph.batches {
+                                            div { class: "delivery-batch",
+                                                "Batch {batch.index}: {batch.nodes.len()} jobs"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "mmat-domain-centre",
+                                if snapshot_value.open_domain_tabs.is_empty() {
+                                    div { class: "domain-tab-placeholder", "Select a domain to begin." }
+                                } else {
+                                    div { class: "domain-tab-bar",
+                                        for tab_id in &snapshot_value.open_domain_tabs {
+                                            div { class: "domain-tab",
+                                                "{tab_id}"
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "domain-conversation domain-tab-content",
+                                    if snapshot_value.conversation.is_empty() && matches!(snapshot_value.composer_mode, ComposerMode::InitialPrompt) {
+                                        div { class: "conversation-entry connecting", "Ready for a new run." }
+                                    }
+                                    for (index, entry) in snapshot_value.conversation.iter().enumerate() {
+                                        {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
+                                    }
+                                    if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
+                                        if let Some(summary) = &snapshot_value.run_summary {
+                                            div { class: "conversation-entry status", "{format_run_summary(summary)}" }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "mmat-domain-detail",
+                                if let Some(node_id) = snapshot_value.active_domain_node_id {
+                                    div { class: "detail-panel",
+                                        h3 { "Details" }
+                                        p { "Node: {node_id}" }
+                                    }
+                                } else {
+                                    div { class: "detail-panel-placeholder", "Select a node for details." }
+                                }
+                            }
+                        }
+                        div { class: "mmat-composer",
+                            Composer {
+                                ui_state: props.ui_state.clone(),
+                                mode: snapshot_value.composer_mode.clone(),
+                                pending_prompt: snapshot_value.pending_prompt.clone(),
+                            }
+                            RawLogsDisclosure { history: snapshot_value.history.clone() }
+                        }
                     }
                 }
             }

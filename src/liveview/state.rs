@@ -13,8 +13,9 @@ use thiserror::Error;
 use tokio::sync::{oneshot, watch};
 
 use crate::{
-    deliver::{BuildJob, BuildJobStatus},
+    deliver::{BuildJob, BuildJobStatus, DeliveryGraph},
     liveview::event::{FrontendEvent, RunSummaryEvent},
+    plan::domain_map::DomainNodeId,
     project::{NewProject, ProjectConfig, ProjectId, ProjectRegistryStore},
 };
 
@@ -104,6 +105,32 @@ pub struct RunSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DomainNodeUiSnapshot {
+    pub node_id: DomainNodeId,
+    pub name: String,
+    pub status: String,
+    pub phase: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BackflowNotificationSnapshot {
+    pub node_id: DomainNodeId,
+    pub severity: String,
+    pub reason: String,
+    pub cascade_depth: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DomainUiStateSnapshot {
+    pub node_id: DomainNodeId,
+    pub conversation: VecDeque<ConversationEntry>,
+    pub pending_prompt: Option<PendingPromptSnapshot>,
+    pub composer_mode: ComposerMode,
+    pub run_summary: Option<RunSummary>,
+    pub phase: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct UiSnapshot {
     pub projects: Vec<ProjectConfig>,
     pub active_project: ProjectConfig,
@@ -114,6 +141,22 @@ pub struct UiSnapshot {
     pub run_summary: Option<RunSummary>,
     pub queue: Vec<BuildJobSnapshot>,
     pub worker_summary: Vec<ProjectWorkerSnapshot>,
+    /// Domain-mapped project fields. These are empty when the project does not
+    /// use domain-mapped planning.
+    pub domain_tree_nodes: Vec<DomainNodeUiSnapshot>,
+    pub domain_states: BTreeMap<DomainNodeId, DomainUiStateSnapshot>,
+    pub delivery_graph: Option<DeliveryGraph>,
+    pub backflow_notifications: Vec<BackflowNotificationSnapshot>,
+    pub open_domain_tabs: Vec<DomainNodeId>,
+    pub active_domain_node_id: Option<DomainNodeId>,
+}
+
+#[derive(Debug, Default)]
+struct DomainUiState {
+    conversation_history: VecDeque<ConversationEntry>,
+    pending_prompt: Option<PendingPrompt>,
+    run_summary: Option<RunSummary>,
+    phase: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -123,6 +166,12 @@ struct ProjectUiState {
     pending_prompt: Option<PendingPrompt>,
     run_summary: Option<RunSummary>,
     queue: Vec<BuildJobSnapshot>,
+    domain_states: BTreeMap<DomainNodeId, DomainUiState>,
+    domain_tree_nodes: Vec<DomainNodeUiSnapshot>,
+    delivery_graph: Option<DeliveryGraph>,
+    backflow_notifications: Vec<BackflowNotificationSnapshot>,
+    open_domain_tabs: Vec<DomainNodeId>,
+    active_domain_node_id: Option<DomainNodeId>,
 }
 
 #[derive(Debug, Error)]
@@ -199,6 +248,15 @@ impl From<&FrontendEvent> for UiEvent {
             | FrontendEvent::AssistantResponseCompleted { .. }
             | FrontendEvent::HumanPrompt { .. }
             | FrontendEvent::RunSummary(_)
+            | FrontendEvent::DomainTreeUpdated
+            | FrontendEvent::DomainNodePhaseChanged { .. }
+            | FrontendEvent::BackflowStarted { .. }
+            | FrontendEvent::BackflowCascade { .. }
+            | FrontendEvent::BackflowResolved { .. }
+            | FrontendEvent::BackflowHalting { .. }
+            | FrontendEvent::DeliveryGraphUpdated
+            | FrontendEvent::DeliveryBatchStarted { .. }
+            | FrontendEvent::DeliveryBatchCompleted { .. }
             | FrontendEvent::Quit => Self::Log {
                 level: "INFO".to_string(),
                 message: event.to_string(),
@@ -423,6 +481,159 @@ impl UiState {
         self.project_states
             .lock()
             .entry(project_id)
+            .or_default()
+            .run_summary = Some(summary);
+        self.bump_version();
+    }
+
+    pub fn set_project_domain_tree_nodes(
+        &self,
+        project_id: &ProjectId,
+        nodes: Vec<DomainNodeUiSnapshot>,
+    ) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .domain_tree_nodes = nodes;
+        self.bump_version();
+    }
+
+    pub fn set_project_delivery_graph(&self, project_id: &ProjectId, graph: Option<DeliveryGraph>) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .delivery_graph = graph;
+        self.bump_version();
+    }
+
+    pub fn set_project_backflow_notifications(
+        &self,
+        project_id: &ProjectId,
+        notifications: Vec<BackflowNotificationSnapshot>,
+    ) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .backflow_notifications = notifications;
+        self.bump_version();
+    }
+
+    pub fn set_project_open_domain_tabs(&self, project_id: &ProjectId, tabs: Vec<DomainNodeId>) {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        for tab_id in &tabs {
+            state.domain_states.entry(*tab_id).or_default();
+        }
+        state.open_domain_tabs = tabs;
+        drop(states);
+        self.bump_version();
+    }
+
+    pub fn set_project_active_domain_node_id(
+        &self,
+        project_id: &ProjectId,
+        node_id: Option<DomainNodeId>,
+    ) {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        if let Some(node_id) = node_id {
+            state.domain_states.entry(node_id).or_default();
+        }
+        state.active_domain_node_id = node_id;
+        drop(states);
+        self.bump_version();
+    }
+
+    pub fn set_project_domain_node_phase(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        phase: impl Into<String>,
+    ) {
+        let phase = phase.into();
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        state.domain_states.entry(node_id).or_default().phase = Some(phase.clone());
+        if let Some(node) = state
+            .domain_tree_nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+        {
+            node.phase = phase;
+        }
+        drop(states);
+        self.bump_version();
+    }
+
+    pub fn record_project_domain_user_message(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        text: String,
+    ) {
+        self.push_project_domain_conversation_entry(
+            project_id,
+            node_id,
+            ConversationEntry::UserMessage { text },
+        );
+    }
+
+    pub fn record_project_domain_assistant_message(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        text: String,
+    ) {
+        self.push_project_domain_conversation_entry(
+            project_id,
+            node_id,
+            ConversationEntry::AssistantMessage {
+                text,
+                complete: true,
+            },
+        );
+    }
+
+    pub fn set_project_domain_pending_prompt(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        prompt: Option<PendingPrompt>,
+    ) {
+        let question = prompt.as_ref().map(|p| p.question.clone());
+        let mut states = self.project_states.lock();
+        let domain = states
+            .entry(project_id.clone())
+            .or_default()
+            .domain_states
+            .entry(node_id)
+            .or_default();
+        domain.pending_prompt = prompt;
+        if let Some(question) = question {
+            Self::push_conversation_entry_locked(
+                &mut domain.conversation_history,
+                ConversationEntry::AssistantQuestion { question },
+            );
+        }
+        drop(states);
+        self.bump_version();
+    }
+
+    pub fn set_project_domain_run_summary(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        summary: RunSummary,
+    ) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .domain_states
+            .entry(node_id)
             .or_default()
             .run_summary = Some(summary);
         self.bump_version();
@@ -730,6 +941,16 @@ impl UiState {
         let project_id = self.active_project_id.lock().clone();
         let mut states = self.project_states.lock();
         let state = states.entry(project_id.clone()).or_default();
+        if let Some(node_id) = state.active_domain_node_id
+            && let Some(domain) = state.domain_states.get_mut(&node_id)
+            && let Some(prompt) = domain.pending_prompt.take()
+        {
+            drop(states);
+            self.record_project_domain_user_message(&project_id, node_id, text.clone());
+            let ok = prompt.reply.send(text).is_ok();
+            self.bump_version();
+            return ok;
+        }
         if let Some(prompt) = state.pending_prompt.take() {
             drop(states);
             self.record_project_user_message(&project_id, text.clone());
@@ -755,21 +976,57 @@ impl UiState {
         let history = current
             .map(|state| state.event_history.clone())
             .unwrap_or_default();
-        let conversation = current
-            .map(|state| state.conversation_history.clone())
-            .unwrap_or_default();
         let has_pending_input = self.pending_initial_input.lock().is_some();
-        let pending_prompt = current
-            .and_then(|state| state.pending_prompt.as_ref())
-            .as_ref()
-            .map(|p| PendingPromptSnapshot {
-                question: p.question.clone(),
-                choices: p.choices.clone(),
-            });
-        let has_pending_prompt = pending_prompt.is_some();
-        let run_summary = current.and_then(|state| state.run_summary.clone());
         let queue = current.map(|state| state.queue.clone()).unwrap_or_default();
         let worker_summary = worker_summary(&projects, &states);
+        let domain_tree_nodes = current
+            .map(|state| state.domain_tree_nodes.clone())
+            .unwrap_or_default();
+        let domain_states: BTreeMap<DomainNodeId, DomainUiStateSnapshot> = current
+            .map(|state| {
+                state
+                    .domain_states
+                    .iter()
+                    .map(|(node_id, state)| (*node_id, domain_state_snapshot(*node_id, state)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let delivery_graph = current.and_then(|state| state.delivery_graph.clone());
+        let backflow_notifications = current
+            .map(|state| state.backflow_notifications.clone())
+            .unwrap_or_default();
+        let open_domain_tabs = current
+            .map(|state| state.open_domain_tabs.clone())
+            .unwrap_or_default();
+        let active_domain_node_id = current.and_then(|state| state.active_domain_node_id);
+        let active_domain_state = active_domain_node_id.and_then(|id| domain_states.get(&id));
+        let use_domain_state = !domain_tree_nodes.is_empty();
+        let conversation = if use_domain_state {
+            active_domain_state
+                .map(|state| state.conversation.clone())
+                .unwrap_or_default()
+        } else {
+            current
+                .map(|state| state.conversation_history.clone())
+                .unwrap_or_default()
+        };
+        let pending_prompt = if use_domain_state {
+            active_domain_state.and_then(|state| state.pending_prompt.clone())
+        } else {
+            current
+                .and_then(|state| state.pending_prompt.as_ref())
+                .as_ref()
+                .map(|p| PendingPromptSnapshot {
+                    question: p.question.clone(),
+                    choices: p.choices.clone(),
+                })
+        };
+        let has_pending_prompt = pending_prompt.is_some();
+        let run_summary = if use_domain_state {
+            active_domain_state.and_then(|state| state.run_summary.clone())
+        } else {
+            current.and_then(|state| state.run_summary.clone())
+        };
         drop(states);
 
         let composer_mode = if has_pending_input {
@@ -790,6 +1047,12 @@ impl UiState {
             run_summary,
             queue,
             worker_summary,
+            domain_tree_nodes,
+            domain_states,
+            delivery_graph,
+            backflow_notifications,
+            open_domain_tabs,
+            active_domain_node_id,
         }
     }
 
@@ -851,6 +1114,20 @@ impl UiState {
         let conversation = state.conversation_history.clone();
         drop(states);
         self.persist_project_conversation(project_id, &conversation);
+        self.bump_version();
+    }
+
+    fn push_project_domain_conversation_entry(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        entry: ConversationEntry,
+    ) {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let domain = state.domain_states.entry(node_id).or_default();
+        Self::push_conversation_entry_locked(&mut domain.conversation_history, entry);
+        drop(states);
         self.bump_version();
     }
 
@@ -941,6 +1218,30 @@ fn worker_summary(
         .collect()
 }
 
+fn domain_state_snapshot(node_id: DomainNodeId, state: &DomainUiState) -> DomainUiStateSnapshot {
+    let pending_prompt = state
+        .pending_prompt
+        .as_ref()
+        .map(|prompt| PendingPromptSnapshot {
+            question: prompt.question.clone(),
+            choices: prompt.choices.clone(),
+        });
+    let composer_mode = if pending_prompt.is_some() {
+        ComposerMode::Reply
+    } else {
+        ComposerMode::Working
+    };
+
+    DomainUiStateSnapshot {
+        node_id,
+        conversation: state.conversation_history.clone(),
+        pending_prompt,
+        composer_mode,
+        run_summary: state.run_summary.clone(),
+        phase: state.phase.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -954,7 +1255,8 @@ mod tests {
     };
 
     use super::{
-        ComposerMode, ConversationEntry, ConversationHistoryStore, PendingPrompt, UiEvent, UiState,
+        ComposerMode, ConversationEntry, ConversationHistoryStore, DomainNodeUiSnapshot,
+        PendingPrompt, UiEvent, UiState,
     };
 
     #[test]
@@ -1019,6 +1321,53 @@ mod tests {
         let snapshot = state.snapshot();
         assert_eq!(snapshot.history.len(), 256);
         assert_eq!(snapshot.history.front().map(|entry| entry.id), Some(44));
+    }
+
+    #[test]
+    fn domain_tabs_have_independent_conversation_state() {
+        let state = UiState::new();
+        let project = state.active_project();
+        let first = crate::plan::domain_map::DomainNodeId::new();
+        let second = crate::plan::domain_map::DomainNodeId::new();
+        state.set_project_domain_tree_nodes(
+            &project.id,
+            vec![
+                DomainNodeUiSnapshot {
+                    node_id: first,
+                    name: "First".to_string(),
+                    status: "active".to_string(),
+                    phase: "Discovery".to_string(),
+                },
+                DomainNodeUiSnapshot {
+                    node_id: second,
+                    name: "Second".to_string(),
+                    status: "waiting".to_string(),
+                    phase: "Discovery".to_string(),
+                },
+            ],
+        );
+        state.set_project_open_domain_tabs(&project.id, vec![first, second]);
+        state.record_project_domain_user_message(&project.id, first, "first prompt".to_string());
+        state.record_project_domain_user_message(&project.id, second, "second prompt".to_string());
+
+        state.set_project_active_domain_node_id(&project.id, Some(first));
+        let first_snapshot = state.snapshot();
+        assert_eq!(first_snapshot.domain_states.len(), 2);
+        assert!(matches!(
+            first_snapshot.conversation.back(),
+            Some(ConversationEntry::UserMessage { text }) if text == "first prompt"
+        ));
+
+        state.set_project_active_domain_node_id(&project.id, Some(second));
+        let second_snapshot = state.snapshot();
+        assert!(matches!(
+            second_snapshot.conversation.back(),
+            Some(ConversationEntry::UserMessage { text }) if text == "second prompt"
+        ));
+        assert!(matches!(
+            second_snapshot.domain_states.get(&first).and_then(|state| state.conversation.back()),
+            Some(ConversationEntry::UserMessage { text }) if text == "first prompt"
+        ));
     }
 
     #[test]
@@ -1176,6 +1525,7 @@ mod tests {
         BuildJob {
             id: BuildJobId::new(format!("job_{prompt}")),
             project_id: project_id.clone(),
+            domain_node_id: None,
             status: BuildJobStatus::Pending,
             handoff: DesignHandoff {
                 design_run_id: uuid::Uuid::new_v4(),

@@ -91,6 +91,34 @@ pub enum FrontendEvent {
         reply: oneshot::Sender<String>,
     },
     RunSummary(RunSummaryEvent),
+    DomainTreeUpdated,
+    DomainNodePhaseChanged {
+        node_id: String,
+        phase: String,
+    },
+    BackflowStarted {
+        node_id: String,
+        severity: String,
+        reason: String,
+    },
+    BackflowCascade {
+        source_node_id: String,
+        affected_node_ids: Vec<String>,
+    },
+    BackflowResolved {
+        node_id: String,
+    },
+    BackflowHalting {
+        source_node_id: String,
+        reason: String,
+    },
+    DeliveryGraphUpdated,
+    DeliveryBatchStarted {
+        batch_index: usize,
+    },
+    DeliveryBatchCompleted {
+        batch_index: usize,
+    },
     Quit,
 }
 
@@ -149,6 +177,34 @@ impl fmt::Display for FrontendEvent {
                 "run summary: {} ({})",
                 summary.status, summary.current_stage
             ),
+            Self::DomainTreeUpdated => write!(f, "domain tree updated"),
+            Self::DomainNodePhaseChanged { node_id, phase } => {
+                write!(f, "domain node {node_id} phase changed to {phase}")
+            }
+            Self::BackflowStarted {
+                node_id,
+                severity,
+                reason,
+            } => write!(f, "backflow started on {node_id} ({severity}): {reason}"),
+            Self::BackflowCascade {
+                source_node_id,
+                affected_node_ids,
+            } => write!(
+                f,
+                "backflow cascade from {source_node_id} affects {affected_node_ids:?}"
+            ),
+            Self::BackflowResolved { node_id } => write!(f, "backflow resolved on {node_id}"),
+            Self::BackflowHalting {
+                source_node_id,
+                reason,
+            } => write!(f, "backflow halting on {source_node_id}: {reason}"),
+            Self::DeliveryGraphUpdated => write!(f, "delivery graph updated"),
+            Self::DeliveryBatchStarted { batch_index } => {
+                write!(f, "delivery batch {batch_index} started")
+            }
+            Self::DeliveryBatchCompleted { batch_index } => {
+                write!(f, "delivery batch {batch_index} completed")
+            }
             Self::Quit => write!(f, "quit"),
         }
     }

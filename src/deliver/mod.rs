@@ -1,5 +1,9 @@
 //! Queued delivery workers and runtime.
 
+pub use delivery_graph::{
+    DeliveryBatch, DeliveryBatchProgress, DeliveryGraph, DeliveryGraphError, DeliveryJobStatus,
+    DeliveryNode, DeliveryNodeProgress, DeliveryProgress,
+};
 pub use engine::{BuildEngine, DeliveryError};
 pub use queue::{
     BuildJob, BuildJobId, BuildJobStatus, BuildQueueError, BuildQueueStore, BuildWorkerEvent,
@@ -7,6 +11,7 @@ pub use queue::{
 };
 
 mod artifacts;
+pub mod delivery_graph;
 mod engine;
 pub mod ipc;
 pub mod models;

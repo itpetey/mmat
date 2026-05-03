@@ -20,11 +20,16 @@ use thiserror::Error;
 use crate::{MmatError, project::ProjectConfig};
 
 mod architect;
+mod backflow;
 mod discovery;
 pub mod domain_map;
 mod knowledge;
 pub mod parser;
 mod solutions;
+
+pub use backflow::{
+    BackflowApplication, BackflowCascade, BackflowEvent, BackflowRouteTarget, BackflowSeverity,
+};
 
 type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 type WorkflowTaskError<C, R, E> = TaskError<
@@ -559,7 +564,6 @@ where
         knowledge_collection_prefix.clone(),
         workspace_root.clone(),
     )
-    .map_input(knowledge::KnowledgeInput::new)
     .map_findings(WorkflowFinding::from);
 
     let materialisation =
@@ -576,7 +580,7 @@ where
             let materialisation = materialisation.clone();
             Box::pin(async move {
                 let plan = planning
-                    .run(runtime, discovery.clone())
+                    .run(runtime, knowledge::KnowledgeInput::new(discovery.clone()))
                     .await
                     .map_err(|e| map_step_error!(e))?;
                 let materialised = materialisation
@@ -626,9 +630,7 @@ where
     .with_findings::<WorkflowFinding>()
     .build();
 
-    let collect = solutions::collect_step(agent)
-        .map_input(solutions::SolutionCollectInput::new)
-        .map_findings(WorkflowFinding::from);
+    let collect = solutions::collect_step(agent).map_findings(WorkflowFinding::from);
 
     let choice = solutions::choice_step::<C, R, E>()
         .map_findings(|()| unreachable!("choice step has no findings"));
@@ -646,7 +648,7 @@ where
                     .await
                     .map_err(|e| map_step_error!(e))?;
                 let collection = collect
-                    .run(runtime, drafts)
+                    .run(runtime, solutions::SolutionCollectInput::new(drafts))
                     .await
                     .map_err(|e| map_step_error!(e))?;
                 let user_choice = choice
@@ -664,13 +666,11 @@ where
     .with_findings::<WorkflowFinding>()
     .build();
 
-    let architect = architect::step_with_knowledge_tools(
+    let architect = architect_stage_step::<C, R, E>(architect::step_with_knowledge_tools(
         agent,
         knowledge_backend.clone(),
         workspace_root.clone(),
-    )
-    .map_input(architect_input_from_stage)
-    .map_findings(WorkflowFinding::from);
+    ));
 
     let finalise = finalise_choice_step::<C, R, E>(architect);
 
@@ -757,9 +757,44 @@ where
     R::Error: Debug + 'static,
     E: Debug + 'static,
 {
-    branch_step
-        .map_input(move |input| solutions::SolutionBranchInput::new(branch, input))
-        .map_findings(WorkflowFinding::from)
+    let branch_step = branch_step.map_findings(WorkflowFinding::from);
+    Step::builder(task_fn(
+        move |runtime: &R, input: solutions::SolutionInput| {
+            let branch_step = branch_step.clone();
+            Box::pin(async move {
+                branch_step
+                    .run(runtime, solutions::SolutionBranchInput::new(branch, input))
+                    .await
+                    .map_err(|e| map_step_error!(e))
+            })
+        },
+    ))
+    .with_findings::<WorkflowFinding>()
+    .build()
+}
+
+fn architect_stage_step<C, R, E>(
+    architect: architect::ArchitectStep<C, R, E>,
+) -> WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+    E: Debug + 'static,
+{
+    let architect = architect.map_findings(WorkflowFinding::from);
+    Step::builder(task_fn(move |runtime: &R, input: ArchitectStageInput| {
+        let architect = architect.clone();
+        Box::pin(async move {
+            architect
+                .run(runtime, architect_input_from_stage(input))
+                .await
+                .map_err(|e| map_step_error!(e))
+        })
+    }))
+    .with_findings::<WorkflowFinding>()
+    .build()
 }
 
 fn solution_input_from_materialisation(

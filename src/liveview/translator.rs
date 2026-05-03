@@ -150,12 +150,30 @@ fn dispatch_event(
         FrontendEvent::RunSummary(summary) => {
             ui_state.set_run_summary(RunSummary::from(summary));
         }
+        FrontendEvent::DomainNodePhaseChanged { node_id, phase } => {
+            if let Ok(node_id) = node_id.parse() {
+                if let Some(project_id) = &project_id {
+                    ui_state.set_project_domain_node_phase(project_id, node_id, phase);
+                } else {
+                    let active_project = ui_state.active_project();
+                    ui_state.set_project_domain_node_phase(&active_project.id, node_id, phase);
+                }
+            }
+        }
         FrontendEvent::Quit => {}
         FrontendEvent::StepAttemptStarted { .. }
         | FrontendEvent::StepAttemptValidated { .. }
         | FrontendEvent::StepRepairStarted { .. }
         | FrontendEvent::StepRejected { .. }
-        | FrontendEvent::ProjectScoped { .. } => {}
+        | FrontendEvent::ProjectScoped { .. }
+        | FrontendEvent::DomainTreeUpdated
+        | FrontendEvent::BackflowStarted { .. }
+        | FrontendEvent::BackflowCascade { .. }
+        | FrontendEvent::BackflowResolved { .. }
+        | FrontendEvent::BackflowHalting { .. }
+        | FrontendEvent::DeliveryGraphUpdated
+        | FrontendEvent::DeliveryBatchStarted { .. }
+        | FrontendEvent::DeliveryBatchCompleted { .. } => {}
     }
 }
 

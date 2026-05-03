@@ -14,7 +14,7 @@ use tokio::sync::Notify;
 
 use crate::{
     MmatError,
-    plan::DesignHandoff,
+    plan::{DesignHandoff, domain_map::DomainNodeId},
     project::{ProjectConfig, ProjectId},
 };
 
@@ -47,6 +47,7 @@ pub enum BuildJobStatus {
 pub struct BuildJob {
     pub id: BuildJobId,
     pub project_id: ProjectId,
+    pub domain_node_id: Option<DomainNodeId>,
     pub status: BuildJobStatus,
     pub handoff: DesignHandoff,
     pub error: Option<String>,
@@ -151,9 +152,19 @@ impl BuildQueueStore {
         project_id: &ProjectId,
         handoff: DesignHandoff,
     ) -> Result<BuildJob, BuildQueueError> {
+        self.enqueue_with_domain_node(project_id, handoff, None)
+    }
+
+    pub fn enqueue_with_domain_node(
+        &self,
+        project_id: &ProjectId,
+        handoff: DesignHandoff,
+        domain_node_id: Option<DomainNodeId>,
+    ) -> Result<BuildJob, BuildQueueError> {
         let job = BuildJob {
             id: BuildJobId::generated(),
             project_id: project_id.clone(),
+            domain_node_id,
             status: BuildJobStatus::Pending,
             handoff,
             error: None,
@@ -166,13 +177,14 @@ impl BuildQueueStore {
 
         self.connection()?.execute(
             "INSERT INTO build_jobs (
-                 id, project_id, status, handoff_json, error,
+                 id, project_id, domain_node_id, status, handoff_json, error,
                  created_at, updated_at, started_at, completed_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 job.id.as_str(),
                 job.project_id.as_str(),
+                job.domain_node_id.map(|id| id.to_string()),
                 job.status.as_str(),
                 handoff_json,
                 job.error,
@@ -192,7 +204,7 @@ impl BuildQueueStore {
     ) -> Result<Vec<BuildJob>, BuildQueueError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT id, project_id, status, handoff_json, error,
+            "SELECT id, project_id, domain_node_id, status, handoff_json, error,
                     created_at, updated_at, started_at, completed_at
              FROM build_jobs
              WHERE project_id = ?1
@@ -209,7 +221,7 @@ impl BuildQueueStore {
     ) -> Result<Option<BuildJob>, BuildQueueError> {
         self.connection()?
             .query_row(
-                "SELECT id, project_id, status, handoff_json, error,
+                "SELECT id, project_id, domain_node_id, status, handoff_json, error,
                         created_at, updated_at, started_at, completed_at
                  FROM build_jobs
                  WHERE project_id = ?1 AND status = 'pending'
@@ -303,10 +315,12 @@ impl BuildQueueStore {
     }
 
     fn initialise(&self) -> Result<(), BuildQueueError> {
-        self.connection()?.execute_batch(
+        let conn = self.connection()?;
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS build_jobs (
                  id TEXT PRIMARY KEY NOT NULL,
                  project_id TEXT NOT NULL,
+                 domain_node_id TEXT,
                  status TEXT NOT NULL,
                  handoff_json TEXT NOT NULL,
                  error TEXT,
@@ -318,6 +332,9 @@ impl BuildQueueStore {
              CREATE INDEX IF NOT EXISTS idx_build_jobs_project_status
              ON build_jobs(project_id, status, created_at);",
         )?;
+        if !has_column(&conn, "build_jobs", "domain_node_id")? {
+            conn.execute("ALTER TABLE build_jobs ADD COLUMN domain_node_id TEXT", [])?;
+        }
         Ok(())
     }
 
@@ -457,13 +474,25 @@ pub fn spawn_project_worker_with_events(
 }
 
 fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
-    let status = BuildJobStatus::from_db(row.get(2)?).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(error))
-    })?;
-    let handoff_json: String = row.get(3)?;
-    let handoff = serde_json::from_str(&handoff_json).map_err(|error| {
+    let status = BuildJobStatus::from_db(row.get(3)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
     })?;
+    let handoff_json: String = row.get(4)?;
+    let handoff = serde_json::from_str(&handoff_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let domain_node_id: Option<String> = row.get(2)?;
+    let domain_node_id = domain_node_id
+        .map(|s| {
+            s.parse().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
 
     Ok(BuildJob {
         id: BuildJobId(row.get(0)?),
@@ -474,14 +503,30 @@ fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
                 Box::new(error),
             )
         })?,
+        domain_node_id,
         status,
         handoff,
-        error: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
-        started_at: row.get(7)?,
-        completed_at: row.get(8)?,
+        error: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        started_at: row.get(8)?,
+        completed_at: row.get(9)?,
     })
+}
+
+fn has_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, BuildQueueError> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn emit_queue_changed(
@@ -506,6 +551,8 @@ fn now_unix_seconds() -> i64 {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use rusqlite::params;
 
     use crate::{
         deliver::{
@@ -596,6 +643,49 @@ mod tests {
 
         assert_eq!(recovered, 1);
         assert_eq!(jobs[0].status, BuildJobStatus::Pending);
+    }
+
+    #[test]
+    fn jobs_preserve_domain_node_ids() {
+        let store = BuildQueueStore::open(tempfile_path("queue-domain-node").join("queue.sqlite3"))
+            .expect("queue should open");
+        let project_id = ProjectId::new("domainnode").expect("id should parse");
+        let domain_node_id = crate::plan::domain_map::DomainNodeId::new();
+
+        store
+            .enqueue_with_domain_node(&project_id, handoff("domain"), Some(domain_node_id))
+            .expect("job should enqueue");
+
+        let jobs = store
+            .list_for_project(&project_id)
+            .expect("jobs should list");
+        assert_eq!(jobs[0].domain_node_id, Some(domain_node_id));
+    }
+
+    #[test]
+    fn invalid_domain_node_ids_fail_to_decode() {
+        let store =
+            BuildQueueStore::open(tempfile_path("queue-invalid-domain-node").join("queue.sqlite3"))
+                .expect("queue should open");
+        let project_id = ProjectId::new("invaliddomainnode").expect("id should parse");
+        let job = store
+            .enqueue_with_domain_node(
+                &project_id,
+                handoff("invalid domain"),
+                Some(crate::plan::domain_map::DomainNodeId::new()),
+            )
+            .expect("job should enqueue");
+        store
+            .connection()
+            .expect("connection should open")
+            .execute(
+                "UPDATE build_jobs SET domain_node_id = ?2 WHERE id = ?1",
+                params![job.id.as_str(), "not-a-uuid"],
+            )
+            .expect("job should update");
+
+        let result = store.list_for_project(&project_id);
+        assert!(result.is_err());
     }
 
     #[tokio::test]

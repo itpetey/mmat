@@ -20,6 +20,20 @@ impl Default for DomainNodeId {
     }
 }
 
+impl std::fmt::Display for DomainNodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for DomainNodeId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
+    }
+}
+
 /// Visibility of a knowledge group within a domain tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KnowledgeVisibility {
