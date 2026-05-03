@@ -111,10 +111,11 @@ async fn run_delivery_loop(
             }
             FrontendToDelivery::Enqueue {
                 project_id,
+                domain_node_id,
                 handoff,
             } => {
                 if let Some((store, worker)) = workers.get(&project_id) {
-                    match store.enqueue(&project_id, handoff) {
+                    match store.enqueue_with_domain_node(&project_id, handoff, domain_node_id) {
                         Ok(_) => {
                             refresh_one_queue(&project_id, store, &sender).map_err(|e| {
                                 format!("Failed to refresh queue for project {project_id}: {e}")

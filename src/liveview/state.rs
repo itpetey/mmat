@@ -247,6 +247,9 @@ impl From<&FrontendEvent> for UiEvent {
             | FrontendEvent::AssistantReasoningDelta { .. }
             | FrontendEvent::AssistantMessageDelta { .. }
             | FrontendEvent::AssistantResponseCompleted { .. }
+            | FrontendEvent::DomainNodeAssistantMessageDelta { .. }
+            | FrontendEvent::DomainNodeAssistantReasoningDelta { .. }
+            | FrontendEvent::DomainNodeAssistantResponseCompleted { .. }
             | FrontendEvent::HumanPrompt { .. }
             | FrontendEvent::RunSummary(_)
             | FrontendEvent::DomainTreeUpdated
@@ -784,6 +787,151 @@ impl UiState {
             if let Some(conversation) = conversation {
                 self.persist_project_conversation(project_id, &conversation);
             }
+            self.bump_version();
+        }
+    }
+
+    pub fn record_project_domain_assistant_message_delta(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        delta: &str,
+    ) {
+        if delta.is_empty() {
+            return;
+        }
+
+        let trimmed = delta.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return;
+        }
+
+        let mut states = self.project_states.lock();
+        let domain = states
+            .entry(project_id.clone())
+            .or_default()
+            .domain_states
+            .entry(node_id)
+            .or_default();
+        let conv = &mut domain.conversation_history;
+        if let Some(ConversationEntry::AssistantMessage {
+            text,
+            complete: false,
+        }) = conv.back_mut()
+        {
+            text.push_str(delta);
+        } else {
+            Self::push_conversation_entry_locked(
+                conv,
+                ConversationEntry::AssistantMessage {
+                    text: delta.to_string(),
+                    complete: false,
+                },
+            );
+        }
+        drop(states);
+        self.bump_version();
+    }
+
+    pub fn record_project_domain_assistant_reasoning_delta(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+        delta: &str,
+    ) {
+        if delta.is_empty() {
+            return;
+        }
+
+        let mut states = self.project_states.lock();
+        let domain = states
+            .entry(project_id.clone())
+            .or_default()
+            .domain_states
+            .entry(node_id)
+            .or_default();
+        let conv = &mut domain.conversation_history;
+        if let Some(ConversationEntry::AssistantReasoning {
+            text,
+            complete: false,
+        }) = conv.back_mut()
+        {
+            text.push_str(delta);
+        } else {
+            Self::push_conversation_entry_locked(
+                conv,
+                ConversationEntry::AssistantReasoning {
+                    text: delta.to_string(),
+                    complete: false,
+                },
+            );
+        }
+        drop(states);
+        self.bump_version();
+    }
+
+    pub fn finish_project_domain_assistant_reasoning(
+        &self,
+        project_id: &ProjectId,
+        node_id: DomainNodeId,
+    ) {
+        let mut states = self.project_states.lock();
+        let domain = states
+            .entry(project_id.clone())
+            .or_default()
+            .domain_states
+            .entry(node_id)
+            .or_default();
+        let conv = &mut domain.conversation_history;
+        let mut changed = false;
+
+        if let Some(index) = conv.iter().rposition(|entry| {
+            matches!(
+                entry,
+                ConversationEntry::AssistantReasoning {
+                    complete: false,
+                    ..
+                }
+            )
+        }) {
+            let remove_entry = matches!(
+                conv.get(index),
+                Some(ConversationEntry::AssistantReasoning {
+                    text,
+                    complete: false,
+                }) if text.trim().is_empty()
+            );
+
+            if remove_entry {
+                conv.remove(index);
+                changed = true;
+            } else if let Some(ConversationEntry::AssistantReasoning { complete, .. }) =
+                conv.get_mut(index)
+                && !*complete
+            {
+                *complete = true;
+                changed = true;
+            }
+        }
+
+        if let Some(index) = conv.iter().rposition(|entry| {
+            matches!(
+                entry,
+                ConversationEntry::AssistantMessage {
+                    complete: false,
+                    ..
+                }
+            )
+        }) && let Some(ConversationEntry::AssistantMessage { complete, .. }) =
+            conv.get_mut(index)
+            && !*complete
+        {
+            *complete = true;
+            changed = true;
+        }
+
+        drop(states);
+        if changed {
             self.bump_version();
         }
     }

@@ -1,5 +1,4 @@
 use std::{
-    convert::Infallible,
     env,
     fmt::{Debug, Display},
     fs,
@@ -8,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use naaf_core::{PhaseId, Pipeline, Route, Step, StepError, StepReport, task_fn};
+use naaf_core::{PhaseId, Pipeline, Route, Step, StepError, task_fn};
 use naaf_llm::{
     CompletionRequest, ExecutionOutcome, Executor, ExecutorError, HumanIO, LlmAgent, LlmClient,
     OpenAiClient, OpenAiConfig, OpenAiStreamObserver, TaskError,
@@ -117,11 +116,11 @@ enum WorkflowRunResult {
     },
 }
 
-pub struct GreenfieldReport {
-    run_id: uuid::Uuid,
-    result: WorkflowRunResult,
-    step_report: StepReport<WorkflowFinding>,
-    design_handoff: Option<DesignHandoff>,
+pub struct DomainMappedReport {
+    pub run_id: uuid::Uuid,
+    pub tree: domain_map::DomainTree,
+    pub delivery_graph: crate::deliver::DeliveryGraph,
+    pub node_handoffs: std::collections::HashMap<domain_map::DomainNodeId, DesignHandoff>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,27 +310,6 @@ impl std::fmt::Display for WorkflowStageId {
     }
 }
 
-impl GreenfieldReport {
-    pub fn run_id(&self) -> uuid::Uuid {
-        self.run_id
-    }
-
-    pub fn attempt_count(&self) -> usize {
-        self.step_report.attempt_count()
-    }
-
-    pub fn outcome_label(&self) -> &'static str {
-        match &self.result {
-            WorkflowRunResult::ReadyForPlanning { .. } => "ready-for-planning",
-            WorkflowRunResult::NeedsRevision { .. } => "needs-revision",
-        }
-    }
-
-    pub fn design_handoff(&self) -> Option<DesignHandoff> {
-        self.design_handoff.clone()
-    }
-}
-
 macro_rules! map_step_error {
     ($error:expr) => {
         match $error {
@@ -348,7 +326,7 @@ pub async fn greenfield<R>(
     init_prompt: String,
     runtime: R,
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
-) -> Result<GreenfieldReport, MmatError>
+) -> Result<DomainMappedReport, MmatError>
 where
     R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
@@ -362,7 +340,7 @@ pub async fn greenfield_for_project<R>(
     runtime: R,
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
     project: &ProjectConfig,
-) -> Result<GreenfieldReport, MmatError>
+) -> Result<DomainMappedReport, MmatError>
 where
     R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
@@ -376,7 +354,7 @@ pub async fn greenfield_with_knowledge_config<R>(
     runtime: R,
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
     knowledge_config: KnowledgeRuntimeConfig,
-) -> Result<GreenfieldReport, MmatError>
+) -> Result<DomainMappedReport, MmatError>
 where
     R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
@@ -389,41 +367,73 @@ where
     let agent = LlmAgent::new(oai_client);
     let knowledge_store = Arc::new(knowledge_config.open_store()?);
     let knowledge_backend = Arc::new(knowledge_config.qdrant_backend::<R>());
-    let plan = build_greenfield_step::<OpenAiClient<R>, R, Infallible>(
-        &agent,
-        knowledge_store,
-        knowledge_backend,
-        knowledge_config.qdrant_collection_prefix.clone(),
-        knowledge_config.workspace_root.clone(),
-    );
+    let workspace_root = knowledge_config.workspace_root.clone();
+    let prefix = knowledge_config.qdrant_collection_prefix.clone();
 
-    let traced = plan
-        .run_traced(
-            &runtime,
-            discovery::DiscoveryInput::new(init_prompt.clone()),
-        )
-        .await
-        .map_err(|error| MmatError::Workflow(error.to_string()))?;
-    let (result, step_report) = traced.into_parts();
-    let run_id = uuid::Uuid::new_v4();
-    let design_handoff = match &result {
-        WorkflowRunResult::ReadyForPlanning {
+    let mut tree = domain_map::DomainTree::new("Project", &init_prompt);
+    let root_id = tree.root;
+
+    let discovery_step = discovery::step_with_repository_tools(&agent, workspace_root.clone())
+        .map_findings(WorkflowFinding::from);
+
+    let leaves = recursive_discover(&mut tree, root_id, &runtime, |rt, input| {
+        let discovery_step = discovery_step.clone();
+        Box::pin(async move {
+            discovery_step
+                .run(rt, input)
+                .await
+                .map_err(|e| MmatError::Workflow(e.to_string()))
+        })
+    })
+    .await?;
+
+    let mut node_handoffs = std::collections::HashMap::new();
+
+    for leaf_id in leaves {
+        let node = tree
+            .get(leaf_id)
+            .ok_or_else(|| MmatError::Workflow("leaf node not found".to_string()))?;
+
+        let Some(discovery_output) = node.discovery_output.clone() else {
+            continue;
+        };
+
+        let sub_domain_pipeline = build_sub_domain_pipeline(
+            &agent,
+            knowledge_store.clone(),
+            knowledge_backend.clone(),
+            prefix.clone(),
+            workspace_root.clone(),
+        );
+
+        let result = sub_domain_pipeline
+            .run(&runtime, discovery_output)
+            .await
+            .map_err(|e| MmatError::Workflow(e.to_string()))?;
+
+        if let WorkflowRunResult::ReadyForPlanning {
             architect_plan,
             knowledge_collections,
-        } => Some(DesignHandoff {
-            design_run_id: run_id,
-            prompt: init_prompt,
-            architect_plan: serde_json::to_string(architect_plan)?,
-            knowledge_collections: knowledge_collections.clone(),
-        }),
-        WorkflowRunResult::NeedsRevision { .. } => None,
-    };
+        } = result
+        {
+            let handoff = DesignHandoff {
+                design_run_id: uuid::Uuid::new_v4(),
+                prompt: format!("{}: {}", node.name, node.description),
+                architect_plan: serde_json::to_string(&architect_plan)?,
+                knowledge_collections,
+            };
+            node_handoffs.insert(leaf_id, handoff);
+        }
+    }
 
-    Ok(GreenfieldReport {
-        run_id,
-        result,
-        step_report,
-        design_handoff,
+    let delivery_graph = crate::deliver::DeliveryGraph::from_domain_tree(&tree)
+        .map_err(|e| MmatError::Workflow(e.to_string()))?;
+
+    Ok(DomainMappedReport {
+        run_id: uuid::Uuid::new_v4(),
+        tree,
+        delivery_graph,
+        node_handoffs,
     })
 }
 
@@ -503,8 +513,7 @@ pub(crate) fn model_context_window(model: &str) -> usize {
 /// must return a future that resolves to a [`DiscoveryOutput`].
 ///
 /// Returns the ids of any newly created leaf nodes.
-#[allow(dead_code)]
-pub(super) async fn recursive_discover<'a, R, F, Fut>(
+pub(crate) async fn recursive_discover<'a, R, F, Fut>(
     tree: &'a mut domain_map::DomainTree,
     start_node_id: domain_map::DomainNodeId,
     runtime: &'a R,
@@ -666,13 +675,18 @@ where
         .expect("delivery pipeline should be valid")
 }
 
-fn build_greenfield_pipeline<C, R, E>(
+#[allow(clippy::type_complexity)]
+fn build_planning_steps<C, R, E>(
     agent: &LlmAgent<C, R, E>,
     knowledge_store: Arc<SqliteKnowledgeGroupStore>,
     knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
     knowledge_collection_prefix: String,
     workspace_root: PathBuf,
-) -> Pipeline<R, WorkflowTaskError<C, R, E>>
+) -> (
+    WorkflowStep<C, R, E, discovery::DiscoveryOutput, KnowledgeMaterialisationOutput>,
+    WorkflowStep<C, R, E, KnowledgeMaterialisationOutput, SolutionChoiceContext>,
+    WorkflowStep<C, R, E, SolutionChoiceContext, WorkflowRunResult>,
+)
 where
     C: LlmClient<Runtime = R> + Clone + 'static,
     C::Error: Debug + Display + 'static,
@@ -680,9 +694,6 @@ where
     R::Error: Debug + Display + 'static,
     E: Debug + Display + 'static,
 {
-    let discovery = discovery::step_with_repository_tools(agent, workspace_root.clone())
-        .map_findings(WorkflowFinding::from);
-
     let knowledge_planning = knowledge::step_with_lint(
         agent,
         knowledge_store.clone(),
@@ -799,55 +810,7 @@ where
 
     let finalise = finalise_choice_step::<C, R, E>(architect);
 
-    Pipeline::builder()
-        .add_step(PhaseId::new("discovery"), discovery)
-        .with_route(PhaseId::new("discovery"), Route::next("knowledge"))
-        .add_step(PhaseId::new("knowledge"), knowledge_materialisation)
-        .with_route(PhaseId::new("knowledge"), Route::next("solutions"))
-        .add_step(PhaseId::new("solutions"), solutions_phase)
-        .with_route(PhaseId::new("solutions"), Route::next("finalise"))
-        .add_step(PhaseId::new("finalise"), finalise)
-        .with_route(PhaseId::new("finalise"), Route::halt())
-        .with_initial(PhaseId::new("discovery"))
-        .build()
-        .expect("greenfield pipeline should be valid")
-}
-
-fn build_greenfield_step<C, R, E>(
-    agent: &LlmAgent<C, R, E>,
-    knowledge_store: Arc<SqliteKnowledgeGroupStore>,
-    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
-    knowledge_collection_prefix: String,
-    workspace_root: PathBuf,
-) -> WorkflowStep<C, R, E, discovery::DiscoveryInput, WorkflowRunResult>
-where
-    C: LlmClient<Runtime = R> + Clone + 'static,
-    C::Error: Debug + Display + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + Display + 'static,
-    E: Debug + Display + 'static,
-{
-    let pipeline = build_greenfield_pipeline(
-        agent,
-        knowledge_store,
-        knowledge_backend,
-        knowledge_collection_prefix,
-        workspace_root,
-    );
-    let pipeline = std::sync::Arc::new(pipeline);
-
-    Step::builder(task_fn(
-        move |runtime: &R, input: discovery::DiscoveryInput| {
-            let pipeline = std::sync::Arc::clone(&pipeline);
-            Box::pin(async move {
-                pipeline.run(runtime, input).await.map_err(|error| {
-                    TaskError::Build(WorkflowBuildError::Workflow(error.to_string()))
-                })
-            })
-        },
-    ))
-    .with_findings::<WorkflowFinding>()
-    .build()
+    (knowledge_materialisation, solutions_phase, finalise)
 }
 
 /// Builds a planning pipeline for a single sub-domain (leaf node) that runs
@@ -855,7 +818,6 @@ where
 ///
 /// This is a subset of the full greenfield pipeline scoped to one domain
 /// node. Discovery is assumed to have already produced the node's context.
-#[allow(dead_code)]
 fn build_sub_domain_pipeline<C, R, E>(
     agent: &LlmAgent<C, R, E>,
     knowledge_store: Arc<SqliteKnowledgeGroupStore>,
@@ -870,13 +832,24 @@ where
     R::Error: Debug + Display + 'static,
     E: Debug + Display + 'static,
 {
-    build_greenfield_pipeline(
+    let (knowledge_materialisation, solutions_phase, finalise) = build_planning_steps(
         agent,
         knowledge_store,
         knowledge_backend,
         knowledge_collection_prefix,
         workspace_root,
-    )
+    );
+
+    Pipeline::builder()
+        .add_step(PhaseId::new("knowledge"), knowledge_materialisation)
+        .with_route(PhaseId::new("knowledge"), Route::next("solutions"))
+        .add_step(PhaseId::new("solutions"), solutions_phase)
+        .with_route(PhaseId::new("solutions"), Route::next("finalise"))
+        .add_step(PhaseId::new("finalise"), finalise)
+        .with_route(PhaseId::new("finalise"), Route::halt())
+        .with_initial(PhaseId::new("knowledge"))
+        .build()
+        .expect("sub-domain pipeline should be valid")
 }
 
 /// Collects public knowledge group collection names from all transitive

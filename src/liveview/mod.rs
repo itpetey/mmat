@@ -7,8 +7,8 @@ pub use server::{
 };
 pub use state::{
     BuildJobSnapshot, ComposerMode, ConversationEntry, ConversationHistoryError,
-    ConversationHistoryStore, PendingPrompt, PendingPromptSnapshot, ProjectPrompt,
-    ProjectWorkerSnapshot, RunSummary, UiEvent, UiEventEntry, UiSnapshot, UiState,
+    ConversationHistoryStore, DomainNodeUiSnapshot, PendingPrompt, PendingPromptSnapshot,
+    ProjectPrompt, ProjectWorkerSnapshot, RunSummary, UiEvent, UiEventEntry, UiSnapshot, UiState,
 };
 pub use translator::spawn_event_translator;
 

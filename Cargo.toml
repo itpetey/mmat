@@ -20,15 +20,15 @@ dioxus = { version = "0.7", features = ["liveview", "server"] }
 dioxus-liveview = { version = "0.7", features = ["axum"] }
 futures = { version = "0.3", features = ["alloc", "std"] }
 ipc-channel = "0.21"
-naaf-core = { path = "../../naaf/main/crates/core" }
-naaf-knowledge = { path = "../../naaf/main/crates/knowledge" }
-naaf-llm = { path = "../../naaf/main/crates/llm", features = [
+naaf-core = { git = "https://github.com/itpetey/naaf" }
+naaf-knowledge = { git = "https://github.com/itpetey/naaf" }
+naaf-llm = { git = "https://github.com/itpetey/naaf", features = [
   "openai",
   "web-search"
 ] }
-naaf-persistence-sqlite = { path = "../../naaf/main/crates/persistence-sqlite" }
-naaf-qdrant = { path = "../../naaf/main/crates/qdrant" }
-naaf-workspace = { path = "../../naaf/main/crates/workspace" }
+naaf-persistence-sqlite = { git = "https://github.com/itpetey/naaf" }
+naaf-qdrant = { git = "https://github.com/itpetey/naaf" }
+naaf-workspace = { git = "https://github.com/itpetey/naaf" }
 parking_lot = "0.12"
 pulldown-cmark = "0.13"
 rusqlite = "0.39"

@@ -52,6 +52,7 @@ pub struct DomainNode {
     pub knowledge_collections: Vec<String>,
     pub knowledge_visibility: KnowledgeVisibility,
     pub status: DomainNodeStatus,
+    pub(crate) discovery_output: Option<super::discovery::DiscoveryOutput>,
 }
 
 /// Configuration controlling domain tree construction and behaviour.
@@ -122,6 +123,7 @@ impl DomainTree {
             knowledge_collections: Vec::new(),
             knowledge_visibility: KnowledgeVisibility::Public,
             status: DomainNodeStatus::Discovering,
+            discovery_output: None,
         };
         let mut nodes = HashMap::new();
         nodes.insert(root_id, root);
@@ -185,6 +187,7 @@ impl DomainTree {
             knowledge_collections: Vec::new(),
             knowledge_visibility: KnowledgeVisibility::Private,
             status: DomainNodeStatus::Discovering,
+            discovery_output: None,
         };
 
         self.nodes.insert(child_id, child);
@@ -217,11 +220,11 @@ impl DomainTree {
                 }
             }
 
-            if let Some(node) = self.nodes.get_mut(&node_id)
-                && output.ready_for_solution
-                && new_children.is_empty()
-            {
-                node.status = DomainNodeStatus::Ready;
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                node.discovery_output = Some(output.clone());
+                if output.ready_for_solution && new_children.is_empty() {
+                    node.status = DomainNodeStatus::Ready;
+                }
             }
         }
         new_children

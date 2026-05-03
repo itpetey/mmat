@@ -81,6 +81,18 @@ pub enum FrontendEvent {
     AssistantResponseCompleted {
         message: Option<String>,
     },
+    DomainNodeAssistantMessageDelta {
+        node_id: String,
+        delta: String,
+    },
+    DomainNodeAssistantReasoningDelta {
+        node_id: String,
+        delta: String,
+    },
+    DomainNodeAssistantResponseCompleted {
+        node_id: String,
+        message: Option<String>,
+    },
     ToolCallStarted {
         name: String,
         arguments: String,
@@ -170,6 +182,15 @@ impl fmt::Display for FrontendEvent {
             Self::AssistantReasoningDelta { .. } => write!(f, "assistant reasoning delta"),
             Self::AssistantMessageDelta { .. } => write!(f, "assistant message delta"),
             Self::AssistantResponseCompleted { .. } => write!(f, "assistant response completed"),
+            Self::DomainNodeAssistantMessageDelta { node_id, .. } => {
+                write!(f, "domain node {node_id} message delta")
+            }
+            Self::DomainNodeAssistantReasoningDelta { node_id, .. } => {
+                write!(f, "domain node {node_id} reasoning delta")
+            }
+            Self::DomainNodeAssistantResponseCompleted { node_id, .. } => {
+                write!(f, "domain node {node_id} response completed")
+            }
             Self::ToolCallStarted { name, .. } => write!(f, "tool call started: {name}"),
             Self::HumanPrompt { question, .. } => write!(f, "? {question}"),
             Self::RunSummary(summary) => write!(

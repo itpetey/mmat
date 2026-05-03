@@ -5,8 +5,8 @@ use ipc_channel::ipc::IpcOneShotServer;
 use mmat::{
     deliver::ipc::{DeliveryHandshake, DeliveryToFrontend, FrontendSender, FrontendToDelivery},
     liveview::{
-        ConversationHistoryStore, FrontendEvent, LiveViewAppBuilder, RunSummaryEvent, UiState,
-        init_liveview_tracing, spawn_event_translator,
+        ConversationHistoryStore, DomainNodeUiSnapshot, FrontendEvent, LiveViewAppBuilder,
+        RunSummaryEvent, UiState, init_liveview_tracing, spawn_event_translator,
     },
     plan,
     project::{ProjectConfig, ProjectId, ProjectRegistryStore},
@@ -223,6 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = run_workflow_when_prompted(
         instruction_rx,
         event_tx.clone(),
+        ui_state.clone(),
         registry_store,
         delivery.sender.clone(),
     );
@@ -256,6 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_workflow_when_prompted(
     instruction_rx: mmat::liveview::InstructionReceiver,
     event_tx: mmat::liveview::EventSender,
+    ui_state: Arc<UiState>,
     registry_store: Arc<ProjectRegistryStore>,
     delivery_sender: FrontendSender,
 ) {
@@ -301,35 +303,63 @@ async fn run_workflow_when_prompted(
 
     match result {
         Ok(report) => {
-            if let Some(handoff) = report.design_handoff()
-                && let Err(error) = delivery_sender.send(FrontendToDelivery::Enqueue {
-                    project_id: project_id.clone(),
-                    handoff,
+            let tree_nodes: Vec<DomainNodeUiSnapshot> = report
+                .tree
+                .nodes
+                .values()
+                .map(|node| DomainNodeUiSnapshot {
+                    node_id: node.id,
+                    name: node.name.clone(),
+                    status: format!("{:?}", node.status).to_ascii_lowercase(),
+                    phase: match node.status {
+                        crate::plan::domain_map::DomainNodeStatus::Ready
+                        | crate::plan::domain_map::DomainNodeStatus::KnowledgeMaterialised
+                        | crate::plan::domain_map::DomainNodeStatus::SolutionsCollected
+                        | crate::plan::domain_map::DomainNodeStatus::SolutionChosen
+                        | crate::plan::domain_map::DomainNodeStatus::ArchitectComplete
+                        | crate::plan::domain_map::DomainNodeStatus::Delivering
+                        | crate::plan::domain_map::DomainNodeStatus::Complete => {
+                            "Ready".to_string()
+                        }
+                        _ => "Discovery".to_string(),
+                    },
+                    depth: node.depth,
                 })
-            {
-                send_log(
-                    &event_tx,
-                    &project_id,
-                    tracing::Level::ERROR,
-                    format!("Delivery enqueue failed: {error}"),
-                );
+                .collect();
+
+            ui_state.set_project_domain_tree_nodes(&project_id, tree_nodes);
+            ui_state.set_project_delivery_graph(&project_id, Some(report.delivery_graph));
+
+            for (node_id, handoff) in &report.node_handoffs {
+                if let Err(error) = delivery_sender.send(FrontendToDelivery::Enqueue {
+                    project_id: project_id.clone(),
+                    domain_node_id: Some(*node_id),
+                    handoff: handoff.clone(),
+                }) {
+                    send_log(
+                        &event_tx,
+                        &project_id,
+                        tracing::Level::ERROR,
+                        format!("Delivery enqueue failed: {error}"),
+                    );
+                }
             }
+
             send_summary(
                 &event_tx,
                 &project,
                 &prompt,
                 "completed",
                 "knowledge-planning",
-                Some(format!("Workflow run {} completed.", report.run_id())),
+                Some(format!("Domain-mapped run {} completed.", report.run_id)),
             );
             send_log(
                 &event_tx,
                 &project_id,
                 tracing::Level::INFO,
                 format!(
-                    "Plan completed as {} after {} step attempt(s).",
-                    report.outcome_label(),
-                    report.attempt_count()
+                    "Plan completed with {} sub-domain handoff(s).",
+                    report.node_handoffs.len()
                 ),
             );
         }

@@ -22,6 +22,7 @@ pub enum FrontendToDelivery {
     RegisterProjects(Vec<ProjectConfig>),
     Enqueue {
         project_id: ProjectId,
+        domain_node_id: Option<crate::plan::domain_map::DomainNodeId>,
         handoff: DesignHandoff,
     },
     RefreshQueues,
@@ -101,6 +102,7 @@ mod tests {
         sender
             .send(FrontendToDelivery::Enqueue {
                 project_id,
+                domain_node_id: None,
                 handoff: crate::plan::DesignHandoff {
                     design_run_id: uuid::Uuid::new_v4(),
                     prompt: "Ship it".to_string(),

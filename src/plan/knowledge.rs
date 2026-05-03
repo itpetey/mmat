@@ -1411,6 +1411,7 @@ mod tests {
                 .collect(),
             knowledge_visibility: crate::plan::domain_map::KnowledgeVisibility::Public,
             status: crate::plan::domain_map::DomainNodeStatus::Replanning,
+            discovery_output: None,
         };
 
         let deleted = cleanup_node_knowledge_groups(&store, &node)
@@ -1441,6 +1442,7 @@ mod tests {
             knowledge_collections: Vec::new(),
             knowledge_visibility: crate::plan::domain_map::KnowledgeVisibility::Public,
             status: crate::plan::domain_map::DomainNodeStatus::Replanning,
+            discovery_output: None,
         };
 
         let deleted = cleanup_node_knowledge_groups(&store, &node)

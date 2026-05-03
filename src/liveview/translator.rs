@@ -124,6 +124,60 @@ fn dispatch_event(
                 ui_state.finish_assistant_reasoning();
             }
         }
+        FrontendEvent::DomainNodeAssistantMessageDelta { node_id, delta } => {
+            if let Ok(node_id) = node_id.parse() {
+                if let Some(project_id) = &project_id {
+                    ui_state
+                        .record_project_domain_assistant_message_delta(project_id, node_id, &delta);
+                } else {
+                    let active_project = ui_state.active_project();
+                    ui_state.record_project_domain_assistant_message_delta(
+                        &active_project.id,
+                        node_id,
+                        &delta,
+                    );
+                }
+            }
+        }
+        FrontendEvent::DomainNodeAssistantReasoningDelta { node_id, delta } => {
+            if let Ok(node_id) = node_id.parse() {
+                if let Some(project_id) = &project_id {
+                    ui_state.record_project_domain_assistant_reasoning_delta(
+                        project_id, node_id, &delta,
+                    );
+                } else {
+                    let active_project = ui_state.active_project();
+                    ui_state.record_project_domain_assistant_reasoning_delta(
+                        &active_project.id,
+                        node_id,
+                        &delta,
+                    );
+                }
+            }
+        }
+        FrontendEvent::DomainNodeAssistantResponseCompleted { node_id, message } => {
+            if let Ok(node_id) = node_id.parse() {
+                if let Some(message) = message {
+                    if let Some(project_id) = &project_id {
+                        ui_state
+                            .record_project_domain_assistant_message(project_id, node_id, message);
+                    } else {
+                        let active_project = ui_state.active_project();
+                        ui_state.record_project_domain_assistant_message(
+                            &active_project.id,
+                            node_id,
+                            message,
+                        );
+                    }
+                }
+                if let Some(project_id) = &project_id {
+                    ui_state.finish_project_domain_assistant_reasoning(project_id, node_id);
+                } else {
+                    let active_project = ui_state.active_project();
+                    ui_state.finish_project_domain_assistant_reasoning(&active_project.id, node_id);
+                }
+            }
+        }
         FrontendEvent::ToolCallStarted { name, arguments } => {
             if let Some(project_id) = &project_id {
                 ui_state.record_project_tool_use(project_id, name, arguments);
