@@ -75,11 +75,19 @@
 
 ## 8. MMAT UI updates
 
-- [ ] 8.1 Implement tab-based sub-domain discovery in LiveView UI
-- [ ] 8.2 Implement domain tree visualisation component
-- [ ] 8.3 Implement delivery graph progress visualisation component
-- [ ] 8.4 Implement backflow notification in UI
-- [ ] 8.5 Add UI tests for tab management, domain tree navigation
+**Strategy**: In-app tabs with 3-column shell (left sidebar, centre tabbed content, right detail panel). Projects with a domain tree render the multi-column layout; projects without render the existing single-column layout. All existing conversation rendering and state management patterns are preserved.
+
+- [ ] 8.1 Extend `UiState` and `UiSnapshot` with domain tree, delivery graph, sub-domain state, backflow notifications, and tab management fields. All new fields are optional so existing single-project flow works unchanged.
+- [ ] 8.2 Add new `FrontendEvent` variants: `DomainTreeUpdated`, `DomainNodePhaseChanged`, `BackflowStarted`, `BackflowCascade`, `BackflowResolved`, `BackflowHalting`, `DeliveryGraphUpdated`, `DeliveryBatchStarted`, `DeliveryBatchCompleted`.
+- [ ] 8.3 Add CSS for multi-domain 3-column shell (`.mmat-multi-domain` class), tab bar, domain tree with status badges, delivery graph with batch layers, backflow banner with severity colours, and right detail panel.
+- [ ] 8.4 Implement `TabBar` and `TabPanel` components — in-app tabs for sub-domain conversations with tab ordering, close support, backflow highlighting, and state preservation across tab switches.
+- [ ] 8.5 Implement `DomainTree` sidebar component — nested indent tree with per-node status badges, click-to-focus-tab navigation, and empty-tree placeholder.
+- [ ] 8.6 Implement `DeliveryGraph` mini-view component — batch layers with colour-coded job nodes, active batch highlighting, and pending placeholder.
+- [ ] 8.7 Implement `BackflowBanner` component — severity-coloured alert above affected sub-domain's conversation with cascade info and halt-on-exhausted notice.
+- [ ] 8.8 Implement `PipelinePhaseIndicator` breadcrumb component — shows per-sub-domain pipeline stage with current highlight, completed/pending states, and backflow retrace path.
+- [ ] 8.9 Implement `RightDetailPanel` component — collapsible contextual panel showing node status, phase, depth, knowledge group counts, dependents, and backflow history.
+- [ ] 8.10 Update `RootApp` to conditionally render multi-domain shell or single-column shell based on presence of `domain_tree`.
+- [ ] 8.11 Add UI tests for tab management (open, close, switch, preserve state), domain tree navigation, backflow banner display, and multi-column vs single-column layout switch.
 
 ## 9. Verification
 

@@ -25,7 +25,7 @@ The `Pipeline` primitive subsumes both: typed phases, declared routes, cycle sup
 - Tab-based UI for parallel sub-domain discovery.
 
 **Non-Goals:**
-- Recreating the Dioxus frontend from scratch. UI changes are incremental tab support.
+- Recreating the Dioxus frontend from scratch. UI changes are incremental — adding a 3-column shell, in-app tabs, and new visualisation components while preserving all existing conversation rendering, state management, and single-project flows.
 - Automatic sub-domain boundary detection from code. Domain mapping is LLM-driven, not static analysis.
 
 ## Decisions
@@ -91,14 +91,14 @@ The intra-step combinators (`.map()`, `.map_input()`, `.map_with_input()`, `.map
 **Alternatives considered**:
 - Separate backflow queue/message bus. Rejected — adds infrastructure complexity for something Pipeline already handles.
 
-### 7. Tab-based parallel discovery UI
+### 7. In-app tab-based parallel discovery UI with 3-column shell
 
-**Choice**: Each active sub-domain discovery session renders in its own browser tab. The user switches between tabs to answer questions. Completed sessions close their tabs. The domain tree is a navigable sidebar.
+**Choice**: Each active sub-domain discovery session renders in its own in-app tab within a 3-column shell. The left sidebar shows the domain tree (navigable, with status badges) and a mini delivery graph. The centre panel has a tab bar with one tab per active sub-domain conversation. The right panel shows contextual per-node details. Projects without a domain tree continue to use the existing single-column layout.
 
-**Rationale**: Human context switching is the bottleneck in parallel discovery. Tabs preserve state per sub-domain so the user can resume thinking about one sub-domain without losing context on another. The user explicitly chose this over sequential discovery.
+**Rationale**: In-app tabs share a single Dioxus LiveView session (one WebSocket), giving all tabs access to the domain tree, delivery graph, and shared state via `Arc<UiState>`. This avoids the complexity of cross-session state sharing that browser tabs would require in a LiveView architecture. The 3-column shell keeps project-level context (domain tree, delivery progress) visible while the user focuses on one sub-domain at a time in the centre panel.
 
 **Alternatives considered**:
-- Single-page multi-panel. Rejected — would require the user to keep multiple discovery contexts in working memory simultaneously.
+- Browser tabs (one per sub-domain discovery session). Rejected — Dioxus LiveView requires a separate WebSocket per browser tab, making cross-tab state sharing complex and losing the persistent sidebar context. In-app tabs provide the same UX benefit (preserved per-sub-domain state) without the LiveView session overhead.
 
 ## Risks / Trade-offs
 
@@ -123,7 +123,7 @@ The intra-step combinators (`.map()`, `.map_input()`, `.map_with_input()`, `.map
 7. **Migrate `build_greenfield_step`** — Remove the static Step chain, replace with Pipeline.
 8. **Implement graph-based delivery** — Multi-job scheduling in `deliver/queue.rs`.
 9. **Implement architectural backflow** — BackflowEvent types and Pipeline routing, including cascading replanning that deletes orphaned knowledge groups.
-10. **Update MMAT UI** — Tab-based discovery, domain tree, delivery graph.
+10. **Update MMAT UI** — Extend `UiState`/`UiSnapshot` with domain tree, delivery graph, and backflow fields. Add CSS for 3-column shell. Build in-app tab components, domain tree sidebar, delivery graph mini-view, backflow banner, pipeline phase indicator, and right detail panel. Update `RootApp` to render conditionally.
 11. **Verify** — Run all tests, lint, format. Validate end-to-end flow with a multi-sub-domain test project.
 
 Rollback is possible at any stage because Pipeline is additive. The old Step chain and Workflow can be preserved until the Pipeline replacement is verified.
