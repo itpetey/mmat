@@ -1181,6 +1181,30 @@ fn default_conversation_history_path() -> Result<PathBuf, ConversationHistoryErr
         .join("conversations.sqlite3"))
 }
 
+fn domain_state_snapshot(node_id: DomainNodeId, state: &DomainUiState) -> DomainUiStateSnapshot {
+    let pending_prompt = state
+        .pending_prompt
+        .as_ref()
+        .map(|prompt| PendingPromptSnapshot {
+            question: prompt.question.clone(),
+            choices: prompt.choices.clone(),
+        });
+    let composer_mode = if pending_prompt.is_some() {
+        ComposerMode::Reply
+    } else {
+        ComposerMode::Working
+    };
+
+    DomainUiStateSnapshot {
+        node_id,
+        conversation: state.conversation_history.clone(),
+        pending_prompt,
+        composer_mode,
+        run_summary: state.run_summary.clone(),
+        phase: state.phase.clone(),
+    }
+}
+
 fn now_unix_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1217,30 +1241,6 @@ fn worker_summary(
             })
         })
         .collect()
-}
-
-fn domain_state_snapshot(node_id: DomainNodeId, state: &DomainUiState) -> DomainUiStateSnapshot {
-    let pending_prompt = state
-        .pending_prompt
-        .as_ref()
-        .map(|prompt| PendingPromptSnapshot {
-            question: prompt.question.clone(),
-            choices: prompt.choices.clone(),
-        });
-    let composer_mode = if pending_prompt.is_some() {
-        ComposerMode::Reply
-    } else {
-        ComposerMode::Working
-    };
-
-    DomainUiStateSnapshot {
-        node_id,
-        conversation: state.conversation_history.clone(),
-        pending_prompt,
-        composer_mode,
-        run_summary: state.run_summary.clone(),
-        phase: state.phase.clone(),
-    }
 }
 
 #[cfg(test)]

@@ -19,17 +19,17 @@ use thiserror::Error;
 
 use crate::{MmatError, project::ProjectConfig};
 
-mod architect;
-mod backflow;
-mod discovery;
-pub mod domain_map;
-mod knowledge;
-pub mod parser;
-mod solutions;
-
 pub use backflow::{
     BackflowApplication, BackflowCascade, BackflowEvent, BackflowRouteTarget, BackflowSeverity,
 };
+
+mod architect;
+mod backflow;
+mod discovery;
+mod knowledge;
+mod solutions;
+pub mod domain_map;
+pub mod parser;
 
 type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 type WorkflowTaskError<C, R, E> = TaskError<
@@ -48,39 +48,8 @@ const DEFAULT_EMBEDDING_DIMENSION: usize = 1536;
 const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
-const MAX_EXECUTOR_RETRIES: usize = 10;
 const INPUT_TOKEN_FRACTION: f64 = 0.75;
-
-/// Returns the provider's advertised context-window size for the given model.
-///
-/// These values are the maximum tokens the model can process in a single
-/// request (input + output combined). The caller should apply
-/// [`input_token_budget_for_model`] to get a safe input-only budget.
-pub(crate) fn model_context_window(model: &str) -> usize {
-    let lower = model.to_ascii_lowercase();
-    if lower.starts_with("gpt-5.5") {
-        1_000_000
-    } else if lower.starts_with("gpt-4o") || lower.starts_with("chatgpt-4o") {
-        128_000
-    } else if lower.starts_with("gpt-4-32k") {
-        32_768
-    } else if lower.starts_with("gpt-4") {
-        8_192
-    } else if lower.starts_with("qwen") {
-        128_000
-    } else {
-        // Conservative default for unknown local / hosted models.
-        128_000
-    }
-}
-
-/// Returns a safe input-token budget for the given model.
-///
-/// This is a fraction of the model's full context window, leaving headroom
-/// for the model's output and provider formatting overhead.
-pub(crate) fn input_token_budget_for_model(model: &str) -> usize {
-    (model_context_window(model) as f64 * INPUT_TOKEN_FRACTION) as usize
-}
+const MAX_EXECUTOR_RETRIES: usize = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnowledgeRuntimeConfig {
@@ -173,6 +142,16 @@ struct ArchitectStageInput {
     discovery: discovery::DiscoveryOutput,
     selected_solution: solutions::SelectedSolution,
     materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
+}
+
+/// Output of the delivery phase, encoding either success or a backflow event
+/// that triggers pipeline retreat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliveryPhaseOutput {
+    /// Delivery completed successfully.
+    Delivered,
+    /// Delivery failed and the pipeline must retreat to an earlier phase.
+    Backflow(BackflowEvent),
 }
 
 impl KnowledgeRuntimeConfig {
@@ -353,6 +332,18 @@ impl GreenfieldReport {
     }
 }
 
+macro_rules! map_step_error {
+    ($error:expr) => {
+        match $error {
+            StepError::System { error, .. } => error,
+            StepError::Rejected(report) => TaskError::Build(WorkflowBuildError::Workflow(format!(
+                "step rejected after {} attempts",
+                report.attempt_count()
+            ))),
+        }
+    };
+}
+
 pub async fn greenfield<R>(
     init_prompt: String,
     runtime: R,
@@ -436,6 +427,74 @@ where
     })
 }
 
+pub(crate) async fn execute_with_turn_limit_retry<C, R, E>(
+    executor: &Executor<C, R, E>,
+    runtime: &R,
+    request: CompletionRequest,
+) -> Result<ExecutionOutcome, ExecutorError<C::Error, E>>
+where
+    C: LlmClient<Runtime = R>,
+    C::Error: 'static,
+    E: 'static,
+{
+    let mut delay = Duration::from_millis(EXECUTOR_RETRY_BASE_DELAY_MS);
+    for attempt in 1..=MAX_EXECUTOR_RETRIES {
+        match executor.execute(runtime, request.clone()).await {
+            Ok(result) => return Ok(result),
+            Err(ExecutorError::TurnLimitExceeded { max_turns }) => {
+                if attempt == MAX_EXECUTOR_RETRIES {
+                    return Err(ExecutorError::TurnLimitExceeded { max_turns });
+                }
+                tracing::warn!(
+                    attempt,
+                    max_attempts = MAX_EXECUTOR_RETRIES,
+                    max_turns,
+                    "executor hit turn limit, backing off and retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(ExecutorError::TokenLimitExceeded { max_tokens }) => {
+                // Retrying will not reduce tokens; propagate immediately.
+                return Err(ExecutorError::TokenLimitExceeded { max_tokens });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
+}
+
+/// Returns a safe input-token budget for the given model.
+///
+/// This is a fraction of the model's full context window, leaving headroom
+/// for the model's output and provider formatting overhead.
+pub(crate) fn input_token_budget_for_model(model: &str) -> usize {
+    (model_context_window(model) as f64 * INPUT_TOKEN_FRACTION) as usize
+}
+
+/// Returns the provider's advertised context-window size for the given model.
+///
+/// These values are the maximum tokens the model can process in a single
+/// request (input + output combined). The caller should apply
+/// [`input_token_budget_for_model`] to get a safe input-only budget.
+pub(crate) fn model_context_window(model: &str) -> usize {
+    let lower = model.to_ascii_lowercase();
+    if lower.starts_with("gpt-5.5") {
+        1_000_000
+    } else if lower.starts_with("gpt-4o") || lower.starts_with("chatgpt-4o") {
+        128_000
+    } else if lower.starts_with("gpt-4-32k") {
+        32_768
+    } else if lower.starts_with("gpt-4") {
+        8_192
+    } else if lower.starts_with("qwen") {
+        128_000
+    } else {
+        // Conservative default for unknown local / hosted models.
+        128_000
+    }
+}
+
 /// Recursively discovers sub-domains for a node using an LLM-driven discovery
 /// step, populating the domain tree until all branches reach leaves or the
 /// configured maximum depth.
@@ -496,105 +555,6 @@ where
     Ok(leaves)
 }
 
-/// Collects public knowledge group collection names from all transitive
-/// dependencies of a domain node.
-///
-/// When sub-domain B depends on A, B's planning session should include A's
-/// public knowledge groups. This function walks the dependency graph and
-/// returns the collection names of all public groups from ancestor nodes.
-#[allow(dead_code)]
-fn collect_public_knowledge_for_node(
-    tree: &domain_map::DomainTree,
-    node_id: domain_map::DomainNodeId,
-) -> Vec<String> {
-    let mut collections = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-    let mut stack = vec![node_id];
-
-    while let Some(current_id) = stack.pop() {
-        if !visited.insert(current_id) {
-            continue;
-        }
-
-        if let Some(node) = tree.get(current_id) {
-            if node.knowledge_visibility == domain_map::KnowledgeVisibility::Public {
-                collections.extend(node.knowledge_collections.clone());
-            }
-            for dep_id in &node.dependencies {
-                stack.push(*dep_id);
-            }
-        }
-    }
-
-    collections
-}
-
-/// Builds a planning pipeline for a single sub-domain (leaf node) that runs
-/// knowledge planning, solution branch generation, and architect planning.
-///
-/// This is a subset of the full greenfield pipeline scoped to one domain
-/// node. Discovery is assumed to have already produced the node's context.
-#[allow(dead_code)]
-fn build_sub_domain_pipeline<C, R, E>(
-    agent: &LlmAgent<C, R, E>,
-    knowledge_store: Arc<SqliteKnowledgeGroupStore>,
-    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
-    knowledge_collection_prefix: String,
-    workspace_root: PathBuf,
-) -> Pipeline<R, WorkflowTaskError<C, R, E>>
-where
-    C: LlmClient<Runtime = R> + Clone + 'static,
-    C::Error: Debug + Display + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + Display + 'static,
-    E: Debug + Display + 'static,
-{
-    build_greenfield_pipeline(
-        agent,
-        knowledge_store,
-        knowledge_backend,
-        knowledge_collection_prefix,
-        workspace_root,
-    )
-}
-
-pub(crate) async fn execute_with_turn_limit_retry<C, R, E>(
-    executor: &Executor<C, R, E>,
-    runtime: &R,
-    request: CompletionRequest,
-) -> Result<ExecutionOutcome, ExecutorError<C::Error, E>>
-where
-    C: LlmClient<Runtime = R>,
-    C::Error: 'static,
-    E: 'static,
-{
-    let mut delay = Duration::from_millis(EXECUTOR_RETRY_BASE_DELAY_MS);
-    for attempt in 1..=MAX_EXECUTOR_RETRIES {
-        match executor.execute(runtime, request.clone()).await {
-            Ok(result) => return Ok(result),
-            Err(ExecutorError::TurnLimitExceeded { max_turns }) => {
-                if attempt == MAX_EXECUTOR_RETRIES {
-                    return Err(ExecutorError::TurnLimitExceeded { max_turns });
-                }
-                tracing::warn!(
-                    attempt,
-                    max_attempts = MAX_EXECUTOR_RETRIES,
-                    max_turns,
-                    "executor hit turn limit, backing off and retrying"
-                );
-                tokio::time::sleep(delay).await;
-                delay *= 2;
-            }
-            Err(ExecutorError::TokenLimitExceeded { max_tokens }) => {
-                // Retrying will not reduce tokens; propagate immediately.
-                return Err(ExecutorError::TokenLimitExceeded { max_tokens });
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!()
-}
-
 fn architect_input_from_stage(input: ArchitectStageInput) -> architect::ArchitectInput {
     let knowledge = knowledge::build_stage_knowledge_session(
         WorkflowStageId::SoftwareArchitect,
@@ -614,13 +574,63 @@ fn architect_input_from_stage(input: ArchitectStageInput) -> architect::Architec
     )
 }
 
-fn build_greenfield_step<C, R, E>(
-    agent: &LlmAgent<C, R, E>,
-    knowledge_store: Arc<SqliteKnowledgeGroupStore>,
-    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
-    knowledge_collection_prefix: String,
-    workspace_root: PathBuf,
-) -> WorkflowStep<C, R, E, discovery::DiscoveryInput, WorkflowRunResult>
+fn architect_stage_step<C, R, E>(
+    architect: architect::ArchitectStep<C, R, E>,
+) -> WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+    E: Debug + 'static,
+{
+    let architect = architect.map_findings(WorkflowFinding::from);
+    Step::builder(task_fn(move |runtime: &R, input: ArchitectStageInput| {
+        let architect = architect.clone();
+        Box::pin(async move {
+            architect
+                .run(runtime, architect_input_from_stage(input))
+                .await
+                .map_err(|e| map_step_error!(e))
+        })
+    }))
+    .with_findings::<WorkflowFinding>()
+    .build()
+}
+
+/// Returns the target phase for a backflow event based on its severity.
+///
+/// This function is intended for use with [`Route::switch`].
+#[allow(dead_code)]
+fn backflow_route_target(event: &BackflowEvent) -> BackflowRouteTarget {
+    event.severity.route_target()
+}
+
+/// Builds a per-sub-domain delivery pipeline with backflow routing.
+///
+/// The pipeline runs delivery and, on backflow, uses [`Route::Switch`] to
+/// retreat to the appropriate planning phase based on severity:
+///
+/// - Minor → retry delivery
+/// - Moderate → architect
+/// - Major → solution selection
+/// - Critical → discovery (with cascade)
+///
+/// The caller must provide steps for each planning phase so that the pipeline
+/// can route back to them.
+#[allow(dead_code)]
+fn build_delivery_pipeline_with_backflow<C, R, E>(
+    delivery_step: Step<
+        R,
+        crate::deliver::BuildJob,
+        DeliveryPhaseOutput,
+        WorkflowFinding,
+        WorkflowTaskError<C, R, E>,
+    >,
+    architect_step: WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>,
+    solutions_step: WorkflowStep<C, R, E, KnowledgeMaterialisationOutput, SolutionChoiceContext>,
+    discovery_step: WorkflowStep<C, R, E, discovery::DiscoveryInput, discovery::DiscoveryOutput>,
+) -> Pipeline<R, WorkflowTaskError<C, R, E>>
 where
     C: LlmClient<Runtime = R> + Clone + 'static,
     C::Error: Debug + Display + 'static,
@@ -628,39 +638,32 @@ where
     R::Error: Debug + Display + 'static,
     E: Debug + Display + 'static,
 {
-    let pipeline = build_greenfield_pipeline(
-        agent,
-        knowledge_store,
-        knowledge_backend,
-        knowledge_collection_prefix,
-        workspace_root,
-    );
-    let pipeline = std::sync::Arc::new(pipeline);
-
-    Step::builder(task_fn(
-        move |runtime: &R, input: discovery::DiscoveryInput| {
-            let pipeline = std::sync::Arc::clone(&pipeline);
-            Box::pin(async move {
-                pipeline.run(runtime, input).await.map_err(|error| {
-                    TaskError::Build(WorkflowBuildError::Workflow(error.to_string()))
-                })
-            })
-        },
-    ))
-    .with_findings::<WorkflowFinding>()
-    .build()
-}
-
-macro_rules! map_step_error {
-    ($error:expr) => {
-        match $error {
-            StepError::System { error, .. } => error,
-            StepError::Rejected(report) => TaskError::Build(WorkflowBuildError::Workflow(format!(
-                "step rejected after {} attempts",
-                report.attempt_count()
-            ))),
-        }
-    };
+    Pipeline::builder()
+        .add_step(PhaseId::new("delivery"), delivery_step)
+        .with_route(
+            PhaseId::new("delivery"),
+            Route::switch(
+                ["delivery", "architect", "solutions", "discovery"],
+                |output: &DeliveryPhaseOutput| match output {
+                    DeliveryPhaseOutput::Delivered => PhaseId::new("delivery"),
+                    DeliveryPhaseOutput::Backflow(event) => match event.severity {
+                        BackflowSeverity::Minor => PhaseId::new("delivery"),
+                        BackflowSeverity::Moderate => PhaseId::new("architect"),
+                        BackflowSeverity::Major => PhaseId::new("solutions"),
+                        BackflowSeverity::Critical => PhaseId::new("discovery"),
+                    },
+                },
+            ),
+        )
+        .add_step(PhaseId::new("architect"), architect_step)
+        .with_route(PhaseId::new("architect"), Route::next("delivery"))
+        .add_step(PhaseId::new("solutions"), solutions_step)
+        .with_route(PhaseId::new("solutions"), Route::next("architect"))
+        .add_step(PhaseId::new("discovery"), discovery_step)
+        .with_route(PhaseId::new("discovery"), Route::next("solutions"))
+        .with_initial(PhaseId::new("delivery"))
+        .build()
+        .expect("delivery pipeline should be valid")
 }
 
 fn build_greenfield_pipeline<C, R, E>(
@@ -810,6 +813,145 @@ where
         .expect("greenfield pipeline should be valid")
 }
 
+fn build_greenfield_step<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    knowledge_store: Arc<SqliteKnowledgeGroupStore>,
+    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
+    knowledge_collection_prefix: String,
+    workspace_root: PathBuf,
+) -> WorkflowStep<C, R, E, discovery::DiscoveryInput, WorkflowRunResult>
+where
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + Display + 'static,
+    E: Debug + Display + 'static,
+{
+    let pipeline = build_greenfield_pipeline(
+        agent,
+        knowledge_store,
+        knowledge_backend,
+        knowledge_collection_prefix,
+        workspace_root,
+    );
+    let pipeline = std::sync::Arc::new(pipeline);
+
+    Step::builder(task_fn(
+        move |runtime: &R, input: discovery::DiscoveryInput| {
+            let pipeline = std::sync::Arc::clone(&pipeline);
+            Box::pin(async move {
+                pipeline.run(runtime, input).await.map_err(|error| {
+                    TaskError::Build(WorkflowBuildError::Workflow(error.to_string()))
+                })
+            })
+        },
+    ))
+    .with_findings::<WorkflowFinding>()
+    .build()
+}
+
+/// Builds a planning pipeline for a single sub-domain (leaf node) that runs
+/// knowledge planning, solution branch generation, and architect planning.
+///
+/// This is a subset of the full greenfield pipeline scoped to one domain
+/// node. Discovery is assumed to have already produced the node's context.
+#[allow(dead_code)]
+fn build_sub_domain_pipeline<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    knowledge_store: Arc<SqliteKnowledgeGroupStore>,
+    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
+    knowledge_collection_prefix: String,
+    workspace_root: PathBuf,
+) -> Pipeline<R, WorkflowTaskError<C, R, E>>
+where
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + Display + 'static,
+    E: Debug + Display + 'static,
+{
+    build_greenfield_pipeline(
+        agent,
+        knowledge_store,
+        knowledge_backend,
+        knowledge_collection_prefix,
+        workspace_root,
+    )
+}
+
+/// Collects public knowledge group collection names from all transitive
+/// dependencies of a domain node.
+///
+/// When sub-domain B depends on A, B's planning session should include A's
+/// public knowledge groups. This function walks the dependency graph and
+/// returns the collection names of all public groups from ancestor nodes.
+#[allow(dead_code)]
+fn collect_public_knowledge_for_node(
+    tree: &domain_map::DomainTree,
+    node_id: domain_map::DomainNodeId,
+) -> Vec<String> {
+    let mut collections = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![node_id];
+
+    while let Some(current_id) = stack.pop() {
+        if !visited.insert(current_id) {
+            continue;
+        }
+
+        if let Some(node) = tree.get(current_id) {
+            if node.knowledge_visibility == domain_map::KnowledgeVisibility::Public {
+                collections.extend(node.knowledge_collections.clone());
+            }
+            for dep_id in &node.dependencies {
+                stack.push(*dep_id);
+            }
+        }
+    }
+
+    collections
+}
+
+/// Builds a delivery phase that wraps [`BuildEngine::run`] and translates
+/// [`DeliveryError::Backflow`] into a successful [`DeliveryPhaseOutput::Backflow`]
+/// so that the pipeline's [`Route::Switch`] can route conditionally.
+#[allow(dead_code)]
+fn delivery_phase_step<C, R, E>(
+    engine: crate::deliver::BuildEngine,
+) -> Step<
+    R,
+    crate::deliver::BuildJob,
+    DeliveryPhaseOutput,
+    WorkflowFinding,
+    WorkflowTaskError<C, R, E>,
+>
+where
+    C: LlmClient<Runtime = R> + 'static,
+    C::Error: Debug + Display + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + Display + 'static,
+    E: Debug + Display + 'static,
+{
+    Step::builder(task_fn(
+        move |_runtime: &R, job: crate::deliver::BuildJob| {
+            let engine = engine.clone();
+            Box::pin(async move {
+                match engine.run(&job).await {
+                    Ok(()) => Ok(DeliveryPhaseOutput::Delivered),
+                    Err(crate::deliver::DeliveryError::Backflow(event)) => {
+                        Ok(DeliveryPhaseOutput::Backflow(event))
+                    }
+                    Err(error) => Err(TaskError::Build(WorkflowBuildError::Workflow(
+                        error.to_string(),
+                    ))),
+                }
+            })
+        },
+    ))
+    .with_findings::<WorkflowFinding>()
+    .build()
+}
+
 fn finalise_choice_step<C, R, E>(
     architect: WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>,
 ) -> WorkflowStep<C, R, E, SolutionChoiceContext, WorkflowRunResult>
@@ -893,148 +1035,6 @@ where
     ))
     .with_findings::<WorkflowFinding>()
     .build()
-}
-
-fn architect_stage_step<C, R, E>(
-    architect: architect::ArchitectStep<C, R, E>,
-) -> WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>
-where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + 'static,
-    E: Debug + 'static,
-{
-    let architect = architect.map_findings(WorkflowFinding::from);
-    Step::builder(task_fn(move |runtime: &R, input: ArchitectStageInput| {
-        let architect = architect.clone();
-        Box::pin(async move {
-            architect
-                .run(runtime, architect_input_from_stage(input))
-                .await
-                .map_err(|e| map_step_error!(e))
-        })
-    }))
-    .with_findings::<WorkflowFinding>()
-    .build()
-}
-
-/// Output of the delivery phase, encoding either success or a backflow event
-/// that triggers pipeline retreat.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DeliveryPhaseOutput {
-    /// Delivery completed successfully.
-    Delivered,
-    /// Delivery failed and the pipeline must retreat to an earlier phase.
-    Backflow(BackflowEvent),
-}
-
-/// Builds a delivery phase that wraps [`BuildEngine::run`] and translates
-/// [`DeliveryError::Backflow`] into a successful [`DeliveryPhaseOutput::Backflow`]
-/// so that the pipeline's [`Route::Switch`] can route conditionally.
-#[allow(dead_code)]
-fn delivery_phase_step<C, R, E>(
-    engine: crate::deliver::BuildEngine,
-) -> Step<
-    R,
-    crate::deliver::BuildJob,
-    DeliveryPhaseOutput,
-    WorkflowFinding,
-    WorkflowTaskError<C, R, E>,
->
-where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + Display + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + Display + 'static,
-    E: Debug + Display + 'static,
-{
-    Step::builder(task_fn(
-        move |_runtime: &R, job: crate::deliver::BuildJob| {
-            let engine = engine.clone();
-            Box::pin(async move {
-                match engine.run(&job).await {
-                    Ok(()) => Ok(DeliveryPhaseOutput::Delivered),
-                    Err(crate::deliver::DeliveryError::Backflow(event)) => {
-                        Ok(DeliveryPhaseOutput::Backflow(event))
-                    }
-                    Err(error) => Err(TaskError::Build(WorkflowBuildError::Workflow(
-                        error.to_string(),
-                    ))),
-                }
-            })
-        },
-    ))
-    .with_findings::<WorkflowFinding>()
-    .build()
-}
-
-/// Returns the target phase for a backflow event based on its severity.
-///
-/// This function is intended for use with [`Route::switch`].
-#[allow(dead_code)]
-fn backflow_route_target(event: &BackflowEvent) -> BackflowRouteTarget {
-    event.severity.route_target()
-}
-
-/// Builds a per-sub-domain delivery pipeline with backflow routing.
-///
-/// The pipeline runs delivery and, on backflow, uses [`Route::Switch`] to
-/// retreat to the appropriate planning phase based on severity:
-///
-/// - Minor → retry delivery
-/// - Moderate → architect
-/// - Major → solution selection
-/// - Critical → discovery (with cascade)
-///
-/// The caller must provide steps for each planning phase so that the pipeline
-/// can route back to them.
-#[allow(dead_code)]
-fn build_delivery_pipeline_with_backflow<C, R, E>(
-    delivery_step: Step<
-        R,
-        crate::deliver::BuildJob,
-        DeliveryPhaseOutput,
-        WorkflowFinding,
-        WorkflowTaskError<C, R, E>,
-    >,
-    architect_step: WorkflowStep<C, R, E, ArchitectStageInput, architect::ArchitectPlan>,
-    solutions_step: WorkflowStep<C, R, E, KnowledgeMaterialisationOutput, SolutionChoiceContext>,
-    discovery_step: WorkflowStep<C, R, E, discovery::DiscoveryInput, discovery::DiscoveryOutput>,
-) -> Pipeline<R, WorkflowTaskError<C, R, E>>
-where
-    C: LlmClient<Runtime = R> + Clone + 'static,
-    C::Error: Debug + Display + 'static,
-    R: HumanIO + 'static,
-    R::Error: Debug + Display + 'static,
-    E: Debug + Display + 'static,
-{
-    Pipeline::builder()
-        .add_step(PhaseId::new("delivery"), delivery_step)
-        .with_route(
-            PhaseId::new("delivery"),
-            Route::switch(
-                ["delivery", "architect", "solutions", "discovery"],
-                |output: &DeliveryPhaseOutput| match output {
-                    DeliveryPhaseOutput::Delivered => PhaseId::new("delivery"),
-                    DeliveryPhaseOutput::Backflow(event) => match event.severity {
-                        BackflowSeverity::Minor => PhaseId::new("delivery"),
-                        BackflowSeverity::Moderate => PhaseId::new("architect"),
-                        BackflowSeverity::Major => PhaseId::new("solutions"),
-                        BackflowSeverity::Critical => PhaseId::new("discovery"),
-                    },
-                },
-            ),
-        )
-        .add_step(PhaseId::new("architect"), architect_step)
-        .with_route(PhaseId::new("architect"), Route::next("delivery"))
-        .add_step(PhaseId::new("solutions"), solutions_step)
-        .with_route(PhaseId::new("solutions"), Route::next("architect"))
-        .add_step(PhaseId::new("discovery"), discovery_step)
-        .with_route(PhaseId::new("discovery"), Route::next("solutions"))
-        .with_initial(PhaseId::new("delivery"))
-        .build()
-        .expect("delivery pipeline should be valid")
 }
 
 fn solution_input_from_materialisation(

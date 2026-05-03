@@ -27,15 +27,21 @@ pub enum DeliveryJobStatus {
     Failed,
 }
 
-impl DeliveryJobStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-        }
-    }
+/// Progress for one job within a delivery batch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryNodeProgress {
+    pub domain_node_id: DomainNodeId,
+    pub status: DeliveryJobStatus,
+    pub error: Option<String>,
+}
+
+/// Progress for a single topological delivery batch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryBatchProgress {
+    pub index: usize,
+    pub active: bool,
+    pub completed: bool,
+    pub nodes: Vec<DeliveryNodeProgress>,
 }
 
 /// Summary of delivery progress across all batches.
@@ -50,23 +56,6 @@ pub struct DeliveryProgress {
     pub pending_nodes: usize,
     pub running_nodes: usize,
     pub batches: Vec<DeliveryBatchProgress>,
-}
-
-/// Progress for a single topological delivery batch.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeliveryBatchProgress {
-    pub index: usize,
-    pub active: bool,
-    pub completed: bool,
-    pub nodes: Vec<DeliveryNodeProgress>,
-}
-
-/// Progress for one job within a delivery batch.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeliveryNodeProgress {
-    pub domain_node_id: DomainNodeId,
-    pub status: DeliveryJobStatus,
-    pub error: Option<String>,
 }
 
 /// A node in the delivery graph representing a single sub-domain build job.
@@ -92,6 +81,17 @@ pub struct DeliveryGraph {
     pub nodes: HashMap<DomainNodeId, DeliveryNode>,
     pub batches: Vec<DeliveryBatch>,
     pub active_batch_index: Option<usize>,
+}
+
+impl DeliveryJobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 impl DeliveryNode {

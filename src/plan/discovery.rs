@@ -4,10 +4,10 @@ use std::{
     path::PathBuf,
 };
 
-use futures::future;
-use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 #[cfg(test)]
 use naaf_llm::ExecutionOutcome;
+use futures::future;
+use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
 use naaf_llm::{
     AdaptorError, CompletionRequest, Executor, HumanIO, HumanQuestion, LlmAgent, LlmClient,
     Message, TaskError, ToolRegistry,
@@ -36,6 +36,12 @@ pub(crate) struct DiscoveryQuestion {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SubDomainSuggestion {
+    pub(crate) name: String,
+    pub(crate) description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiscoveryOutput {
     #[serde(default)]
     pub(crate) assistant_message: String,
@@ -53,12 +59,6 @@ pub(crate) struct DiscoveryOutput {
     pub(crate) open_questions: Vec<DiscoveryQuestion>,
     #[serde(default)]
     pub(crate) sub_domains: Vec<SubDomainSuggestion>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SubDomainSuggestion {
-    pub(crate) name: String,
-    pub(crate) description: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +244,77 @@ where
         .map(|task_output| task_output.output)
 }
 
+fn build_initial_user_message(input: &DiscoveryInput) -> String {
+    let mut lines = vec![format!("Initial prompt: {}", input.initial_prompt)];
+
+    lines.push(String::new());
+    lines.push(
+        "Return only one JSON object. Do not include markdown, prose, code fences, or hidden reasoning in the assistant content."
+            .to_string(),
+    );
+    lines.push(
+        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}],\"sub_domains\":[{\"name\":string,\"description\":string}]}"
+            .to_string(),
+    );
+    lines.push(
+        "Use assistant_message for concise, conversational exploration that can be shown to the user before the next question."
+            .to_string(),
+    );
+    lines.push(
+        "Keep ready_for_solution false while exploring, and ask focused open_questions that guide the user toward a concrete, solutionable problem statement."
+            .to_string(),
+    );
+    lines.push(
+        "Include explicit uncertainty in assumptions, risks, notes, or open_questions as appropriate."
+            .to_string(),
+    );
+    lines.push(
+        "Only mark ready_for_solution true when the hand-off is complete enough for solution generation without blocking ambiguity."
+            .to_string(),
+    );
+    lines.push(
+        "If the problem is broad enough to benefit from decomposition, include up to 5 sub_domains. Each sub_domain should be a distinct, independently implementable part of the overall system. Leave sub_domains empty when the problem is already concrete enough for a single solution."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+fn build_request(
+    input: &DiscoveryInput,
+    system_prompt_override: Option<&str>,
+) -> CompletionRequest {
+    let mut messages = input.messages.clone();
+    let max_input_tokens = input_token_budget_for_model(MODEL);
+    maybe_compact_messages(&mut messages, max_input_tokens);
+
+    if messages.is_empty() {
+        let base = system_prompt_override.unwrap_or(SYSTEM_PROMPT);
+        messages.push(Message::system(build_system_prompt_with_base(
+            input.turn_count,
+            base,
+        )));
+        messages.push(Message::user(build_initial_user_message(input)));
+    } else {
+        messages.push(Message::user(build_turn_instructions(input)));
+    }
+
+    CompletionRequest::new(MODEL.to_string(), messages).with_metadata(json!({
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "discovery_output",
+                "strict": false,
+                "schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": true
+                }
+            }
+        }
+    }))
+}
+
 fn build_system_prompt_with_base(turn_count: usize, base: &str) -> String {
     let phase_hint = if turn_count == 0 {
         "This is the first turn. Begin by understanding the user's idea and asking focused clarifying questions."
@@ -253,6 +324,31 @@ fn build_system_prompt_with_base(turn_count: usize, base: &str) -> String {
     format!(
         "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns."
     )
+}
+
+fn build_turn_instructions(input: &DiscoveryInput) -> String {
+    let mut lines = vec![
+        "Continue the discovery conversation based on what has been discussed so far.".to_string(),
+    ];
+
+    if !input.findings.is_empty() {
+        lines.push(String::new());
+        lines.push("Address these validation findings in your response:".to_string());
+        lines.extend(
+            input
+                .findings
+                .iter()
+                .map(|finding| format!("- {}", finding)),
+        );
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Return only one JSON object with the same shape as before. Only update fields if they have changed based on the latest user answers."
+            .to_string(),
+    );
+
+    lines.join("\n")
 }
 
 fn maybe_compact_messages(messages: &mut Vec<Message>, max_input_tokens: usize) {
@@ -321,102 +417,6 @@ fn maybe_compact_messages(messages: &mut Vec<Message>, max_input_tokens: usize) 
     compacted.extend(messages[split_point..].iter().cloned());
 
     *messages = compacted;
-}
-
-fn build_request(
-    input: &DiscoveryInput,
-    system_prompt_override: Option<&str>,
-) -> CompletionRequest {
-    let mut messages = input.messages.clone();
-    let max_input_tokens = input_token_budget_for_model(MODEL);
-    maybe_compact_messages(&mut messages, max_input_tokens);
-
-    if messages.is_empty() {
-        let base = system_prompt_override.unwrap_or(SYSTEM_PROMPT);
-        messages.push(Message::system(build_system_prompt_with_base(
-            input.turn_count,
-            base,
-        )));
-        messages.push(Message::user(build_initial_user_message(input)));
-    } else {
-        messages.push(Message::user(build_turn_instructions(input)));
-    }
-
-    CompletionRequest::new(MODEL.to_string(), messages).with_metadata(json!({
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "discovery_output",
-                "strict": false,
-                "schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": true
-                }
-            }
-        }
-    }))
-}
-
-fn build_initial_user_message(input: &DiscoveryInput) -> String {
-    let mut lines = vec![format!("Initial prompt: {}", input.initial_prompt)];
-
-    lines.push(String::new());
-    lines.push(
-        "Return only one JSON object. Do not include markdown, prose, code fences, or hidden reasoning in the assistant content."
-            .to_string(),
-    );
-    lines.push(
-        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}],\"sub_domains\":[{\"name\":string,\"description\":string}]}"
-            .to_string(),
-    );
-    lines.push(
-        "Use assistant_message for concise, conversational exploration that can be shown to the user before the next question."
-            .to_string(),
-    );
-    lines.push(
-        "Keep ready_for_solution false while exploring, and ask focused open_questions that guide the user toward a concrete, solutionable problem statement."
-            .to_string(),
-    );
-    lines.push(
-        "Include explicit uncertainty in assumptions, risks, notes, or open_questions as appropriate."
-            .to_string(),
-    );
-    lines.push(
-        "Only mark ready_for_solution true when the hand-off is complete enough for solution generation without blocking ambiguity."
-            .to_string(),
-    );
-    lines.push(
-        "If the problem is broad enough to benefit from decomposition, include up to 5 sub_domains. Each sub_domain should be a distinct, independently implementable part of the overall system. Leave sub_domains empty when the problem is already concrete enough for a single solution."
-            .to_string(),
-    );
-
-    lines.join("\n")
-}
-
-fn build_turn_instructions(input: &DiscoveryInput) -> String {
-    let mut lines = vec![
-        "Continue the discovery conversation based on what has been discussed so far.".to_string(),
-    ];
-
-    if !input.findings.is_empty() {
-        lines.push(String::new());
-        lines.push("Address these validation findings in your response:".to_string());
-        lines.extend(
-            input
-                .findings
-                .iter()
-                .map(|finding| format!("- {}", finding)),
-        );
-    }
-
-    lines.push(String::new());
-    lines.push(
-        "Return only one JSON object with the same shape as before. Only update fields if they have changed based on the latest user answers."
-            .to_string(),
-    );
-
-    lines.join("\n")
 }
 
 fn register_repository_tools<R>(tools: &mut ToolRegistry<R, Infallible>, workspace_root: PathBuf)

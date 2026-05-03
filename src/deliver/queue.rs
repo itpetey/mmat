@@ -6,9 +6,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::engine::{BuildEngine, DeliveryError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use super::engine::{BuildEngine, DeliveryError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -382,6 +382,48 @@ pub async fn drain_project_queue(
     Ok(())
 }
 
+pub async fn drain_project_queue_with_events(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    engine: &BuildEngine,
+    events: impl Fn(BuildWorkerEvent),
+) -> Result<(), BuildQueueError> {
+    while let Some(job) = store.next_pending(project_id)? {
+        store.mark_running(&job.id)?;
+        events(BuildWorkerEvent::JobStarted {
+            project_id: project_id.clone(),
+            job_id: job.id.clone(),
+        });
+        emit_queue_changed(project_id, store, &events)?;
+
+        let result: Result<(), DeliveryError> = engine.run(&job).await;
+        match result {
+            Ok(()) => {
+                store.mark_succeeded(&job.id)?;
+                events(BuildWorkerEvent::JobFinished {
+                    project_id: project_id.clone(),
+                    job_id: job.id.clone(),
+                    status: BuildJobStatus::Succeeded,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                let error = error.to_string();
+                store.mark_failed(&job.id, error.clone())?;
+                events(BuildWorkerEvent::JobFinished {
+                    project_id: project_id.clone(),
+                    job_id: job.id.clone(),
+                    status: BuildJobStatus::Failed,
+                    error: Some(error),
+                });
+            }
+        }
+        emit_queue_changed(project_id, store, &events)?;
+    }
+
+    Ok(())
+}
+
 /// Executes a delivery graph batch-by-batch, running jobs within each batch
 /// concurrently in separate worktrees.
 ///
@@ -469,48 +511,6 @@ pub async fn execute_delivery_graph(
     }
 
     graph.active_batch_index = None;
-    Ok(())
-}
-
-pub async fn drain_project_queue_with_events(
-    project_id: &ProjectId,
-    store: &BuildQueueStore,
-    engine: &BuildEngine,
-    events: impl Fn(BuildWorkerEvent),
-) -> Result<(), BuildQueueError> {
-    while let Some(job) = store.next_pending(project_id)? {
-        store.mark_running(&job.id)?;
-        events(BuildWorkerEvent::JobStarted {
-            project_id: project_id.clone(),
-            job_id: job.id.clone(),
-        });
-        emit_queue_changed(project_id, store, &events)?;
-
-        let result: Result<(), DeliveryError> = engine.run(&job).await;
-        match result {
-            Ok(()) => {
-                store.mark_succeeded(&job.id)?;
-                events(BuildWorkerEvent::JobFinished {
-                    project_id: project_id.clone(),
-                    job_id: job.id.clone(),
-                    status: BuildJobStatus::Succeeded,
-                    error: None,
-                });
-            }
-            Err(error) => {
-                let error = error.to_string();
-                store.mark_failed(&job.id, error.clone())?;
-                events(BuildWorkerEvent::JobFinished {
-                    project_id: project_id.clone(),
-                    job_id: job.id.clone(),
-                    status: BuildJobStatus::Failed,
-                    error: Some(error),
-                });
-            }
-        }
-        emit_queue_changed(project_id, store, &events)?;
-    }
-
     Ok(())
 }
 
@@ -605,6 +605,18 @@ fn decode_build_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BuildJob> {
     })
 }
 
+fn emit_queue_changed(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    events: &impl Fn(BuildWorkerEvent),
+) -> Result<(), BuildQueueError> {
+    events(BuildWorkerEvent::QueueChanged {
+        project_id: project_id.clone(),
+        jobs: store.list_for_project(project_id)?,
+    });
+    Ok(())
+}
+
 fn has_column(
     conn: &Connection,
     table_name: &str,
@@ -618,18 +630,6 @@ fn has_column(
         }
     }
     Ok(false)
-}
-
-fn emit_queue_changed(
-    project_id: &ProjectId,
-    store: &BuildQueueStore,
-    events: &impl Fn(BuildWorkerEvent),
-) -> Result<(), BuildQueueError> {
-    events(BuildWorkerEvent::QueueChanged {
-        project_id: project_id.clone(),
-        jobs: store.list_for_project(project_id)?,
-    });
-    Ok(())
 }
 
 fn now_unix_seconds() -> i64 {

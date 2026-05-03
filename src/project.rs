@@ -13,8 +13,8 @@ use thiserror::Error;
 use crate::MmatError;
 
 const DATA_PATH_ENV: &str = "MMAT_DATA_PATH";
-const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
 const PROJECT_PATH_ENV: &str = "MMAT_PROJECT_PATH";
+const REGISTRY_ENV: &str = "MMAT_PROJECT_REGISTRY_SQLITE_PATH";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ProjectId(String);

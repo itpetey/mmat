@@ -29,6 +29,30 @@ pub enum BackflowRouteTarget {
     DomainMapping,
 }
 
+/// An event signalling that a sub-domain's delivery has failed and the
+/// pipeline must backflow to an earlier phase.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackflowEvent {
+    pub source_node_id: DomainNodeId,
+    pub severity: BackflowSeverity,
+    pub reason: String,
+    pub cascade_depth: usize,
+}
+
+/// Tracks which nodes are affected by backflow and at what cascade depth.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackflowCascade {
+    pub affected_nodes: HashMap<DomainNodeId, BackflowEvent>,
+}
+
+/// Result of applying a cascade to a domain tree.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackflowApplication {
+    pub replanning_nodes: Vec<DomainNodeId>,
+    pub invalidated_delivery_nodes: Vec<DomainNodeId>,
+    pub human_review_required: bool,
+}
+
 impl BackflowSeverity {
     /// Returns the human-readable label for this severity.
     pub fn label(self) -> &'static str {
@@ -49,16 +73,6 @@ impl BackflowSeverity {
             Self::Critical => BackflowRouteTarget::DomainMapping,
         }
     }
-}
-
-/// An event signalling that a sub-domain's delivery has failed and the
-/// pipeline must backflow to an earlier phase.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackflowEvent {
-    pub source_node_id: DomainNodeId,
-    pub severity: BackflowSeverity,
-    pub reason: String,
-    pub cascade_depth: usize,
 }
 
 impl BackflowEvent {
@@ -83,20 +97,6 @@ impl BackflowEvent {
     pub fn route_target(&self) -> BackflowRouteTarget {
         self.severity.route_target()
     }
-}
-
-/// Tracks which nodes are affected by backflow and at what cascade depth.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackflowCascade {
-    pub affected_nodes: HashMap<DomainNodeId, BackflowEvent>,
-}
-
-/// Result of applying a cascade to a domain tree.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackflowApplication {
-    pub replanning_nodes: Vec<DomainNodeId>,
-    pub invalidated_delivery_nodes: Vec<DomainNodeId>,
-    pub human_review_required: bool,
 }
 
 impl BackflowCascade {

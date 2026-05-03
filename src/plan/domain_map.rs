@@ -7,6 +7,70 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DomainNodeId(Uuid);
 
+/// Visibility of a knowledge group within a domain tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KnowledgeVisibility {
+    /// Visible to all nodes in the tree.
+    Public,
+    /// Visible only to this node and its descendants.
+    Private,
+}
+
+/// Lifecycle status of a domain node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DomainNodeStatus {
+    /// Discovery is in progress for this node.
+    Discovering,
+    /// Discovery complete; ready for knowledge planning.
+    Ready,
+    /// Knowledge groups planned and materialised.
+    KnowledgeMaterialised,
+    /// Solution branches generated and collected.
+    SolutionsCollected,
+    /// Solution chosen by user.
+    SolutionChosen,
+    /// Architect plan produced.
+    ArchitectComplete,
+    /// Build jobs created and in delivery.
+    Delivering,
+    /// Delivery complete.
+    Complete,
+    /// Replanning due to backflow.
+    Replanning,
+}
+
+/// A single node in the domain decomposition tree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainNode {
+    pub id: DomainNodeId,
+    pub name: String,
+    pub description: String,
+    pub depth: usize,
+    pub parent: Option<DomainNodeId>,
+    pub children: Vec<DomainNodeId>,
+    pub dependencies: Vec<DomainNodeId>,
+    pub knowledge_collections: Vec<String>,
+    pub knowledge_visibility: KnowledgeVisibility,
+    pub status: DomainNodeStatus,
+}
+
+/// Configuration controlling domain tree construction and behaviour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainTreeConfig {
+    /// Maximum depth of the domain tree (default: 3).
+    pub max_depth: usize,
+    /// Maximum cascade depth for backflow replanning (default: 3).
+    pub max_cascade_depth: usize,
+}
+
+/// A hierarchical decomposition of a project domain into sub-domains.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainTree {
+    pub root: DomainNodeId,
+    pub nodes: HashMap<DomainNodeId, DomainNode>,
+    pub config: DomainTreeConfig,
+}
+
 impl DomainNodeId {
     /// Creates a new random domain node identifier.
     pub fn new() -> Self {
@@ -34,62 +98,6 @@ impl std::str::FromStr for DomainNodeId {
     }
 }
 
-/// Visibility of a knowledge group within a domain tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KnowledgeVisibility {
-    /// Visible to all nodes in the tree.
-    Public,
-    /// Visible only to this node and its descendants.
-    Private,
-}
-
-/// A single node in the domain decomposition tree.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DomainNode {
-    pub id: DomainNodeId,
-    pub name: String,
-    pub description: String,
-    pub depth: usize,
-    pub parent: Option<DomainNodeId>,
-    pub children: Vec<DomainNodeId>,
-    pub dependencies: Vec<DomainNodeId>,
-    pub knowledge_collections: Vec<String>,
-    pub knowledge_visibility: KnowledgeVisibility,
-    pub status: DomainNodeStatus,
-}
-
-/// Lifecycle status of a domain node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DomainNodeStatus {
-    /// Discovery is in progress for this node.
-    Discovering,
-    /// Discovery complete; ready for knowledge planning.
-    Ready,
-    /// Knowledge groups planned and materialised.
-    KnowledgeMaterialised,
-    /// Solution branches generated and collected.
-    SolutionsCollected,
-    /// Solution chosen by user.
-    SolutionChosen,
-    /// Architect plan produced.
-    ArchitectComplete,
-    /// Build jobs created and in delivery.
-    Delivering,
-    /// Delivery complete.
-    Complete,
-    /// Replanning due to backflow.
-    Replanning,
-}
-
-/// Configuration controlling domain tree construction and behaviour.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DomainTreeConfig {
-    /// Maximum depth of the domain tree (default: 3).
-    pub max_depth: usize,
-    /// Maximum cascade depth for backflow replanning (default: 3).
-    pub max_cascade_depth: usize,
-}
-
 impl Default for DomainTreeConfig {
     fn default() -> Self {
         Self {
@@ -97,14 +105,6 @@ impl Default for DomainTreeConfig {
             max_cascade_depth: 3,
         }
     }
-}
-
-/// A hierarchical decomposition of a project domain into sub-domains.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DomainTree {
-    pub root: DomainNodeId,
-    pub nodes: HashMap<DomainNodeId, DomainNode>,
-    pub config: DomainTreeConfig,
 }
 
 impl DomainTree {

@@ -567,6 +567,25 @@ fn apply_file_deltas(root: &Path, delta: &ImplementationDelta) -> Result<(), Del
         .map_err(|error| DeliveryError::Workspace(error.to_string()))
 }
 
+/// Determines the backflow severity from a set of delivery findings.
+///
+/// Maps the highest finding severity to a backflow severity. If no findings
+/// are present, defaults to `Minor`.
+fn backflow_severity_from_findings(findings: &[StageFinding]) -> BackflowSeverity {
+    let mut severity = BackflowSeverity::Minor;
+    for finding in findings {
+        match finding.severity.to_ascii_lowercase().as_str() {
+            "critical" => return BackflowSeverity::Critical,
+            "major" => severity = BackflowSeverity::Major,
+            "moderate" if severity < BackflowSeverity::Moderate => {
+                severity = BackflowSeverity::Moderate;
+            }
+            _ => {}
+        }
+    }
+    severity
+}
+
 async fn build_agent(
     workspace_root: &Path,
     project: &ProjectConfig,
@@ -809,25 +828,6 @@ where
     T: Serialize + ?Sized,
 {
     Ok(serde_json::to_string_pretty(value)?)
-}
-
-/// Determines the backflow severity from a set of delivery findings.
-///
-/// Maps the highest finding severity to a backflow severity. If no findings
-/// are present, defaults to `Minor`.
-fn backflow_severity_from_findings(findings: &[StageFinding]) -> BackflowSeverity {
-    let mut severity = BackflowSeverity::Minor;
-    for finding in findings {
-        match finding.severity.to_ascii_lowercase().as_str() {
-            "critical" => return BackflowSeverity::Critical,
-            "major" => severity = BackflowSeverity::Major,
-            "moderate" if severity < BackflowSeverity::Moderate => {
-                severity = BackflowSeverity::Moderate;
-            }
-            _ => {}
-        }
-    }
-    severity
 }
 
 fn workflow_llm_config() -> OpenAiConfig {
