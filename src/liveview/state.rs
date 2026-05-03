@@ -110,6 +110,7 @@ pub struct DomainNodeUiSnapshot {
     pub name: String,
     pub status: String,
     pub phase: String,
+    pub depth: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1255,8 +1256,8 @@ mod tests {
     };
 
     use super::{
-        ComposerMode, ConversationEntry, ConversationHistoryStore, DomainNodeUiSnapshot,
-        PendingPrompt, UiEvent, UiState,
+        BackflowNotificationSnapshot, ComposerMode, ConversationEntry, ConversationHistoryStore,
+        DomainNodeUiSnapshot, PendingPrompt, UiEvent, UiState,
     };
 
     #[test]
@@ -1337,12 +1338,14 @@ mod tests {
                     name: "First".to_string(),
                     status: "active".to_string(),
                     phase: "Discovery".to_string(),
+                    depth: 0,
                 },
                 DomainNodeUiSnapshot {
                     node_id: second,
                     name: "Second".to_string(),
                     status: "waiting".to_string(),
                     phase: "Discovery".to_string(),
+                    depth: 0,
                 },
             ],
         );
@@ -1523,7 +1526,7 @@ mod tests {
 
     fn job(project_id: &ProjectId, prompt: &str) -> BuildJob {
         BuildJob {
-            id: BuildJobId::new(format!("job_{prompt}")),
+            id: BuildJobId::new(format!("job-{prompt}")),
             project_id: project_id.clone(),
             domain_node_id: None,
             status: BuildJobStatus::Pending,
@@ -1539,5 +1542,149 @@ mod tests {
             started_at: None,
             completed_at: None,
         }
+    }
+
+    #[test]
+    fn tab_open_close_and_switch_preserve_state() {
+        let state = UiState::new();
+        let project = state.active_project();
+        let first = crate::plan::domain_map::DomainNodeId::new();
+        let second = crate::plan::domain_map::DomainNodeId::new();
+        state.set_project_domain_tree_nodes(
+            &project.id,
+            vec![
+                DomainNodeUiSnapshot {
+                    node_id: first,
+                    name: "First".to_string(),
+                    status: "active".to_string(),
+                    phase: "Discovery".to_string(),
+                    depth: 0,
+                },
+                DomainNodeUiSnapshot {
+                    node_id: second,
+                    name: "Second".to_string(),
+                    status: "waiting".to_string(),
+                    phase: "Discovery".to_string(),
+                    depth: 1,
+                },
+            ],
+        );
+
+        state.set_project_open_domain_tabs(&project.id, vec![first]);
+        state.set_project_active_domain_node_id(&project.id, Some(first));
+        state.record_project_domain_user_message(&project.id, first, "first prompt".to_string());
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.open_domain_tabs, vec![first]);
+        assert_eq!(snapshot.active_domain_node_id, Some(first));
+
+        let mut tabs = snapshot.open_domain_tabs.clone();
+        tabs.push(second);
+        state.set_project_open_domain_tabs(&project.id, tabs);
+        state.set_project_active_domain_node_id(&project.id, Some(second));
+        state.record_project_domain_user_message(&project.id, second, "second prompt".to_string());
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.open_domain_tabs, vec![first, second]);
+        assert_eq!(snapshot.active_domain_node_id, Some(second));
+
+        let mut tabs = snapshot.open_domain_tabs.clone();
+        tabs.retain(|id| *id != first);
+        state.set_project_open_domain_tabs(&project.id, tabs);
+        state.set_project_active_domain_node_id(&project.id, Some(second));
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.open_domain_tabs, vec![second]);
+        assert_eq!(snapshot.active_domain_node_id, Some(second));
+        assert!(snapshot.domain_states.contains_key(&first));
+    }
+
+    #[test]
+    fn backflow_notifications_are_tracked_per_project() {
+        let state = UiState::new();
+        let project = state.active_project();
+        let node_id = crate::plan::domain_map::DomainNodeId::new();
+        state.set_project_domain_tree_nodes(
+            &project.id,
+            vec![DomainNodeUiSnapshot {
+                node_id,
+                name: "API".to_string(),
+                status: "replanning".to_string(),
+                phase: "Discovery".to_string(),
+                depth: 0,
+            }],
+        );
+        state.set_project_backflow_notifications(
+            &project.id,
+            vec![BackflowNotificationSnapshot {
+                node_id,
+                severity: "Critical".to_string(),
+                reason: "Schema mismatch".to_string(),
+                cascade_depth: 1,
+            }],
+        );
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.backflow_notifications.len(), 1);
+        assert_eq!(snapshot.backflow_notifications[0].severity, "Critical");
+    }
+
+    #[test]
+    fn layout_switches_based_on_domain_tree_presence() {
+        let state = UiState::new();
+        let project = state.active_project();
+
+        let no_tree_snapshot = state.snapshot();
+        assert!(no_tree_snapshot.domain_tree_nodes.is_empty());
+
+        let node_id = crate::plan::domain_map::DomainNodeId::new();
+        state.set_project_domain_tree_nodes(
+            &project.id,
+            vec![DomainNodeUiSnapshot {
+                node_id,
+                name: "Root".to_string(),
+                status: "discovering".to_string(),
+                phase: "Discovery".to_string(),
+                depth: 0,
+            }],
+        );
+
+        let with_tree_snapshot = state.snapshot();
+        assert!(!with_tree_snapshot.domain_tree_nodes.is_empty());
+    }
+
+    #[test]
+    fn domain_tree_navigation_updates_active_node() {
+        let state = UiState::new();
+        let project = state.active_project();
+        let first = crate::plan::domain_map::DomainNodeId::new();
+        let second = crate::plan::domain_map::DomainNodeId::new();
+        state.set_project_domain_tree_nodes(
+            &project.id,
+            vec![
+                DomainNodeUiSnapshot {
+                    node_id: first,
+                    name: "Ingestion".to_string(),
+                    status: "discovering".to_string(),
+                    phase: "Discovery".to_string(),
+                    depth: 1,
+                },
+                DomainNodeUiSnapshot {
+                    node_id: second,
+                    name: "Storage".to_string(),
+                    status: "ready".to_string(),
+                    phase: "Knowledge".to_string(),
+                    depth: 1,
+                },
+            ],
+        );
+
+        state.set_project_active_domain_node_id(&project.id, Some(first));
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.active_domain_node_id, Some(first));
+
+        state.set_project_active_domain_node_id(&project.id, Some(second));
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.active_domain_node_id, Some(second));
     }
 }

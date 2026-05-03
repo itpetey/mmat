@@ -522,6 +522,31 @@ impl<R: 'static> KnowledgeBackend for QdrantKnowledgeBackend<R> {
     }
 }
 
+/// Deletes all knowledge groups associated with a domain node that is being
+/// replanned. This prevents orphaned groups from accumulating across
+/// backflow-driven replanning cycles.
+///
+/// Returns the number of groups deleted.
+pub async fn cleanup_node_knowledge_groups(
+    store: &SqliteKnowledgeGroupStore,
+    node: &crate::plan::domain_map::DomainNode,
+) -> Result<usize, KnowledgeError> {
+    let mut deleted = 0usize;
+    for collection in &node.knowledge_collections {
+        match store.delete_group(collection).await {
+            Ok(()) => deleted += 1,
+            Err(error) => {
+                tracing::warn!(
+                    collection,
+                    %error,
+                    "failed to delete knowledge group during replanning cleanup"
+                );
+            }
+        }
+    }
+    Ok(deleted)
+}
+
 pub(super) fn build_stage_knowledge_session(
     stage: WorkflowStageId,
     base_system_prompt: &str,
@@ -1360,5 +1385,67 @@ mod tests {
         assert_ne!(first[0].group.collection, second[0].group.collection);
         assert!(first[0].group.collection.starts_with("p_first__"));
         assert!(second[0].group.collection.starts_with("p_second__"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_node_knowledge_groups() {
+        let store = SqliteKnowledgeGroupStore::open_in_memory().expect("SQLite store should open");
+        let backend = StubKnowledgeBackend::default();
+        let plan = valid_knowledge_plan();
+
+        let materialised = materialise_knowledge_plan(&store, &backend, "p_cleanup", &plan)
+            .await
+            .expect("plan should materialise");
+
+        let node = crate::plan::domain_map::DomainNode {
+            id: crate::plan::domain_map::DomainNodeId::new(),
+            name: "Test".to_string(),
+            description: "".to_string(),
+            depth: 0,
+            parent: None,
+            children: Vec::new(),
+            dependencies: Vec::new(),
+            knowledge_collections: materialised
+                .iter()
+                .map(|g| g.group.collection.clone())
+                .collect(),
+            knowledge_visibility: crate::plan::domain_map::KnowledgeVisibility::Public,
+            status: crate::plan::domain_map::DomainNodeStatus::Replanning,
+        };
+
+        let deleted = cleanup_node_knowledge_groups(&store, &node)
+            .await
+            .expect("cleanup should complete");
+        assert_eq!(deleted, 2);
+
+        for collection in &node.knowledge_collections {
+            let loaded = store
+                .load_group(collection)
+                .await
+                .expect("query should succeed");
+            assert!(loaded.is_none(), "group {collection} should be deleted");
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_is_idempotent_for_empty_collections() {
+        let store = SqliteKnowledgeGroupStore::open_in_memory().expect("SQLite store should open");
+        let node = crate::plan::domain_map::DomainNode {
+            id: crate::plan::domain_map::DomainNodeId::new(),
+            name: "Empty".to_string(),
+            description: "".to_string(),
+            depth: 0,
+            parent: None,
+            children: Vec::new(),
+            dependencies: Vec::new(),
+            knowledge_collections: Vec::new(),
+            knowledge_visibility: crate::plan::domain_map::KnowledgeVisibility::Public,
+            status: crate::plan::domain_map::DomainNodeStatus::Replanning,
+        };
+
+        let deleted = cleanup_node_knowledge_groups(&store, &node)
+            .await
+            .expect("cleanup should complete");
+        assert_eq!(deleted, 0);
     }
 }

@@ -28,47 +28,47 @@ pub const MODEL: &str = "gpt-5.5";
 pub const SYSTEM_PROMPT: &str = "You are a curious sounding board for new ideas. Your job is to interrogate the idea, fleshing out any unknowns, researching prior art, and soliciting feedback from the user.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct DiscoveryQuestion {
+pub(crate) struct DiscoveryQuestion {
     #[serde(default)]
-    pub(super) prompt: String,
+    pub(crate) prompt: String,
     #[serde(default)]
-    pub(super) choices: Vec<String>,
+    pub(crate) choices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct DiscoveryOutput {
+pub(crate) struct DiscoveryOutput {
     #[serde(default)]
-    pub(super) assistant_message: String,
-    pub(super) ready_for_solution: bool,
-    pub(super) problem_statement: String,
-    pub(super) goals: Vec<String>,
-    pub(super) constraints: Vec<String>,
+    pub(crate) assistant_message: String,
+    pub(crate) ready_for_solution: bool,
+    pub(crate) problem_statement: String,
+    pub(crate) goals: Vec<String>,
+    pub(crate) constraints: Vec<String>,
     #[serde(default)]
-    pub(super) assumptions: Vec<String>,
+    pub(crate) assumptions: Vec<String>,
     #[serde(default)]
-    pub(super) risks: Vec<String>,
+    pub(crate) risks: Vec<String>,
     #[serde(default)]
-    pub(super) notes: Vec<String>,
-    pub(super) recommended_path: String,
-    pub(super) open_questions: Vec<DiscoveryQuestion>,
+    pub(crate) notes: Vec<String>,
+    pub(crate) recommended_path: String,
+    pub(crate) open_questions: Vec<DiscoveryQuestion>,
     #[serde(default)]
-    pub(super) sub_domains: Vec<SubDomainSuggestion>,
+    pub(crate) sub_domains: Vec<SubDomainSuggestion>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SubDomainSuggestion {
-    pub(super) name: String,
-    pub(super) description: String,
+pub(crate) struct SubDomainSuggestion {
+    pub(crate) name: String,
+    pub(crate) description: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct DiscoveryAnswer {
-    pub(super) question: String,
-    pub(super) answer: String,
+pub(crate) struct DiscoveryAnswer {
+    pub(crate) question: String,
+    pub(crate) answer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum DiscoveryFinding {
+pub(crate) enum DiscoveryFinding {
     MissingProblemStatement,
     MissingGoals,
     MissingConstraints,
@@ -79,13 +79,13 @@ pub(super) enum DiscoveryFinding {
 /// Internal task output that carries the conversation turn so it can be accumulated
 /// across repair attempts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct DiscoveryTaskOutput {
-    pub(super) output: DiscoveryOutput,
-    pub(super) conversation_turn: Vec<Message>,
+pub(crate) struct DiscoveryTaskOutput {
+    pub(crate) output: DiscoveryOutput,
+    pub(crate) conversation_turn: Vec<Message>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct DiscoveryInput {
+pub(crate) struct DiscoveryInput {
     initial_prompt: String,
     answers: Vec<DiscoveryAnswer>,
     findings: Vec<DiscoveryFinding>,

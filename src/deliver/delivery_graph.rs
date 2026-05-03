@@ -513,4 +513,107 @@ mod tests {
         );
         assert!(progress.batches[1].completed);
     }
+
+    #[test]
+    fn multi_job_complex_dependency_produces_three_batches() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let b = tree.add_child(tree.root, "B", "").unwrap();
+        let c = tree.add_child(tree.root, "C", "").unwrap();
+        let d = tree.add_child(tree.root, "D", "").unwrap();
+        assert!(tree.add_dependency(b, a));
+        assert!(tree.add_dependency(c, a));
+        assert!(tree.add_dependency(d, b));
+        assert!(tree.add_dependency(d, c));
+
+        let graph = DeliveryGraph::from_domain_tree(&tree).expect("should build");
+
+        assert_eq!(graph.batches.len(), 3);
+        assert_eq!(graph.batches[0].nodes, vec![a]);
+        assert_eq!(graph.batches[1].nodes.len(), 2);
+        assert!(graph.batches[1].nodes.contains(&b));
+        assert!(graph.batches[1].nodes.contains(&c));
+        assert_eq!(graph.batches[2].nodes, vec![d]);
+    }
+
+    #[test]
+    fn parallel_batch_nodes_have_no_inter_dependencies() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let b = tree.add_child(tree.root, "B", "").unwrap();
+        let c = tree.add_child(tree.root, "C", "").unwrap();
+        let d = tree.add_child(tree.root, "D", "").unwrap();
+        assert!(tree.add_dependency(c, a));
+        assert!(tree.add_dependency(d, b));
+
+        let graph = DeliveryGraph::from_domain_tree(&tree).expect("should build");
+
+        assert_eq!(graph.batches.len(), 2);
+        assert_eq!(graph.batches[0].nodes.len(), 2);
+        assert!(graph.batches[0].nodes.contains(&a));
+        assert!(graph.batches[0].nodes.contains(&b));
+        assert_eq!(graph.batches[1].nodes.len(), 2);
+        assert!(graph.batches[1].nodes.contains(&c));
+        assert!(graph.batches[1].nodes.contains(&d));
+
+        for batch in &graph.batches {
+            for node_id in &batch.nodes {
+                for other_id in &batch.nodes {
+                    if node_id != other_id {
+                        assert!(
+                            !tree.depends_on(*node_id, *other_id),
+                            "nodes in the same batch should not depend on each other"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delivery_graph_tracks_active_batch_through_execution() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let b = tree.add_child(tree.root, "B", "").unwrap();
+        let c = tree.add_child(tree.root, "C", "").unwrap();
+        assert!(tree.add_dependency(b, a));
+        assert!(tree.add_dependency(c, a));
+
+        let mut graph = DeliveryGraph::from_domain_tree(&tree).expect("should build");
+
+        assert!(graph.active_batch().is_none());
+
+        graph.advance_batch();
+        assert_eq!(graph.active_batch().unwrap().nodes, vec![a]);
+        graph.set_status(a, DeliveryJobStatus::Succeeded);
+
+        graph.advance_batch();
+        assert_eq!(graph.active_batch().unwrap().nodes.len(), 2);
+        assert!(graph.active_batch().unwrap().nodes.contains(&b));
+        assert!(graph.active_batch().unwrap().nodes.contains(&c));
+        graph.set_status(b, DeliveryJobStatus::Succeeded);
+        graph.set_status(c, DeliveryJobStatus::Succeeded);
+
+        let progress = graph.progress();
+        assert_eq!(progress.total_batches, 2);
+        assert_eq!(progress.completed_batches, 2);
+        assert_eq!(progress.succeeded_nodes, 3);
+    }
+
+    #[test]
+    fn progress_reports_running_nodes_in_active_batch() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let _b = tree.add_child(tree.root, "B", "").unwrap();
+        tree.add_child(tree.root, "C", "").unwrap();
+
+        let mut graph = DeliveryGraph::from_domain_tree(&tree).expect("should build");
+        graph.advance_batch();
+        graph.set_status(a, DeliveryJobStatus::Running);
+
+        let progress = graph.progress();
+        assert_eq!(progress.running_nodes, 1);
+        assert_eq!(progress.pending_nodes, 2);
+        assert_eq!(progress.active_batch_index, Some(0));
+    }
 }

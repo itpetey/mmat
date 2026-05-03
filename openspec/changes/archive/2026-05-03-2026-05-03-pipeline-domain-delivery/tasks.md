@@ -34,33 +34,33 @@
 
 - [x] 4.1 Define `DomainTree`, `DomainNode`, `DomainNodeId`, `DomainTreeConfig` types in `src/plan/domain_map.rs`
 - [x] 4.2 Implement configurable maximum tree depth via `DomainTreeConfig::max_depth` (default: 3)
-- [ ] 4.3 Implement recursive sub-divide discovery: LLM-driven domain decomposition with max depth enforcement
-- [ ] 4.4 Implement per-sub-domain Pipeline construction for plan stages (discovery → knowledge → solutions → architect)
-- [ ] 4.5 Implement cross-sub-domain knowledge sharing with `Public`/`Private` visibility on knowledge groups
-- [ ] 4.6 Implement per-sub-domain solution branch generation and selection
+- [x] 4.3 Implement recursive sub-divide discovery: LLM-driven domain decomposition with max depth enforcement
+- [x] 4.4 Implement per-sub-domain Pipeline construction for plan stages (discovery → knowledge → solutions → architect)
+- [x] 4.5 Implement cross-sub-domain knowledge sharing with `Public`/`Private` visibility on knowledge groups
+- [x] 4.6 Implement per-sub-domain solution branch generation and selection
 - [x] 4.7 Add domain map unit tests (tree construction, depth capping, leaf detection, config validation)
-- [ ] 4.8 Add domain map integration tests (recursive sub-divide with scripted LLM)
+- [x] 4.8 Add domain map integration tests (recursive sub-divide with scripted LLM)
 
 ## 5. MMAT graph-based delivery
 
 - [x] 5.1 Define `DeliveryGraph`, `DeliveryBatch`, `DeliveryNode` types in `src/deliver/delivery_graph.rs`
 - [x] 5.2 Implement topological sort that produces dependency-ordered batches
-- [ ] 5.3 Implement parallel batch execution in `deliver/queue.rs` (separate worktrees for concurrent jobs)
+- [x] 5.3 Implement parallel batch execution in `deliver/queue.rs` (separate worktrees for concurrent jobs)
 - [x] 5.4 Update `BuildJob` to reference sub-domain node IDs
 - [x] 5.5 Implement batch-level progress tracking and reporting
 - [x] 5.6 Add delivery graph unit tests (topological sort, batch grouping, cycle detection)
-- [ ] 5.7 Add delivery graph integration tests (multi-job execution, parallel batch verification)
+- [x] 5.7 Add delivery graph integration tests (multi-job execution, parallel batch verification)
 
 ## 6. MMAT architectural backflow
 
 - [x] 6.1 Define `BackflowEvent`, `BackflowSeverity` types in `src/plan/backflow.rs`
-- [ ] 6.2 Implement severity-based routing in delivery Pipeline (Route::Switch back to architect/solutions/discovery)
+- [x] 6.2 Implement severity-based routing in delivery Pipeline (Route::Switch back to architect/solutions/discovery)
 - [x] 6.3 Implement cascade logic: Critical backflow marks dependent sub-domains for replanning
-- [ ] 6.4 Implement configurable backflow cascade depth via `DomainTreeConfig::max_cascade_depth` (default: 3); escalate to human review when exhausted
-- [ ] 6.5 Implement knowledge group cleanup on sub-domain replanning: delete orphaned groups before re-materialising
-- [ ] 6.6 Wire backflow into `BuildEngine::final_review` result handling
-- [ ] 6.7 Add backflow unit tests (severity routing, cascade, depth capping, knowledge cleanup)
-- [ ] 6.8 Add backflow integration tests (end-to-end: discovery → plan → deliver → backflow → replan)
+- [x] 6.4 Implement configurable backflow cascade depth via `DomainTreeConfig::max_cascade_depth` (default: 3); escalate to human review when exhausted
+- [x] 6.5 Implement knowledge group cleanup on sub-domain replanning: delete orphaned groups before re-materialising
+- [x] 6.6 Wire backflow into `BuildEngine::final_review` result handling
+- [x] 6.7 Add backflow unit tests (severity routing, cascade, depth capping, knowledge cleanup)
+- [x] 6.8 Add backflow integration tests (end-to-end: discovery → plan → deliver → backflow → replan)
 
 ## 7. MMAT pipeline migration
 
@@ -79,15 +79,15 @@
 
 - [x] 8.1 Extend `UiState` and `UiSnapshot` with domain tree, delivery graph, sub-domain state, backflow notifications, and tab management fields. All new fields are optional so existing single-project flow works unchanged.
 - [x] 8.2 Add new `FrontendEvent` variants: `DomainTreeUpdated`, `DomainNodePhaseChanged`, `BackflowStarted`, `BackflowCascade`, `BackflowResolved`, `BackflowHalting`, `DeliveryGraphUpdated`, `DeliveryBatchStarted`, `DeliveryBatchCompleted`.
-- [ ] 8.3 Add CSS for multi-domain 3-column shell (`.mmat-multi-domain` class), tab bar, domain tree with status badges, delivery graph with batch layers, backflow banner with severity colours, and right detail panel.
-- [ ] 8.4 Implement `TabBar` and `TabPanel` components — in-app tabs for sub-domain conversations with tab ordering, close support, backflow highlighting, and state preservation across tab switches.
-- [ ] 8.5 Implement `DomainTree` sidebar component — nested indent tree with per-node status badges, click-to-focus-tab navigation, and empty-tree placeholder.
-- [ ] 8.6 Implement `DeliveryGraph` mini-view component — batch layers with colour-coded job nodes, active batch highlighting, and pending placeholder.
-- [ ] 8.7 Implement `BackflowBanner` component — severity-coloured alert above affected sub-domain's conversation with cascade info and halt-on-exhausted notice.
-- [ ] 8.8 Implement `PipelinePhaseIndicator` breadcrumb component — shows per-sub-domain pipeline stage with current highlight, completed/pending states, and backflow retrace path.
-- [ ] 8.9 Implement `RightDetailPanel` component — collapsible contextual panel showing node status, phase, depth, knowledge group counts, dependents, and backflow history.
+- [x] 8.3 Add CSS for multi-domain 3-column shell (`.mmat-multi-domain` class), tab bar, domain tree with status badges, delivery graph with batch layers, backflow banner with severity colours, and right detail panel.
+- [x] 8.4 Implement `TabBar` and `TabPanel` components — in-app tabs for sub-domain conversations with tab ordering, close support, backflow highlighting, and state preservation across tab switches.
+- [x] 8.5 Implement `DomainTree` sidebar component — nested indent tree with per-node status badges, click-to-focus-tab navigation, and empty-tree placeholder.
+- [x] 8.6 Implement `DeliveryGraph` mini-view component — batch layers with colour-coded job nodes, active batch highlighting, and pending placeholder.
+- [x] 8.7 Implement `BackflowBanner` component — severity-coloured alert above affected sub-domain's conversation with cascade info and halt-on-exhausted notice.
+- [x] 8.8 Implement `PipelinePhaseIndicator` breadcrumb component — shows per-sub-domain pipeline stage with current highlight, completed/pending states, and backflow retrace path.
+- [x] 8.9 Implement `RightDetailPanel` component — collapsible contextual panel showing node status, phase, depth, knowledge group counts, dependents, and backflow history.
 - [x] 8.10 Update `RootApp` to conditionally render multi-domain shell or single-column shell based on presence of `domain_tree`.
-- [ ] 8.11 Add UI tests for tab management (open, close, switch, preserve state), domain tree navigation, backflow banner display, and multi-column vs single-column layout switch.
+- [x] 8.11 Add UI tests for tab management (open, close, switch, preserve state), domain tree navigation, backflow banner display, and multi-column vs single-column layout switch.
 
 ## 9. Verification
 
@@ -97,4 +97,4 @@
 - [x] 9.4 Run `cargo fmt --all` in MMAT
 - [x] 9.5 Run `cargo clippy -- -D warnings` in MMAT
 - [x] 9.6 Run `cargo test` in MMAT
-- [ ] 9.7 End-to-end test: greenfield a multi-sub-domain project through the full pipeline
+- [x] 9.7 End-to-end test: greenfield a multi-sub-domain project through the full pipeline

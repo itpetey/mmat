@@ -24,7 +24,8 @@ use crate::{
         queue::{BuildJob, BuildJobId},
     },
     plan::{
-        DesignHandoff, KnowledgeRuntimeConfig, input_token_budget_for_model, parser::decode_outcome,
+        BackflowEvent, BackflowSeverity, DesignHandoff, KnowledgeRuntimeConfig,
+        input_token_budget_for_model, parser::decode_outcome,
     },
     project::ProjectConfig,
 };
@@ -59,6 +60,8 @@ pub enum DeliveryError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Artefact(#[from] DeliveryArtifactError),
+    #[error("architectural backflow required: {0:?}")]
+    Backflow(crate::plan::BackflowEvent),
 }
 
 #[derive(Clone)]
@@ -160,6 +163,20 @@ impl BuildEngine {
                     next_step: review.next_step.clone(),
                 };
                 runtime.write_json(&job.id, DeliveryArtifact::Outcome, &outcome)?;
+
+                if let Some(node_id) = job.domain_node_id {
+                    let severity = backflow_severity_from_findings(&review.findings);
+                    let event = BackflowEvent::new(
+                        node_id,
+                        severity,
+                        format!(
+                            "delivery failed after {remediation_pass} remediation pass(es): {}",
+                            review.summary
+                        ),
+                    );
+                    return Err(DeliveryError::Backflow(event));
+                }
+
                 return Err(DeliveryError::Workflow(format!(
                     "final review did not accept the delivery: {}",
                     review.summary
@@ -792,6 +809,25 @@ where
     T: Serialize + ?Sized,
 {
     Ok(serde_json::to_string_pretty(value)?)
+}
+
+/// Determines the backflow severity from a set of delivery findings.
+///
+/// Maps the highest finding severity to a backflow severity. If no findings
+/// are present, defaults to `Minor`.
+fn backflow_severity_from_findings(findings: &[StageFinding]) -> BackflowSeverity {
+    let mut severity = BackflowSeverity::Minor;
+    for finding in findings {
+        match finding.severity.to_ascii_lowercase().as_str() {
+            "critical" => return BackflowSeverity::Critical,
+            "major" => severity = BackflowSeverity::Major,
+            "moderate" if severity < BackflowSeverity::Moderate => {
+                severity = BackflowSeverity::Moderate;
+            }
+            _ => {}
+        }
+    }
+    severity
 }
 
 fn workflow_llm_config() -> OpenAiConfig {

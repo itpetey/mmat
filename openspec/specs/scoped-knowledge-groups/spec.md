@@ -1,53 +1,33 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Knowledge planning is separate from knowledge materialisation
-The system SHALL produce a knowledge plan before mutating knowledge-group state, and SHALL materialise knowledge groups through a separate deterministic stage.
+### Requirement: Knowledge groups support cross-sub-domain visibility
+The system SHALL allow knowledge groups to be declared as `Public` (visible to dependent sub-domains) or `Private` (visible only to the owning sub-domain).
 
-#### Scenario: Discovery identifies useful downstream knowledge
-- **WHEN** the workflow determines that downstream stages would benefit from additional learning context
-- **THEN** it MUST produce a knowledge plan describing zero or more candidate knowledge groups and their intended consumers
+#### Scenario: Public knowledge group is visible to dependents
+- **WHEN** sub-domain A creates a knowledge group with `Public` visibility
+- **AND** sub-domain B depends on A
+- **THEN** B's knowledge sessions for architect, implementation planning, and execution MUST include A's public groups
 
-#### Scenario: Materialisation applies the knowledge plan
-- **WHEN** a knowledge plan is accepted for materialisation
-- **THEN** the system MUST validate the proposed groups and materialise only the groups described by that plan
+#### Scenario: Private knowledge group is isolated to owner
+- **WHEN** sub-domain A creates a knowledge group with `Private` visibility
+- **AND** sub-domain B depends on A
+- **THEN** B's knowledge sessions MUST NOT include A's private groups
 
-### Requirement: Knowledge groups are persisted in SQLite
-The system SHALL persist knowledge-group metadata in SQLite rather than filesystem-backed group storage.
+#### Scenario: Default visibility is private
+- **WHEN** a knowledge group is created without an explicit visibility declaration
+- **THEN** it MUST default to `Private` visibility
 
-#### Scenario: Materialised knowledge group metadata is saved
-- **WHEN** a knowledge group is created or updated during materialisation
-- **THEN** its metadata MUST be persisted through a SQLite-backed knowledge-group store
+### Requirement: Knowledge exposure is scoped per stage and per sub-domain
+The system SHALL expose only the materialised knowledge groups that a given sub-domain plus its dependency chain are allowed to use, in addition to the existing per-stage scoping.
 
-### Requirement: Knowledge groups use controlled templates and run-specific instances
-The system SHALL derive knowledge groups from a controlled template vocabulary and create concrete group instances only when the current run needs them.
+#### Scenario: Sub-domain receives its own plus upstream public groups
+- **WHEN** a solution generation stage runs for sub-domain B (which depends on A)
+- **THEN** its LLM context MUST include B's own knowledge groups scoped to solution generation, plus A's public groups scoped to solution generation
 
-#### Scenario: Planner proposes a repository code group
-- **WHEN** the planner identifies repository code as relevant evidence
-- **THEN** it MUST select a controlled group template and produce a concrete instance for the current run rather than inventing an unconstrained group shape
+#### Scenario: No cross-contamination between independent sub-domains
+- **WHEN** two sub-domains A and C have no dependency relationship
+- **THEN** neither MUST receive the other's knowledge groups
 
-#### Scenario: No unnecessary groups are created
-- **WHEN** a run does not need a given kind of knowledge
-- **THEN** the system MUST allow the knowledge plan to materialise zero instances of that group type
+## REMOVED Requirements
 
-### Requirement: Knowledge exposure is scoped per stage
-The system SHALL expose only the materialised knowledge groups that a given workflow stage is allowed to use, and SHALL optionally provide tool-based access to those groups.
-
-#### Scenario: Solution generation receives only selected groups
-- **WHEN** the solution branch generation stage is built
-- **THEN** its LLM context MUST include only the knowledge groups selected for solution generation rather than every materialised group in the run
-
-#### Scenario: Architect stage can receive a different scope
-- **WHEN** the Software Architect stage runs after solution selection
-- **THEN** it MUST be able to receive a different set of materialised knowledge groups from the solution generation stage
-
-#### Scenario: Tool-capable stages receive knowledge as tool registry
-- **WHEN** a workflow stage supports tool calls
-- **THEN** its `StageKnowledgeSession` MAY include a `ToolRegistry` scoped to the stage's knowledge groups
-- **AND** the registry MUST be buildable from the same materials used to construct the stage's system prompt augmentation
-
-### Requirement: Platform knowledge gaps are tracked as upstream work
-The system SHALL record missing platform-level knowledge capabilities as upstream NAAF work rather than silently embedding MMAT-only replacements as permanent behaviour.
-
-#### Scenario: Duplicate detection is unavailable in NAAF
-- **WHEN** MMAT depends on knowledge duplicate detection that NAAF does not yet provide
-- **THEN** the change documentation MUST identify that gap as upstream NAAF work instead of treating a local workaround as the final platform design
+None. Existing scoped knowledge behaviour (stage-scoped sessions, SQLite persistence, controlled templates, lint validation) is preserved. This modification adds cross-sub-domain visibility without removing existing functionality.

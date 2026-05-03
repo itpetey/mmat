@@ -1,15 +1,4 @@
-## ADDED Requirements
-
-### Requirement: Discovery gathers architect-ready intent through live recursion
-The system SHALL run discovery as a live human-in-the-loop workflow stage that can recursively gather clarifications until the context is ready for downstream solution generation.
-
-#### Scenario: Discovery asks a live clarification question
-- **WHEN** discovery identifies a blocking ambiguity that cannot be resolved from the repository or currently materialised knowledge
-- **THEN** it MUST ask the user a live follow-up question before continuing the discovery flow
-
-#### Scenario: Discovery continues after an answer
-- **WHEN** the user answers a live discovery question
-- **THEN** the next discovery turn MUST incorporate that answer into the gathered context instead of starting from a blank prompt
+## MODIFIED Requirements
 
 ### Requirement: Discovery produces a structured handoff for solution generation
 The system SHALL produce a structured discovery result that records the current problem statement, goals, constraints, assumptions, risks, and readiness for solution generation.
@@ -22,9 +11,23 @@ The system SHALL produce a structured discovery result that records the current 
 - **WHEN** discovery proceeds despite unresolved but non-blocking ambiguity
 - **THEN** the structured handoff MUST include those uncertainties as explicit assumptions, defaults, or risks
 
-### Requirement: Discovery workflow code is stage-owned
-The discovery implementation SHALL be organised as a subject-owned workflow module rather than being split across generic prompt, model, step, and task modules.
+#### Scenario: Discovery produces a domain node
+- **WHEN** discovery runs as part of domain-mapped planning
+- **THEN** it MUST produce a `DomainNode` that includes either sub-domain children (for further decomposition) or a solution-ready handoff (for leaf nodes)
 
-#### Scenario: Discovery code is traced end-to-end
-- **WHEN** a developer inspects the discovery workflow implementation
-- **THEN** the core discovery types, prompt construction, and step orchestration MUST be located under the discovery workflow module
+### Requirement: Discovery supports parallel tab-based sessions
+The system SHALL allow multiple discovery sessions to run concurrently, each in its own UI context.
+
+#### Scenario: Independent sub-domain discoveries run in parallel
+- **WHEN** the domain tree contains multiple sub-domains with no parent-child relationship
+- **THEN** their discovery sessions MUST be able to run concurrently
+- **AND** the UI MUST present each session in a separate tab
+
+#### Scenario: User switches between discovery tabs
+- **WHEN** multiple discovery sessions are active
+- **THEN** the user MUST be able to switch between tabs to answer questions for different sub-domains
+- **AND** each tab MUST preserve its own conversation state independently
+
+## REMOVED Requirements
+
+None. The existing discovery behaviour (live recursion, structured handoff, stage-owned code) is preserved. This modification adds domain-tree awareness and parallel session support without removing existing functionality.

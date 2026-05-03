@@ -270,8 +270,12 @@ mod tests {
 
         assert_eq!(tree.get(a).unwrap().status, DomainNodeStatus::Replanning);
         assert_eq!(tree.get(b).unwrap().status, DomainNodeStatus::Replanning);
-        assert_eq!(application.replanning_nodes, vec![a, b]);
-        assert_eq!(application.invalidated_delivery_nodes, vec![a, b]);
+        assert!(application.replanning_nodes.contains(&a));
+        assert!(application.replanning_nodes.contains(&b));
+        assert_eq!(application.replanning_nodes.len(), 2);
+        assert!(application.invalidated_delivery_nodes.contains(&a));
+        assert!(application.invalidated_delivery_nodes.contains(&b));
+        assert_eq!(application.invalidated_delivery_nodes.len(), 2);
     }
 
     #[test]
@@ -291,6 +295,57 @@ mod tests {
         assert!(!cascade.is_affected(c));
         assert!(cascade.halted(1));
         assert!(cascade.requires_human_review(1));
+    }
+
+    #[test]
+    fn backflow_event_with_cascade_depth_builder() {
+        let event = BackflowEvent::new(
+            DomainNodeId::new(),
+            BackflowSeverity::Critical,
+            "test reason",
+        )
+        .with_cascade_depth(2);
+        assert_eq!(event.cascade_depth, 2);
+    }
+
+    #[test]
+    fn backflow_application_tracks_invalidated_delivery_nodes() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let b = tree.add_child(tree.root, "B", "").unwrap();
+        tree.add_dependency(b, a);
+        tree.get_mut(a).unwrap().status = DomainNodeStatus::Complete;
+        tree.get_mut(b).unwrap().status = DomainNodeStatus::Delivering;
+
+        let event = BackflowEvent::new(a, BackflowSeverity::Major, "interface mismatch");
+        let cascade = BackflowCascade::compute(&tree, &event, 3);
+        let application = cascade.apply_to_domain_tree(&mut tree);
+
+        assert!(!application.human_review_required);
+        assert_eq!(application.replanning_nodes, vec![a]);
+        assert_eq!(application.invalidated_delivery_nodes, vec![a]);
+    }
+
+    #[test]
+    fn backflow_application_on_non_critical_does_not_cascade() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let b = tree.add_child(tree.root, "B", "").unwrap();
+        tree.add_dependency(b, a);
+
+        let event = BackflowEvent::new(a, BackflowSeverity::Moderate, "rethink architect");
+        let cascade = BackflowCascade::compute(&tree, &event, 3);
+
+        assert!(cascade.is_affected(a));
+        assert!(!cascade.is_affected(b));
+        assert_eq!(cascade.affected_nodes[&a].cascade_depth, 0);
+    }
+
+    #[test]
+    fn backflow_severity_ordering() {
+        assert!(BackflowSeverity::Minor < BackflowSeverity::Moderate);
+        assert!(BackflowSeverity::Moderate < BackflowSeverity::Major);
+        assert!(BackflowSeverity::Major < BackflowSeverity::Critical);
     }
 
     #[test]
@@ -319,5 +374,66 @@ mod tests {
 
         let application = cascade.apply_to_domain_tree(&mut tree);
         assert!(application.human_review_required);
+    }
+
+    #[test]
+    fn end_to_end_backflow_cycle_discovery_to_replanning() {
+        let mut tree = DomainTree::new("Platform", "A data platform");
+        let ingestion = tree
+            .add_child(tree.root, "Ingestion", "Data ingestion")
+            .unwrap();
+        let storage = tree
+            .add_child(tree.root, "Storage", "Data storage")
+            .unwrap();
+        let api = tree.add_child(tree.root, "API", "REST API").unwrap();
+
+        tree.add_dependency(api, storage);
+        tree.add_dependency(api, ingestion);
+
+        // Simulate delivery completion for storage and api.
+        tree.get_mut(storage).unwrap().status = DomainNodeStatus::Complete;
+        tree.get_mut(api).unwrap().status = DomainNodeStatus::Delivering;
+
+        // Critical backflow from storage triggers cascade to api.
+        let event = BackflowEvent::new(storage, BackflowSeverity::Critical, "schema changed");
+        let cascade = BackflowCascade::compute_for_tree(&tree, &event);
+        let application = cascade.apply_to_domain_tree(&mut tree);
+
+        assert!(cascade.is_affected(storage));
+        assert!(cascade.is_affected(api));
+        assert!(!cascade.is_affected(ingestion));
+        assert_eq!(
+            tree.get(storage).unwrap().status,
+            DomainNodeStatus::Replanning
+        );
+        assert_eq!(tree.get(api).unwrap().status, DomainNodeStatus::Replanning);
+        assert!(application.replanning_nodes.contains(&storage));
+        assert!(application.replanning_nodes.contains(&api));
+        assert_eq!(application.replanning_nodes.len(), 2);
+        assert!(application.invalidated_delivery_nodes.contains(&storage));
+        assert!(application.invalidated_delivery_nodes.contains(&api));
+        assert_eq!(application.invalidated_delivery_nodes.len(), 2);
+    }
+
+    #[test]
+    fn backflow_from_root_affects_all_dependents() {
+        let mut tree = DomainTree::new("Root", "Root desc");
+        let a = tree.add_child(tree.root, "A", "").unwrap();
+        let b = tree.add_child(tree.root, "B", "").unwrap();
+        let c = tree.add_child(tree.root, "C", "").unwrap();
+        let d = tree.add_child(tree.root, "D", "").unwrap();
+        tree.add_dependency(a, tree.root);
+        tree.add_dependency(b, tree.root);
+        tree.add_dependency(c, a);
+        tree.add_dependency(d, b);
+
+        let event = BackflowEvent::new(tree.root, BackflowSeverity::Critical, "root broken");
+        let cascade = BackflowCascade::compute(&tree, &event, 3);
+
+        assert!(cascade.is_affected(tree.root));
+        assert!(cascade.is_affected(a));
+        assert!(cascade.is_affected(b));
+        assert!(cascade.is_affected(c));
+        assert!(cascade.is_affected(d));
     }
 }

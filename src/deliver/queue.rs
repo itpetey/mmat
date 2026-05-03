@@ -14,6 +14,7 @@ use tokio::sync::Notify;
 
 use crate::{
     MmatError,
+    deliver::DeliveryGraph,
     plan::{DesignHandoff, domain_map::DomainNodeId},
     project::{ProjectConfig, ProjectId},
 };
@@ -378,6 +379,96 @@ pub async fn drain_project_queue(
         tracing::debug!(target: "mmat::deliver", project_id = %project_id, job_id = %job_id, "delivery job drained");
     }
 
+    Ok(())
+}
+
+/// Executes a delivery graph batch-by-batch, running jobs within each batch
+/// concurrently in separate worktrees.
+///
+/// All jobs in a batch are started together. The function waits for every job
+/// in the batch to complete (success or failure) before advancing to the next
+/// batch. This preserves dependency ordering while maximising parallelism for
+/// independent jobs.
+pub async fn execute_delivery_graph(
+    project_id: &ProjectId,
+    store: &BuildQueueStore,
+    engine: &BuildEngine,
+    graph: &mut DeliveryGraph,
+    events: impl Fn(BuildWorkerEvent) + Send + Sync + 'static,
+) -> Result<(), BuildQueueError> {
+    let events = Arc::new(events);
+
+    for batch in &graph.batches {
+        let batch_index = batch.index;
+        graph.active_batch_index = Some(batch_index);
+        events(BuildWorkerEvent::QueueChanged {
+            project_id: project_id.clone(),
+            jobs: store.list_for_project(project_id)?,
+        });
+
+        let mut futures = Vec::new();
+
+        for _node_id in &batch.nodes {
+            let Some(job) = store.next_pending(project_id)? else {
+                continue;
+            };
+            store.mark_running(&job.id)?;
+            events(BuildWorkerEvent::JobStarted {
+                project_id: project_id.clone(),
+                job_id: job.id.clone(),
+            });
+            events(BuildWorkerEvent::QueueChanged {
+                project_id: project_id.clone(),
+                jobs: store.list_for_project(project_id)?,
+            });
+
+            let job_id = job.id.clone();
+            let engine = engine.clone();
+            let store_ref = store.clone();
+            let project_id = project_id.clone();
+            let events = events.clone();
+
+            futures.push(async move {
+                let result: Result<(), DeliveryError> = engine.run(&job).await;
+                match result {
+                    Ok(()) => {
+                        let _ = store_ref.mark_succeeded(&job_id);
+                        events(BuildWorkerEvent::JobFinished {
+                            project_id: project_id.clone(),
+                            job_id: job_id.clone(),
+                            status: BuildJobStatus::Succeeded,
+                            error: None,
+                        });
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        let _ = store_ref.mark_failed(&job_id, error.clone());
+                        events(BuildWorkerEvent::JobFinished {
+                            project_id: project_id.clone(),
+                            job_id: job_id.clone(),
+                            status: BuildJobStatus::Failed,
+                            error: Some(error),
+                        });
+                    }
+                }
+                events(BuildWorkerEvent::QueueChanged {
+                    project_id: project_id.clone(),
+                    jobs: store_ref.list_for_project(&project_id).unwrap_or_default(),
+                });
+            });
+        }
+
+        futures::future::join_all(futures).await;
+
+        tracing::info!(
+            target: "mmat::deliver",
+            project_id = %project_id,
+            batch_index,
+            "delivery batch completed"
+        );
+    }
+
+    graph.active_batch_index = None;
     Ok(())
 }
 
