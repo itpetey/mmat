@@ -828,6 +828,7 @@ mod tests {
             notes: Vec::new(),
             recommended_path: "Generate solution branches".to_string(),
             open_questions: Vec::new(),
+            sub_domains: Vec::new(),
         }
     }
 

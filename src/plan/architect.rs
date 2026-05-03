@@ -387,6 +387,7 @@ mod tests {
                 notes: Vec::new(),
                 recommended_path: "Architect selected branch".to_string(),
                 open_questions: Vec::new(),
+                sub_domains: Vec::new(),
             },
             SelectedSolution {
                 choice_label: "recommended".to_string(),

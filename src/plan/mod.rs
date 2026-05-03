@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use naaf_core::{Step, StepReport, task_fn};
+use naaf_core::{PhaseId, Pipeline, Route, Step, StepError, StepReport, task_fn};
 use naaf_llm::{
     CompletionRequest, ExecutionOutcome, Executor, ExecutorError, HumanIO, LlmAgent, LlmClient,
     OpenAiClient, OpenAiConfig, OpenAiStreamObserver, TaskError,
@@ -21,6 +21,7 @@ use crate::{MmatError, project::ProjectConfig};
 
 mod architect;
 mod discovery;
+pub mod domain_map;
 mod knowledge;
 pub mod parser;
 mod solutions;
@@ -150,22 +151,9 @@ pub struct GreenfieldReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct KnowledgeMaterialisationInput {
-    discovery: discovery::DiscoveryOutput,
-    plan: knowledge::KnowledgePlan,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct KnowledgeMaterialisationOutput {
     discovery: discovery::DiscoveryOutput,
     materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct SolutionCollectionContext {
-    discovery: discovery::DiscoveryOutput,
-    materialised: Vec<knowledge::MaterialisedKnowledgeGroup>,
-    collection: solutions::SolutionCollection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,9 +501,59 @@ where
     R::Error: Debug + Display + 'static,
     E: Debug + Display + 'static,
 {
+    let pipeline = build_greenfield_pipeline(
+        agent,
+        knowledge_store,
+        knowledge_backend,
+        knowledge_collection_prefix,
+        workspace_root,
+    );
+    let pipeline = std::sync::Arc::new(pipeline);
+
+    Step::builder(task_fn(
+        move |runtime: &R, input: discovery::DiscoveryInput| {
+            let pipeline = std::sync::Arc::clone(&pipeline);
+            Box::pin(async move {
+                pipeline.run(runtime, input).await.map_err(|error| {
+                    TaskError::Build(WorkflowBuildError::Workflow(error.to_string()))
+                })
+            })
+        },
+    ))
+    .with_findings::<WorkflowFinding>()
+    .build()
+}
+
+macro_rules! map_step_error {
+    ($error:expr) => {
+        match $error {
+            StepError::System { error, .. } => error,
+            StepError::Rejected(report) => TaskError::Build(WorkflowBuildError::Workflow(format!(
+                "step rejected after {} attempts",
+                report.attempt_count()
+            ))),
+        }
+    };
+}
+
+fn build_greenfield_pipeline<C, R, E>(
+    agent: &LlmAgent<C, R, E>,
+    knowledge_store: Arc<SqliteKnowledgeGroupStore>,
+    knowledge_backend: Arc<knowledge::QdrantKnowledgeBackend<R>>,
+    knowledge_collection_prefix: String,
+    workspace_root: PathBuf,
+) -> Pipeline<R, WorkflowTaskError<C, R, E>>
+where
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + Display + 'static,
+    E: Debug + Display + 'static,
+{
     let discovery = discovery::step_with_repository_tools(agent, workspace_root.clone())
         .map_findings(WorkflowFinding::from);
-    let knowledge = knowledge::step_with_lint(
+
+    let knowledge_planning = knowledge::step_with_lint(
         agent,
         knowledge_store.clone(),
         knowledge_collection_prefix.clone(),
@@ -523,60 +561,108 @@ where
     )
     .map_input(knowledge::KnowledgeInput::new)
     .map_findings(WorkflowFinding::from);
-    let knowledge_context = knowledge
-        .with_input()
-        .map(|(discovery, plan)| KnowledgeMaterialisationInput { discovery, plan });
 
     let materialisation =
         knowledge::materialisation_step::<C, R, E, knowledge::QdrantKnowledgeBackend<R>>(
-            knowledge_store.clone(),
+            knowledge_store,
             knowledge_backend.clone(),
-            knowledge_collection_prefix.clone(),
+            knowledge_collection_prefix,
         )
-        .map_input(|input: KnowledgeMaterialisationInput| input.plan)
-        .map_with_input(|input, materialised| KnowledgeMaterialisationOutput {
-            discovery: input.discovery,
-            materialised,
-        })
         .map_findings(WorkflowFinding::from);
 
-    let solution_branches = solution_branch_step::<C, R, E>(
+    let knowledge_materialisation = Step::builder(task_fn(
+        move |runtime: &R, discovery: discovery::DiscoveryOutput| {
+            let planning = knowledge_planning.clone();
+            let materialisation = materialisation.clone();
+            Box::pin(async move {
+                let plan = planning
+                    .run(runtime, discovery.clone())
+                    .await
+                    .map_err(|e| map_step_error!(e))?;
+                let materialised = materialisation
+                    .run(runtime, plan)
+                    .await
+                    .map_err(|e| map_step_error!(e))?;
+                Ok(KnowledgeMaterialisationOutput {
+                    discovery,
+                    materialised,
+                })
+            })
+        },
+    ))
+    .with_findings::<WorkflowFinding>()
+    .build();
+
+    let branch1 = solution_branch_step::<C, R, E>(
         solutions::branch_step(agent, workspace_root.clone()),
         solutions::SolutionBranch::Conservative,
-    )
-    .join(solution_branch_step::<C, R, E>(
+    );
+    let branch2 = solution_branch_step::<C, R, E>(
         solutions::branch_step(agent, workspace_root.clone()),
         solutions::SolutionBranch::Recommended,
-    ))
-    .join(solution_branch_step::<C, R, E>(
+    );
+    let branch3 = solution_branch_step::<C, R, E>(
         solutions::branch_step(agent, workspace_root.clone()),
         solutions::SolutionBranch::Ambitious,
+    );
+
+    let branches = Step::builder(task_fn(
+        move |runtime: &R, input: solutions::SolutionInput| {
+            let b1 = branch1.clone();
+            let b2 = branch2.clone();
+            let b3 = branch3.clone();
+            Box::pin(async move {
+                let (r1, r2, r3) = futures::future::try_join3(
+                    b1.run(runtime, input.clone()),
+                    b2.run(runtime, input.clone()),
+                    b3.run(runtime, input),
+                )
+                .await
+                .map_err(|e| map_step_error!(e))?;
+                Ok(vec![r1, r2, r3])
+            })
+        },
     ))
-    .map(|((conservative, recommended), ambitious)| vec![conservative, recommended, ambitious]);
-    let solution_collection = solution_branches
-        .map_input(solution_input_from_materialisation)
-        .then(
-            solutions::collect_step(agent)
-                .map_input(solutions::SolutionCollectInput::new)
-                .map_findings(WorkflowFinding::from),
-        );
+    .with_findings::<WorkflowFinding>()
+    .build();
 
-    let collection_context = solution_collection
-        .with_input()
-        .map(|(context, collection)| SolutionCollectionContext {
-            discovery: context.discovery,
-            materialised: context.materialised,
-            collection,
-        });
+    let collect = solutions::collect_step(agent)
+        .map_input(solutions::SolutionCollectInput::new)
+        .map_findings(WorkflowFinding::from);
 
-    let choice_context = solutions::choice_step::<C, R, E>()
-        .map_input(|context: SolutionCollectionContext| context.collection)
-        .map_findings(|()| unreachable!("choice step has no findings"))
-        .map_with_input(|context, choice| SolutionChoiceContext {
-            discovery: context.discovery,
-            materialised: context.materialised,
-            choice,
-        });
+    let choice = solutions::choice_step::<C, R, E>()
+        .map_findings(|()| unreachable!("choice step has no findings"));
+
+    let solutions_phase = Step::builder(task_fn(
+        move |runtime: &R, materialisation_output: KnowledgeMaterialisationOutput| {
+            let branches = branches.clone();
+            let collect = collect.clone();
+            let choice = choice.clone();
+            Box::pin(async move {
+                let solution_input =
+                    solution_input_from_materialisation(materialisation_output.clone());
+                let drafts = branches
+                    .run(runtime, solution_input)
+                    .await
+                    .map_err(|e| map_step_error!(e))?;
+                let collection = collect
+                    .run(runtime, drafts)
+                    .await
+                    .map_err(|e| map_step_error!(e))?;
+                let user_choice = choice
+                    .run(runtime, collection)
+                    .await
+                    .map_err(|e| map_step_error!(e))?;
+                Ok(SolutionChoiceContext {
+                    discovery: materialisation_output.discovery,
+                    materialised: materialisation_output.materialised,
+                    choice: user_choice,
+                })
+            })
+        },
+    ))
+    .with_findings::<WorkflowFinding>()
+    .build();
 
     let architect = architect::step_with_knowledge_tools(
         agent,
@@ -586,12 +672,20 @@ where
     .map_input(architect_input_from_stage)
     .map_findings(WorkflowFinding::from);
 
-    discovery
-        .then(knowledge_context)
-        .then(materialisation)
-        .then(collection_context)
-        .then(choice_context)
-        .then(finalise_choice_step::<C, R, E>(architect))
+    let finalise = finalise_choice_step::<C, R, E>(architect);
+
+    Pipeline::builder()
+        .add_step(PhaseId::new("discovery"), discovery)
+        .with_route(PhaseId::new("discovery"), Route::next("knowledge"))
+        .add_step(PhaseId::new("knowledge"), knowledge_materialisation)
+        .with_route(PhaseId::new("knowledge"), Route::next("solutions"))
+        .add_step(PhaseId::new("solutions"), solutions_phase)
+        .with_route(PhaseId::new("solutions"), Route::next("finalise"))
+        .add_step(PhaseId::new("finalise"), finalise)
+        .with_route(PhaseId::new("finalise"), Route::halt())
+        .with_initial(PhaseId::new("discovery"))
+        .build()
+        .expect("greenfield pipeline should be valid")
 }
 
 fn finalise_choice_step<C, R, E>(

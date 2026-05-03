@@ -2916,7 +2916,6 @@ dependencies = [
 [[package]]
 name = "naaf-core"
 version = "0.1.0"
-source = "git+https://github.com/itpetey/naaf#c75f8dad7be13036af4178a1886a9142de9641e7"
 dependencies = [
  "futures",
  "serde",
@@ -2930,7 +2929,6 @@ dependencies = [
 [[package]]
 name = "naaf-knowledge"
 version = "0.1.0"
-source = "git+https://github.com/itpetey/naaf#c75f8dad7be13036af4178a1886a9142de9641e7"
 dependencies = [
  "chrono",
  "futures",
@@ -2946,7 +2944,6 @@ dependencies = [
 [[package]]
 name = "naaf-llm"
 version = "0.1.0"
-source = "git+https://github.com/itpetey/naaf#c75f8dad7be13036af4178a1886a9142de9641e7"
 dependencies = [
  "futures",
  "glob",
@@ -2963,7 +2960,6 @@ dependencies = [
 [[package]]
 name = "naaf-persistence-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/itpetey/naaf#c75f8dad7be13036af4178a1886a9142de9641e7"
 dependencies = [
  "naaf-core",
  "naaf-knowledge",
@@ -2976,7 +2972,6 @@ dependencies = [
 [[package]]
 name = "naaf-qdrant"
 version = "0.1.0"
-source = "git+https://github.com/itpetey/naaf#c75f8dad7be13036af4178a1886a9142de9641e7"
 dependencies = [
  "chrono",
  "futures",
@@ -2994,7 +2989,6 @@ dependencies = [
 [[package]]
 name = "naaf-workspace"
 version = "0.1.0"
-source = "git+https://github.com/itpetey/naaf#c75f8dad7be13036af4178a1886a9142de9641e7"
 dependencies = [
  "serde",
  "thiserror 2.0.18",

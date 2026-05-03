@@ -6,7 +6,7 @@ use naaf_llm::{
     CompletionRequest, Executor, ExecutorConfig, HumanAnswer, HumanIO, HumanQuestion, LlmAgent,
     Message, OpenAiClient, OpenAiConfig, Tool, ToolRegistry,
 };
-use naaf_persistence_sqlite::{SqliteCheckpointer, SqliteKnowledgeGroupStore};
+use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
 use naaf_qdrant::{OpenAiEmbedder, QdrantClient};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -110,12 +110,6 @@ impl BuildEngine {
         );
 
         let runtime = DeliveryRuntime::new(self.project.clone())?;
-        let checkpoint_path = self.project.data_dir.join("delivery-checkpoints.sqlite3");
-        if let Some(parent) = checkpoint_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let _checkpointer = SqliteCheckpointer::open(&checkpoint_path.to_string_lossy())
-            .map_err(|error| DeliveryError::Workflow(error.to_string()))?;
 
         let mut plan = self.plan_implementation(&runtime, job).await?;
         runtime.write_json(&job.id, DeliveryArtifact::ExecutionPlan, &plan)?;

@@ -51,6 +51,14 @@ pub(super) struct DiscoveryOutput {
     pub(super) notes: Vec<String>,
     pub(super) recommended_path: String,
     pub(super) open_questions: Vec<DiscoveryQuestion>,
+    #[serde(default)]
+    pub(super) sub_domains: Vec<SubDomainSuggestion>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SubDomainSuggestion {
+    pub(super) name: String,
+    pub(super) description: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,7 +367,7 @@ fn build_initial_user_message(input: &DiscoveryInput) -> String {
             .to_string(),
     );
     lines.push(
-        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}"
+        "The JSON object must use this exact shape: {\"assistant_message\":string,\"ready_for_solution\":boolean,\"problem_statement\":string,\"goals\":string[],\"constraints\":string[],\"assumptions\":string[],\"risks\":string[],\"notes\":string[],\"recommended_path\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}],\"sub_domains\":[{\"name\":string,\"description\":string}]}"
             .to_string(),
     );
     lines.push(
@@ -376,6 +384,10 @@ fn build_initial_user_message(input: &DiscoveryInput) -> String {
     );
     lines.push(
         "Only mark ready_for_solution true when the hand-off is complete enough for solution generation without blocking ambiguity."
+            .to_string(),
+    );
+    lines.push(
+        "If the problem is broad enough to benefit from decomposition, include up to 5 sub_domains. Each sub_domain should be a distinct, independently implementable part of the overall system. Leave sub_domains empty when the problem is already concrete enough for a single solution."
             .to_string(),
     );
 
@@ -653,6 +665,7 @@ mod tests {
             notes: Vec::new(),
             recommended_path: "Proceed to knowledge planning".to_string(),
             open_questions: Vec::new(),
+            sub_domains: Vec::new(),
         }
     }
 
@@ -671,6 +684,7 @@ mod tests {
                 prompt: "What are we building?".to_string(),
                 choices: Vec::new(),
             }],
+            sub_domains: Vec::new(),
         }
     }
 

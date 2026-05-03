@@ -1180,6 +1180,7 @@ mod tests {
             notes: Vec::new(),
             recommended_path: "Plan knowledge, then branch".to_string(),
             open_questions: Vec::new(),
+            sub_domains: Vec::new(),
         }
     }
 
