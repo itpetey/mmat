@@ -260,180 +260,180 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_workflow_when_prompted(
-    instruction_rx: mmat::liveview::InstructionReceiver,
+    mut instruction_rx: mmat::liveview::InstructionReceiver,
     event_tx: mmat::liveview::EventSender,
     ui_state: Arc<UiState>,
     registry_store: Arc<ProjectRegistryStore>,
     delivery_sender: FrontendSender,
 ) {
-    let Ok(project_prompt) = instruction_rx.await else {
-        return;
-    };
-    let prompt = project_prompt.prompt;
-    let project_id = project_prompt.project_id;
-    let project = match registry_store.get_project(&project_id) {
-        Ok(project) => project,
-        Err(error) => {
-            send_log(
-                &event_tx,
-                &project_id,
-                tracing::Level::ERROR,
-                format!("Project lookup failed: {error}"),
-            );
-            return;
-        }
-    };
-
-    send_log(
-        &event_tx,
-        &project_id,
-        tracing::Level::INFO,
-        "Prompt received. Starting plan.",
-    );
-    send_summary(&event_tx, &project, &prompt, "running", "discovery", None);
-    ui_state.reset_interrupt();
-    ui_state.clear_step_interrupted(&project_id);
-
-    let message_source: Arc<dyn MessageSource> = Arc::new(UiStateMessageSource {
-        ui_state: ui_state.clone(),
-        project_id: project_id.clone(),
-    });
-
-    let (runtime, pending_questions) = ChannelHumanIO::new(1024 * 512);
-    let human_bridge = tokio::spawn(forward_human_questions(
-        pending_questions,
-        event_tx.clone(),
-        project_id.clone(),
-    ));
-
-    let stream_observer: Arc<dyn OpenAiStreamObserver<ChannelHumanIO>> =
-        Arc::new(UiStreamObserver::new(event_tx.clone(), project_id.clone()));
-    let mut cancel_rx = ui_state.subscribe_cancel();
-    let cancel_fut = async {
-        while !*cancel_rx.borrow() {
-            if cancel_rx.changed().await.is_err() {
-                break;
+    while let Some(project_prompt) = instruction_rx.recv().await {
+        let prompt = project_prompt.prompt;
+        let project_id = project_prompt.project_id;
+        ui_state.set_project_last_prompt(&project_id, prompt.clone());
+        let project = match registry_store.get_project(&project_id) {
+            Ok(project) => project,
+            Err(error) => {
+                send_log(
+                    &event_tx,
+                    &project_id,
+                    tracing::Level::ERROR,
+                    format!("Project lookup failed: {error}"),
+                );
+                continue;
             }
-        }
-    };
+        };
 
-    let result = tokio::select! {
-        result = plan::greenfield_for_project(prompt.clone(), runtime, Some(stream_observer), Some(message_source), &project) => Some(result),
-        _ = cancel_fut => None,
-    };
-    human_bridge.abort();
-
-    if result.is_none() && ui_state.step_interrupted() {
-        send_summary(
-            &event_tx,
-            &project,
-            &prompt,
-            "interrupted",
-            "discovery",
-            Some("Step interrupted by user.".to_string()),
-        );
         send_log(
             &event_tx,
             &project_id,
             tracing::Level::INFO,
-            "Step interrupted.",
+            "Prompt received. Starting plan.",
         );
-        return;
-    }
+        send_summary(&event_tx, &project, &prompt, "running", "discovery", None);
+        ui_state.reset_interrupt();
+        ui_state.clear_step_interrupted(&project_id);
 
-    match result {
-        Some(Ok(report)) => {
-            let tree_nodes: Vec<DomainNodeUiSnapshot> = report
-                .tree
-                .nodes
-                .values()
-                .map(|node| DomainNodeUiSnapshot {
-                    node_id: node.id,
-                    name: node.name.clone(),
-                    status: format!("{:?}", node.status).to_ascii_lowercase(),
-                    phase: match node.status {
-                        crate::plan::domain_map::DomainNodeStatus::Ready
-                        | crate::plan::domain_map::DomainNodeStatus::KnowledgeMaterialised
-                        | crate::plan::domain_map::DomainNodeStatus::SolutionsCollected
-                        | crate::plan::domain_map::DomainNodeStatus::SolutionChosen
-                        | crate::plan::domain_map::DomainNodeStatus::ArchitectComplete
-                        | crate::plan::domain_map::DomainNodeStatus::Delivering
-                        | crate::plan::domain_map::DomainNodeStatus::Complete => {
-                            "Ready".to_string()
-                        }
-                        _ => "Discovery".to_string(),
-                    },
-                    depth: node.depth,
-                })
-                .collect();
+        let message_source: Arc<dyn MessageSource> = Arc::new(UiStateMessageSource {
+            ui_state: ui_state.clone(),
+            project_id: project_id.clone(),
+        });
 
-            ui_state.set_project_domain_tree_nodes(&project_id, tree_nodes);
-            ui_state.set_project_delivery_graph(&project_id, Some(report.delivery_graph));
+        let (runtime, pending_questions) = ChannelHumanIO::new(1024 * 512);
+        let human_bridge = tokio::spawn(forward_human_questions(
+            pending_questions,
+            event_tx.clone(),
+            project_id.clone(),
+        ));
 
-            for (node_id, handoff) in &report.node_handoffs {
-                if let Err(error) = delivery_sender.send(FrontendToDelivery::Enqueue {
-                    project_id: project_id.clone(),
-                    domain_node_id: Some(*node_id),
-                    handoff: handoff.clone(),
-                }) {
-                    send_log(
-                        &event_tx,
-                        &project_id,
-                        tracing::Level::ERROR,
-                        format!("Delivery enqueue failed: {error}"),
-                    );
+        let stream_observer: Arc<dyn OpenAiStreamObserver<ChannelHumanIO>> =
+            Arc::new(UiStreamObserver::new(event_tx.clone(), project_id.clone()));
+        let mut cancel_rx = ui_state.subscribe_cancel();
+        let cancel_fut = async {
+            while !*cancel_rx.borrow() {
+                if cancel_rx.changed().await.is_err() {
+                    break;
                 }
             }
+        };
 
+        let result = tokio::select! {
+            result = plan::greenfield_for_project(prompt.clone(), runtime, Some(stream_observer), Some(message_source), &project) => Some(result),
+            _ = cancel_fut => None,
+        };
+        human_bridge.abort();
+
+        if result.is_none() && ui_state.step_interrupted() {
             send_summary(
                 &event_tx,
                 &project,
                 &prompt,
-                "completed",
-                "knowledge-planning",
-                Some(format!("Domain-mapped run {} completed.", report.run_id)),
+                "interrupted",
+                "discovery",
+                Some("Step interrupted by user.".to_string()),
             );
             send_log(
                 &event_tx,
                 &project_id,
                 tracing::Level::INFO,
-                format!(
-                    "Plan completed with {} sub-domain handoff(s).",
-                    report.node_handoffs.len()
-                ),
+                "Step interrupted.",
             );
+            return;
         }
-        Some(Err(error)) => {
-            send_summary(
-                &event_tx,
-                &project,
-                &prompt,
-                "failed",
-                "plan",
-                Some(error.to_string()),
-            );
-            send_log(
-                &event_tx,
-                &project_id,
-                tracing::Level::ERROR,
-                format!("Plan failed: {error}"),
-            );
-        }
-        None => {
-            send_summary(
-                &event_tx,
-                &project,
-                &prompt,
-                "failed",
-                "plan",
-                Some("Workflow was cancelled.".to_string()),
-            );
-            send_log(
-                &event_tx,
-                &project_id,
-                tracing::Level::ERROR,
-                "Workflow was cancelled.",
-            );
+
+        match result {
+            Some(Ok(report)) => {
+                let tree_nodes: Vec<DomainNodeUiSnapshot> = report
+                    .tree
+                    .nodes
+                    .values()
+                    .map(|node| DomainNodeUiSnapshot {
+                        node_id: node.id,
+                        name: node.name.clone(),
+                        status: format!("{:?}", node.status).to_ascii_lowercase(),
+                        phase: match node.status {
+                            crate::plan::domain_map::DomainNodeStatus::Ready
+                            | crate::plan::domain_map::DomainNodeStatus::KnowledgeMaterialised
+                            | crate::plan::domain_map::DomainNodeStatus::SolutionsCollected
+                            | crate::plan::domain_map::DomainNodeStatus::SolutionChosen
+                            | crate::plan::domain_map::DomainNodeStatus::ArchitectComplete
+                            | crate::plan::domain_map::DomainNodeStatus::Delivering
+                            | crate::plan::domain_map::DomainNodeStatus::Complete => {
+                                "Ready".to_string()
+                            }
+                            _ => "Discovery".to_string(),
+                        },
+                        depth: node.depth,
+                    })
+                    .collect();
+
+                ui_state.set_project_domain_tree_nodes(&project_id, tree_nodes);
+                ui_state.set_project_delivery_graph(&project_id, Some(report.delivery_graph));
+
+                for (node_id, handoff) in &report.node_handoffs {
+                    if let Err(error) = delivery_sender.send(FrontendToDelivery::Enqueue {
+                        project_id: project_id.clone(),
+                        domain_node_id: Some(*node_id),
+                        handoff: handoff.clone(),
+                    }) {
+                        send_log(
+                            &event_tx,
+                            &project_id,
+                            tracing::Level::ERROR,
+                            format!("Delivery enqueue failed: {error}"),
+                        );
+                    }
+                }
+
+                send_summary(
+                    &event_tx,
+                    &project,
+                    &prompt,
+                    "completed",
+                    "knowledge-planning",
+                    Some(format!("Domain-mapped run {} completed.", report.run_id)),
+                );
+                send_log(
+                    &event_tx,
+                    &project_id,
+                    tracing::Level::INFO,
+                    format!(
+                        "Plan completed with {} sub-domain handoff(s).",
+                        report.node_handoffs.len()
+                    ),
+                );
+            }
+            Some(Err(error)) => {
+                send_summary(
+                    &event_tx,
+                    &project,
+                    &prompt,
+                    "failed",
+                    "plan",
+                    Some(error.to_string()),
+                );
+                send_log(
+                    &event_tx,
+                    &project_id,
+                    tracing::Level::ERROR,
+                    format!("Plan failed: {error}"),
+                );
+            }
+            None => {
+                send_summary(
+                    &event_tx,
+                    &project,
+                    &prompt,
+                    "failed",
+                    "plan",
+                    Some("Workflow was cancelled.".to_string()),
+                );
+                send_log(
+                    &event_tx,
+                    &project_id,
+                    tracing::Level::ERROR,
+                    "Workflow was cancelled.",
+                );
+            }
         }
     }
 }

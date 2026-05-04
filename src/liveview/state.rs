@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     deliver::{BuildJob, BuildJobStatus, DeliveryGraph},
@@ -179,6 +179,7 @@ struct ProjectUiState {
     open_domain_tabs: Vec<DomainNodeId>,
     active_domain_node_id: Option<DomainNodeId>,
     step_interrupted: bool,
+    last_prompt: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -203,7 +204,8 @@ pub struct UiState {
     project_states: Mutex<BTreeMap<ProjectId, ProjectUiState>>,
     registry_store: Option<Arc<ProjectRegistryStore>>,
     conversation_store: Option<Arc<ConversationHistoryStore>>,
-    pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
+    pending_initial_input: Mutex<Option<mpsc::UnboundedSender<ProjectPrompt>>>,
+    initial_input_consumed: Mutex<bool>,
     next_event_id: Mutex<u64>,
     version_tx: watch::Sender<u64>,
     cancel_tx: watch::Sender<bool>,
@@ -399,6 +401,7 @@ impl UiState {
             registry_store: None,
             conversation_store: None,
             pending_initial_input: Mutex::new(None),
+            initial_input_consumed: Mutex::new(false),
             next_event_id: Mutex::new(0),
             version_tx,
             cancel_tx,
@@ -457,6 +460,7 @@ impl UiState {
             registry_store,
             conversation_store,
             pending_initial_input: Mutex::new(None),
+            initial_input_consumed: Mutex::new(false),
             next_event_id: Mutex::new(0),
             version_tx,
             cancel_tx,
@@ -471,7 +475,7 @@ impl UiState {
         self.cancel_tx.subscribe()
     }
 
-    pub fn prepare_initial_input(&self, sender: oneshot::Sender<ProjectPrompt>) {
+    pub fn prepare_initial_input(&self, sender: mpsc::UnboundedSender<ProjectPrompt>) {
         *self.pending_initial_input.lock() = Some(sender);
         self.bump_version();
     }
@@ -1162,11 +1166,28 @@ impl UiState {
     }
 
     pub fn send_initial_input(&self, text: String) -> bool {
-        let mut pending = self.pending_initial_input.lock();
-        if let Some(sender) = pending.take() {
-            drop(pending);
+        let sender = self.pending_initial_input.lock().clone();
+        if let Some(sender) = sender {
             let project_id = self.active_project_id.lock().clone();
             self.record_project_user_message(&project_id, text.clone());
+            let ok = sender
+                .send(ProjectPrompt {
+                    project_id,
+                    prompt: text,
+                })
+                .is_ok();
+            *self.initial_input_consumed.lock() = true;
+            self.bump_version();
+            ok
+        } else {
+            false
+        }
+    }
+
+    pub fn send_project_prompt(&self, text: String) -> bool {
+        let sender = self.pending_initial_input.lock().clone();
+        if let Some(sender) = sender {
+            let project_id = self.active_project_id.lock().clone();
             let ok = sender
                 .send(ProjectPrompt {
                     project_id,
@@ -1178,6 +1199,21 @@ impl UiState {
         } else {
             false
         }
+    }
+
+    pub fn set_project_last_prompt(&self, project_id: &ProjectId, prompt: String) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .last_prompt = Some(prompt);
+    }
+
+    pub fn project_last_prompt(&self, project_id: &ProjectId) -> Option<String> {
+        self.project_states
+            .lock()
+            .get(project_id)
+            .and_then(|s| s.last_prompt.clone())
     }
 
     pub fn send_pending_prompt(&self, text: String) -> bool {
@@ -1219,7 +1255,8 @@ impl UiState {
         let history = current
             .map(|state| state.event_history.clone())
             .unwrap_or_default();
-        let has_pending_input = self.pending_initial_input.lock().is_some();
+        let has_pending_input = !*self.initial_input_consumed.lock()
+            && self.pending_initial_input.lock().is_some();
         let queue = current.map(|state| state.queue.clone()).unwrap_or_default();
         let worker_summary = worker_summary(&projects, &states);
         let domain_tree_nodes = current
@@ -1495,7 +1532,7 @@ fn worker_summary(
 mod tests {
     use std::sync::Arc;
 
-    use tokio::sync::oneshot;
+    use tokio::sync::{mpsc, oneshot};
 
     use crate::{
         deliver::{BuildJob, BuildJobId, BuildJobStatus},
@@ -1511,7 +1548,7 @@ mod tests {
     #[test]
     fn initial_input_resolves_and_records_user_message() {
         let state = UiState::new();
-        let (tx, mut rx) = oneshot::channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
 
         state.prepare_initial_input(tx);
 

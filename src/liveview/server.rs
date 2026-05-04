@@ -12,7 +12,7 @@ use crate::liveview::{
     state::{ProjectPrompt, UiState},
 };
 
-pub type InstructionReceiver = oneshot::Receiver<ProjectPrompt>;
+pub type InstructionReceiver = mpsc::UnboundedReceiver<ProjectPrompt>;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 const LIVEVIEW_PATH: &str = "/liveview";
@@ -66,7 +66,7 @@ impl LiveViewAppBuilder {
         LiveViewError,
     > {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (instruction_tx, instruction_rx) = oneshot::channel();
+        let (instruction_tx, instruction_rx) = mpsc::unbounded_channel();
         self.ui_state.prepare_initial_input(instruction_tx);
         let handle = spawn_server(self.addr, self.ui_state)?;
         Ok((event_tx, handle, instruction_rx, event_rx))

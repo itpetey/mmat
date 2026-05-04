@@ -464,6 +464,33 @@ fn Composer(props: ComposerProps) -> Element {
                         return;
                     }
 
+                    // After an interrupt the composer is in Reply mode but there is no
+                    // pending prompt. Concatenate the new message with the original
+                    // prompt and restart the workflow.
+                    let is_interrupted_without_prompt = matches!(props.mode, ComposerMode::Reply)
+                        && props.pending_prompt.is_none();
+
+                    if is_interrupted_without_prompt {
+                        let text = input.read().trim().to_string();
+                        if !text.is_empty() {
+                            let project_id = props.ui_state.active_project().id;
+                            let last_prompt = props
+                                .ui_state
+                                .project_last_prompt(&project_id)
+                                .unwrap_or_default();
+                            let combined = if last_prompt.is_empty() {
+                                text.clone()
+                            } else {
+                                format!("{last_prompt}\n\n{text}")
+                            };
+                            props.ui_state.record_project_user_message(&project_id, text);
+                            props.ui_state.send_project_prompt(combined);
+                            input.set(String::new());
+                        }
+                        event.prevent_default();
+                        return;
+                    }
+
                     event.prevent_default();
                     submit_composer_input(&mut input, &key_submit_state);
                 },
