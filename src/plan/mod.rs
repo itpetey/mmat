@@ -25,10 +25,10 @@ pub use backflow::{
 mod architect;
 mod backflow;
 mod discovery;
-mod knowledge;
-mod solutions;
 pub mod domain_map;
+mod knowledge;
 pub mod parser;
+mod solutions;
 
 type WorkflowStep<C, R, E, I, O> = Step<R, I, O, WorkflowFinding, WorkflowTaskError<C, R, E>>;
 type WorkflowTaskError<C, R, E> = TaskError<
@@ -373,13 +373,30 @@ where
     let mut tree = domain_map::DomainTree::new("Project", &init_prompt);
     let root_id = tree.root;
 
-    let discovery_step = discovery::step_with_repository_tools(&agent, workspace_root.clone())
-        .map_findings(WorkflowFinding::from);
+    // Phase 1: Divergent discovery — map the full design space once at project level.
+    let divergent_step =
+        discovery::divergent_step_with_repository_tools(&agent, workspace_root.clone());
+    let big_picture = divergent_step
+        .run(
+            &runtime,
+            discovery::DiscoveryInput::new(init_prompt.clone()),
+        )
+        .await
+        .map_err(|e| MmatError::Workflow(e.to_string()))?;
 
-    let leaves = recursive_discover(&mut tree, root_id, &runtime, |rt, input| {
-        let discovery_step = discovery_step.clone();
+    // Store the BigPicture on the tree so all downstream phases can access it.
+    tree.set_big_picture(big_picture.clone());
+
+    // Phase 2: Convergent discovery — narrow within the BigPicture for each domain.
+    let convergent_step =
+        discovery::convergent_step_with_repository_tools(&agent, workspace_root.clone())
+            .map_findings(WorkflowFinding::from);
+
+    let leaves = recursive_discover(&mut tree, root_id, &runtime, |rt, mut input| {
+        let convergent_step = convergent_step.clone();
+        input.big_picture = Some(big_picture.clone());
         Box::pin(async move {
-            discovery_step
+            convergent_step
                 .run(rt, input)
                 .await
                 .map_err(|e| MmatError::Workflow(e.to_string()))
@@ -1306,6 +1323,8 @@ mod tests {
                     description: description.to_string(),
                 })
                 .collect(),
+            big_picture: None,
+            chosen_approach: String::new(),
         }
     }
 
@@ -1358,7 +1377,7 @@ mod tests {
         let client =
             ScriptedDiscoveryClient::new(vec![serde_json::to_string(&root_output).unwrap()]);
         let agent = LlmAgent::new(client);
-        let discovery_step = discovery::step(&agent);
+        let discovery_step = discovery::convergent_step(&agent);
         let mut tree = domain_map::DomainTree::with_config(
             "Root",
             "Root desc",
@@ -1370,13 +1389,18 @@ mod tests {
         let runtime = NoopRuntime;
 
         let root_id = tree.root;
-        let leaves = recursive_discover(&mut tree, root_id, &runtime, |rt, input| {
+        let leaves = recursive_discover(&mut tree, root_id, &runtime, |rt, mut input| {
+            input.big_picture = Some(discovery::BigPicture {
+                full_scope: "build platform".to_string(),
+                outer_boundaries: vec!["ship it".to_string(), "use rust".to_string()],
+                ..Default::default()
+            });
             let step = discovery_step.clone();
-            async move {
+            Box::pin(async move {
                 step.run(rt, input)
                     .await
                     .map_err(|e| MmatError::Workflow(e.to_string()))
-            }
+            })
         })
         .await
         .expect("recursive discover should complete");

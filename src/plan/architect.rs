@@ -273,6 +273,31 @@ fn build_prompt(input: ArchitectInput) -> String {
         ));
     }
 
+    if let Some(bp) = &input.discovery.big_picture {
+        lines.push(String::new());
+        lines.push("## BIG PICTURE (binding constraints)".to_string());
+        lines.push(format!("Full scope: {}", bp.full_scope));
+        if !bp.outer_boundaries.is_empty() {
+            lines.push(format!(
+                "Outer boundaries: {}",
+                bp.outer_boundaries.join(" | ")
+            ));
+        }
+        if !bp.out_of_scope.is_empty() {
+            lines.push(format!("Out of scope: {}", bp.out_of_scope.join(" | ")));
+        }
+        if !input.discovery.chosen_approach.is_empty() {
+            lines.push(format!(
+                "Chosen approach: {}",
+                input.discovery.chosen_approach
+            ));
+        }
+        lines.push(
+            "CRITICAL: The architecture must respect the BigPicture boundaries. Every component must map to something within outer_boundaries. Do not design for things that are out_of_scope."
+                .to_string(),
+        );
+    }
+
     if let Some(prior_plan) = &input.prior_plan {
         lines.push(String::new());
         lines.push("Prior architect handoff:".to_string());
@@ -388,6 +413,8 @@ mod tests {
                 recommended_path: "Architect selected branch".to_string(),
                 open_questions: Vec::new(),
                 sub_domains: Vec::new(),
+                big_picture: None,
+                chosen_approach: String::new(),
             },
             SelectedSolution {
                 choice_label: "recommended".to_string(),

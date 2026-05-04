@@ -70,6 +70,9 @@ pub struct DomainTree {
     pub root: DomainNodeId,
     pub nodes: HashMap<DomainNodeId, DomainNode>,
     pub config: DomainTreeConfig,
+    /// Immutable BigPicture from the divergent discovery phase. Boundaries
+    /// established here constrain all downstream phases for every node.
+    pub(crate) big_picture: Option<super::discovery::BigPicture>,
 }
 
 impl DomainNodeId {
@@ -131,6 +134,7 @@ impl DomainTree {
             root: root_id,
             nodes,
             config: DomainTreeConfig::default(),
+            big_picture: None,
         }
     }
 
@@ -143,6 +147,11 @@ impl DomainTree {
         let mut tree = Self::new(root_name, root_description);
         tree.config = config;
         tree
+    }
+
+    /// Sets the immutable BigPicture produced by divergent discovery.
+    pub(crate) fn set_big_picture(&mut self, big_picture: super::discovery::BigPicture) {
+        self.big_picture = Some(big_picture);
     }
 
     /// Returns the root node.
@@ -464,6 +473,8 @@ mod tests {
                     description: "Data storage layer".to_string(),
                 },
             ],
+            big_picture: None,
+            chosen_approach: String::new(),
         };
 
         let children = tree.apply_discovery_output(tree.root, &output);
@@ -490,6 +501,8 @@ mod tests {
             recommended_path: String::new(),
             open_questions: Vec::new(),
             sub_domains: Vec::new(),
+            big_picture: None,
+            chosen_approach: String::new(),
         };
 
         let children = tree.apply_discovery_output(tree.root, &output);
@@ -533,6 +546,8 @@ mod tests {
         let output = crate::plan::discovery::DiscoveryOutput {
             assistant_message: String::new(),
             ready_for_solution: false,
+            big_picture: None,
+            chosen_approach: String::new(),
             problem_statement: String::new(),
             goals: Vec::new(),
             constraints: Vec::new(),

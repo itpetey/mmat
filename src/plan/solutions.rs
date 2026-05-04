@@ -441,6 +441,31 @@ fn build_branch_prompt(input: SolutionBranchInput) -> String {
         ));
     }
 
+    if let Some(bp) = &solution.discovery.big_picture {
+        lines.push(String::new());
+        lines.push("## BIG PICTURE (binding constraints)".to_string());
+        lines.push(format!("Full scope: {}", bp.full_scope));
+        if !bp.outer_boundaries.is_empty() {
+            lines.push(format!(
+                "Outer boundaries: {}",
+                bp.outer_boundaries.join(" | ")
+            ));
+        }
+        if !bp.out_of_scope.is_empty() {
+            lines.push(format!("Out of scope: {}", bp.out_of_scope.join(" | ")));
+        }
+        if !input.solution.discovery.chosen_approach.is_empty() {
+            lines.push(format!(
+                "Chosen approach: {}",
+                input.solution.discovery.chosen_approach
+            ));
+        }
+        lines.push(
+            "CRITICAL: This branch must respect the BigPicture boundaries. Do not propose scope cuts or approaches that drop items from outer_boundaries."
+                .to_string(),
+        );
+    }
+
     if let Some(prior_draft) = &input.prior_draft {
         lines.push(String::new());
         lines.push("Prior branch draft:".to_string());
@@ -829,6 +854,8 @@ mod tests {
             recommended_path: "Generate solution branches".to_string(),
             open_questions: Vec::new(),
             sub_domains: Vec::new(),
+            big_picture: None,
+            chosen_approach: String::new(),
         }
     }
 

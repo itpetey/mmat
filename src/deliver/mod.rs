@@ -12,8 +12,8 @@ pub use queue::{
 };
 
 mod artifacts;
-mod engine;
 pub mod delivery_graph;
+mod engine;
 pub mod ipc;
 pub mod models;
 pub mod queue;

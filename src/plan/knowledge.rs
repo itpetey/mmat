@@ -736,6 +736,43 @@ fn build_prompt(input: KnowledgeInput) -> String {
         lines.push(format!("Notes: {}", input.discovery.notes.join(" | ")));
     }
 
+    if let Some(bp) = &input.discovery.big_picture {
+        lines.push(String::new());
+        lines.push("## BIG PICTURE (binding constraints, never violated)".to_string());
+        lines.push(format!("Full scope: {}", bp.full_scope));
+        if !bp.outer_boundaries.is_empty() {
+            lines.push(format!(
+                "Outer boundaries (in scope): {}",
+                bp.outer_boundaries.join(" | ")
+            ));
+        }
+        if !bp.out_of_scope.is_empty() {
+            lines.push(format!("Out of scope: {}", bp.out_of_scope.join(" | ")));
+        }
+        if !bp.divergent_approaches.is_empty() {
+            lines.push(format!(
+                "Divergent approaches: {}",
+                bp.divergent_approaches.join(" | ")
+            ));
+        }
+        if !bp.binding_constraints.is_empty() {
+            lines.push(format!(
+                "Binding constraints: {}",
+                bp.binding_constraints.join(" | ")
+            ));
+        }
+        if !input.discovery.chosen_approach.is_empty() {
+            lines.push(format!(
+                "Chosen approach: {}",
+                input.discovery.chosen_approach
+            ));
+        }
+        lines.push(
+            "CRITICAL: Do not propose knowledge sources or plans that contradict these boundaries."
+                .to_string(),
+        );
+    }
+
     if let Some(prior_plan) = &input.last_plan {
         lines.push(String::new());
         lines.push("Prior knowledge plan:".to_string());
@@ -1206,6 +1243,8 @@ mod tests {
             recommended_path: "Plan knowledge, then branch".to_string(),
             open_questions: Vec::new(),
             sub_domains: Vec::new(),
+            big_picture: None,
+            chosen_approach: String::new(),
         }
     }
 
