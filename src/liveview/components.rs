@@ -66,6 +66,7 @@ struct DomainTreeSidebarProps {
     nodes: Vec<DomainNodeUiSnapshot>,
     active_node_id: Option<DomainNodeId>,
     delivery_graph: Option<crate::deliver::DeliveryGraph>,
+    run_summary: Option<RunSummary>,
 }
 
 #[derive(Props, Clone)]
@@ -118,6 +119,7 @@ struct RightDetailPanelProps {
     domain_states: std::collections::BTreeMap<DomainNodeId, DomainUiStateSnapshot>,
     delivery_graph: Option<crate::deliver::DeliveryGraph>,
     backflow_notifications: Vec<BackflowNotificationSnapshot>,
+    run_summary: Option<RunSummary>,
 }
 
 impl PartialEq for RootAppProps {
@@ -162,6 +164,7 @@ impl PartialEq for DomainTreeSidebarProps {
         self.nodes == other.nodes
             && self.active_node_id == other.active_node_id
             && self.delivery_graph == other.delivery_graph
+            && self.run_summary == other.run_summary
             && Arc::ptr_eq(&self.ui_state, &other.ui_state)
     }
 }
@@ -202,6 +205,7 @@ impl PartialEq for RightDetailPanelProps {
             && self.domain_states == other.domain_states
             && self.delivery_graph == other.delivery_graph
             && self.backflow_notifications == other.backflow_notifications
+            && self.run_summary == other.run_summary
             && Arc::ptr_eq(&self.ui_state, &other.ui_state)
     }
 }
@@ -261,45 +265,11 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
                             }
                             RegisterProjectForm { ui_state: props.ui_state.clone() }
                         }
-                        if snapshot_value.domain_tree_nodes.is_empty() {
-                            // Single-column layout for projects without a domain tree.
-                            div { class: "mmat-conversation",
-                                if snapshot_value.conversation.is_empty() && matches!(snapshot_value.composer_mode, ComposerMode::InitialPrompt) {
-                                    div { class: "conversation-entry connecting", "Ready for a new run." }
-                                }
-                                for (index, entry) in snapshot_value.conversation.iter().enumerate() {
-                                    {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
-                                }
-                                if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
-                                    if let Some(summary) = &snapshot_value.run_summary {
-                                        div { class: "conversation-entry status", "{format_run_summary(summary)}" }
-                                    }
-                                }
-                                if matches!(snapshot_value.composer_mode, ComposerMode::Reply) && snapshot_value.step_interrupted {
-                                    div { class: "conversation-entry status", "Step interrupted." }
-                                }
-                            }
-                            QueuePanel {
-                                queue: snapshot_value.queue.clone(),
-                                worker_summary: snapshot_value.worker_summary.clone(),
-                            }
-                            div { class: "mmat-composer",
-                                Composer {
-                                    ui_state: props.ui_state.clone(),
-                                    mode: snapshot_value.composer_mode.clone(),
-                                    pending_prompt: snapshot_value.pending_prompt.clone(),
-                                    message_queue_count: snapshot_value.message_queue_count,
-                                }
-                                RawLogsDisclosure { history: snapshot_value.history.clone() }
-                            }
-                        } else {
-                            // Multi-column layout for domain-mapped projects.
-                            MultiDomainShell {
-                                ui_state: props.ui_state.clone(),
-                                snapshot: snapshot_value,
-                                show_reasoning: show_reasoning_value,
-                                local_reasoning_overrides,
-                            }
+                        MultiDomainShell {
+                            ui_state: props.ui_state.clone(),
+                            snapshot: snapshot_value,
+                            show_reasoning: show_reasoning_value,
+                            local_reasoning_overrides,
                         }
                     }
                 }
@@ -564,11 +534,11 @@ fn DomainTreeNode(props: DomainTreeNodeProps) -> Element {
 fn DomainTreeSidebar(props: DomainTreeSidebarProps) -> Element {
     rsx! {
         div { class: "mmat-domain-sidebar",
-            div { class: "domain-tree",
-                h3 { "Domains" }
-                if props.nodes.is_empty() {
-                    div { class: "domain-tree-placeholder", "No domains discovered yet." }
-                } else {
+            if props.nodes.is_empty() {
+                WorkflowSteps { run_summary: props.run_summary.clone() }
+            } else {
+                div { class: "domain-tree",
+                    h3 { "Domains" }
                     for node in props.nodes.clone() {
                         DomainTreeNode {
                             ui_state: props.ui_state.clone(),
@@ -595,6 +565,16 @@ fn MultiDomainShell(props: MultiDomainShellProps) -> Element {
         .cloned()
         .collect();
 
+    let phase = active_node_id
+        .and_then(|id| snapshot.domain_states.get(&id))
+        .and_then(|s| s.phase.clone())
+        .or_else(|| {
+            snapshot
+                .run_summary
+                .as_ref()
+                .map(|s| run_stage_to_pipeline_phase(&s.current_stage).to_string())
+        });
+
     rsx! {
         div { class: "mmat-multi-domain",
             DomainTreeSidebar {
@@ -602,6 +582,7 @@ fn MultiDomainShell(props: MultiDomainShellProps) -> Element {
                 nodes: snapshot.domain_tree_nodes.clone(),
                 active_node_id,
                 delivery_graph: snapshot.delivery_graph.clone(),
+                run_summary: snapshot.run_summary.clone(),
             }
             div { class: "mmat-domain-centre",
                 TabBar {
@@ -611,14 +592,14 @@ fn MultiDomainShell(props: MultiDomainShellProps) -> Element {
                     backflow_notifications: snapshot.backflow_notifications.clone(),
                     domain_states: snapshot.domain_states.clone(),
                 }
-                if let Some(node_id) = active_node_id {
+                if active_node_id.is_some() {
                     if !backflow_for_active.is_empty() {
                         BackflowBanner { notifications: backflow_for_active.clone() }
                     }
-                    PipelinePhaseIndicator {
-                        node_id,
-                        phase: snapshot.domain_states.get(&node_id).and_then(|s| s.phase.clone()),
-                    }
+                }
+                PipelinePhaseIndicator {
+                    node_id: active_node_id.unwrap_or_default(),
+                    phase: phase.clone(),
                 }
                 div { class: "domain-conversation domain-tab-content",
                     if snapshot.conversation.is_empty() && matches!(snapshot.composer_mode, ComposerMode::InitialPrompt) {
@@ -644,7 +625,12 @@ fn MultiDomainShell(props: MultiDomainShellProps) -> Element {
                 domain_states: snapshot.domain_states.clone(),
                 delivery_graph: snapshot.delivery_graph.clone(),
                 backflow_notifications: snapshot.backflow_notifications.clone(),
+                run_summary: snapshot.run_summary.clone(),
             }
+        }
+        QueuePanel {
+            queue: snapshot.queue.clone(),
+            worker_summary: snapshot.worker_summary.clone(),
         }
         div { class: "mmat-composer",
             Composer {
@@ -683,6 +669,57 @@ fn PipelinePhaseIndicator(props: PipelinePhaseIndicatorProps) -> Element {
                         "pipeline-phase current"
                     } else {
                         "pipeline-phase pending"
+                    },
+                    "{phase}"
+                }
+            }
+        }
+    }
+}
+
+fn run_stage_to_pipeline_phase(stage: &str) -> &'static str {
+    match stage.to_ascii_lowercase().as_str() {
+        "discovery" => "Discovery",
+        "knowledge-planning" | "knowledge-materialisation" => "Knowledge",
+        "solutions" | "solution-selection" => "Solutions",
+        "software-architect" => "Architect",
+        "implementation-planning" | "execution" | "delivery" => "Delivery",
+        _ => "Discovery",
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct WorkflowStepsProps {
+    run_summary: Option<RunSummary>,
+}
+
+#[allow(non_snake_case)]
+fn WorkflowSteps(props: WorkflowStepsProps) -> Element {
+    const PHASES: &[&str] = &[
+        "Discovery",
+        "Knowledge",
+        "Solutions",
+        "Architect",
+        "Delivery",
+    ];
+    let current_phase = props
+        .run_summary
+        .as_ref()
+        .map(|s| run_stage_to_pipeline_phase(&s.current_stage))
+        .unwrap_or("Discovery");
+    let current_index = PHASES.iter().position(|p| *p == current_phase).unwrap_or(0);
+
+    rsx! {
+        div { class: "workflow-steps",
+            h3 { "Workflow" }
+            for (index, phase) in PHASES.iter().enumerate() {
+                div {
+                    class: if index < current_index {
+                        "workflow-step completed"
+                    } else if index == current_index {
+                        "workflow-step current"
+                    } else {
+                        "workflow-step pending"
                     },
                     "{phase}"
                 }
@@ -970,6 +1007,24 @@ fn RightDetailPanel(props: RightDetailPanelProps) -> Element {
                 } else {
                     div { class: "detail-panel-placeholder", "Node not found." }
                 }
+            } else if let Some(summary) = &props.run_summary {
+                div { class: "detail-panel",
+                    h3 { "Run" }
+                    div { class: "detail-row",
+                        span { class: "detail-label", "Status" }
+                        span { class: "detail-value", "{summary.status}" }
+                    }
+                    div { class: "detail-row",
+                        span { class: "detail-label", "Stage" }
+                        span { class: "detail-value", "{summary.current_stage}" }
+                    }
+                    if let Some(next) = &summary.next_step {
+                        div { class: "detail-row",
+                            span { class: "detail-label", "Next" }
+                            span { class: "detail-value", "{next}" }
+                        }
+                    }
+                }
             } else {
                 div { class: "detail-panel-placeholder", "Select a node for details." }
             }
@@ -1034,10 +1089,8 @@ fn TabBar(props: TabBarProps) -> Element {
         .collect();
 
     rsx! {
-        if props.tabs.is_empty() {
-            div { class: "domain-tab-placeholder", "Select a domain to begin." }
-        } else {
-            div { class: "domain-tab-bar",
+        div { class: "domain-tab-bar",
+            if !props.tabs.is_empty() {
                 for tab_id in props.tabs.clone() {
                     Tab {
                         ui_state: props.ui_state.clone(),

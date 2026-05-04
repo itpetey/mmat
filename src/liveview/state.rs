@@ -1255,8 +1255,8 @@ impl UiState {
         let history = current
             .map(|state| state.event_history.clone())
             .unwrap_or_default();
-        let has_pending_input = !*self.initial_input_consumed.lock()
-            && self.pending_initial_input.lock().is_some();
+        let has_pending_input =
+            !*self.initial_input_consumed.lock() && self.pending_initial_input.lock().is_some();
         let queue = current.map(|state| state.queue.clone()).unwrap_or_default();
         let worker_summary = worker_summary(&projects, &states);
         let domain_tree_nodes = current
