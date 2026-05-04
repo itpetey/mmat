@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::future;
-use naaf_core::{Attempt, RetryPolicy, Step, check_fn, repair_fn, task_fn};
+use naaf_core::{Attempt, RetryPolicy, Step, check_fn, materialiser_fn, repair_fn, task_fn};
 #[cfg(test)]
 use naaf_llm::ExecutionOutcome;
 use naaf_llm::{
@@ -46,27 +46,52 @@ The BigPicture will be provided in the context. If your output would contradict 
 reconsider. You are choosing a path, not shrinking the idea."#;
 
 /// System prompt for the divergent (broad exploration) discovery phase.
-/// Maps the full design space, surfaces alternatives, and establishes outer boundaries.
-pub const DIVERGENT_SYSTEM_PROMPT: &str = r#"You are exploring the outer boundaries of a new idea. This is thinking time, not planning time.
+/// Maps the full design space, surfaces alternatives, and establishes tentative boundaries.
+pub const DIVERGENT_SYSTEM_PROMPT: &str = r#"You are in explore mode.
 
-Your job is to map the full design space — what's possible, what's adjacent, what's
-analogous. Surface multiple divergent approaches. Challenge assumptions. Reframe the
-problem from different angles. Research prior art and concrete examples.
+This is a stance, not a workflow. You are a curious thinking partner helping
+the user explore a problem space. There are no fixed steps, no mandatory
+sequence, and no pressure to reach a conclusion.
 
-Key principles from explore mode:
-  • Open threads, not interrogations — surface multiple interesting directions and
-    let the user follow what resonates. Do not funnel them through a single path.
-  • Patient exploration — don't rush to conclusions. Let the shape of the problem emerge.
-  • Visual thinking — use ASCII diagrams when they help map the space.
-  • Grounded exploration — reference concrete projects, papers, or patterns that
-    illuminate the space.
-  • Challenge assumptions — including the user's and your own.
+Core stance:
+  - Curious, not prescriptive. Follow what is interesting in the material.
+  - Open threads, not interrogations. Surface several directions and let the
+    user respond to what resonates.
+  - Patient. Let the shape of the problem emerge; do not rush to a plan.
+  - Grounded. Use repository context and prior art to notice real tensions.
+  - Visual. Use diagrams and maps when they clarify relationships.
+  - Adaptive. Pivot when new information changes the interesting question.
 
-CRITICAL:
-  • Do NOT narrow yet. Do NOT suggest a recommended path.
-  • Do NOT try to make the problem "concrete and solutionable" during this phase.
-  • When the space feels well-mapped, offer to converge — set ready_to_converge to
-    true and ask the user if they agree. Let them decide."#;
+When the user asks to plan, design, or rewrite something, treat that as the
+topic they want to explore, not as permission to start planning. Map the
+territory before drawing a route.
+
+When you read files or prior art, use them as raw material for exploration:
+  - notice patterns and contradictions
+  - compare possible framings
+  - surface hidden assumptions
+  - identify risks and unknowns
+  - show where different sources pull in different directions
+
+Keep the conversation expansive. Prefer sketches like:
+  - "I see three tensions here..."
+  - "One way to frame this is..."
+  - "Another lens would be..."
+  - "This reminds me of..."
+  - "A weird edge of the design space is..."
+
+Avoid collapsing the exploration into a recommendation unless the user
+explicitly asks you to choose. If a recommendation starts to emerge, hold it
+as one thread among several rather than presenting it as the answer.
+
+Your response is the exploratory conversation. It should feel thoughtful,
+grounded, visually useful where helpful, and open-ended. A structured BigPicture
+handoff is materialised later from the conversation transcript; do not try to
+produce that handoff during live exploration.
+
+When the exploration feels substantial enough that the user might want to move
+on, mention this conversationally: "If this feels mapped enough, say `ready to converge` and I'll turn the exploration into a BigPicture." Do not pressure
+the user to do so."#;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiscoveryQuestion {
@@ -82,9 +107,10 @@ pub(crate) struct SubDomainSuggestion {
     pub(crate) description: String,
 }
 
-/// Immutable output of the divergent discovery phase. Defines the outer boundaries
-/// and full design space of the problem. Passed through all downstream phases as
-/// a binding constraint — never modified after initial creation.
+/// Output of the divergent discovery phase. Captures a tentative map of the
+/// design space, outer boundaries, and open tensions. Passed through to downstream
+/// phases as context — the convergent phase may refine or challenge it, but should
+/// never shrink scope beyond what was explored here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub(crate) struct BigPicture {
     pub(crate) ready_to_converge: bool,
@@ -140,12 +166,20 @@ pub(crate) struct DiscoveryAnswer {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DivergentFinding {
+    StillExploring,
     InsufficientDesignSpace,
     NoAlternativesSurfaced,
     NoPriorArtExamined,
     PrematureConvergence,
+    ConvergenceWithoutUserSignal,
     MissingOuterBoundaries,
     NoClarificationQuestions,
+    /// The assistant message contains recommendation language or synthesises
+    /// approaches rather than keeping them distinct and unresolved.
+    PrematureSynthesis,
+    /// An open question uses convergent language ("What should...", "How should...")
+    /// rather than presenting an option map or open thread.
+    ConvergentQuestionAsked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,7 +204,11 @@ pub(crate) struct DiscoveryTaskOutput {
 /// Task output wrapper for the divergent discovery phase.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DivergentTaskOutput {
-    pub(crate) output: BigPicture,
+    pub(crate) ready_to_materialise: bool,
+    pub(crate) assistant_message: String,
+    pub(crate) open_questions: Vec<DiscoveryQuestion>,
+    pub(crate) transcript: Vec<Message>,
+    pub(crate) findings: Vec<String>,
     pub(crate) conversation_turn: Vec<Message>,
 }
 
@@ -219,6 +257,7 @@ impl DiscoveryOutput {
 impl Display for DivergentFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::StillExploring => write!(f, "divergent exploration is still in progress"),
             Self::InsufficientDesignSpace => {
                 write!(f, "design space has not been sufficiently mapped")
             }
@@ -227,11 +266,26 @@ impl Display for DivergentFinding {
             Self::PrematureConvergence => {
                 write!(f, "convergence offered before design space is mapped")
             }
+            Self::ConvergenceWithoutUserSignal => {
+                write!(f, "convergence offered before the user asked to converge")
+            }
             Self::MissingOuterBoundaries => write!(f, "outer boundaries of scope are not defined"),
             Self::NoClarificationQuestions => {
                 write!(
                     f,
-                    "no breadth-oriented questions despite incomplete exploration"
+                    "no exploratory engagement despite incomplete exploration"
+                )
+            }
+            Self::PrematureSynthesis => {
+                write!(
+                    f,
+                    "assistant message synthesises or recommends rather than exploring"
+                )
+            }
+            Self::ConvergentQuestionAsked => {
+                write!(
+                    f,
+                    "open question asks convergent 'should' rather than presenting options"
                 )
             }
         }
@@ -305,40 +359,70 @@ where
 #[cfg(test)]
 pub(super) fn divergent_step<C, R, E>(agent: &LlmAgent<C, R, E>) -> DivergentStep<C, R, E>
 where
-    C: LlmClient<Runtime = R> + 'static,
-    C::Error: Debug + 'static,
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Debug + Display + 'static,
     E: Debug + 'static,
     R: HumanIO + 'static,
     R::Error: Debug + 'static,
 {
-    Step::builder(agent.task(
-        |_runtime: &R, input: DiscoveryInput| {
-            Ok::<_, WorkflowBuildError<R::Error>>(build_divergent_request(&input, None))
-        },
-        |outcome: ExecutionOutcome| {
-            let output = decode_outcome(outcome.clone())?;
+    let client = (*agent.executor().client()).clone();
+    let task_client = client.clone();
+    let materialise_big_picture =
+        materialiser_fn(move |runtime: &R, output: DivergentTaskOutput| {
+            let client = client.clone();
+            Box::pin(async move { materialise_big_picture(&client, runtime, output).await })
+        });
+
+    let task = task_fn(move |runtime: &R, input: DiscoveryInput| {
+        let client = task_client.clone();
+        Box::pin(async move {
+            if user_requested_convergence(&input) {
+                return Ok(DivergentTaskOutput {
+                    ready_to_materialise: true,
+                    assistant_message: String::new(),
+                    open_questions: Vec::new(),
+                    transcript: input.messages.clone(),
+                    findings: input.findings.clone(),
+                    conversation_turn: Vec::new(),
+                });
+            }
+
+            let request = build_divergent_request(&input, None);
+            let executor = Executor::new(client);
+            let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
+                .await
+                .map_err(|error| {
+                    AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                        "executor failed: {error}"
+                    )))
+                })?;
+            let assistant_message = outcome.final_message().content.clone().unwrap_or_default();
             let conversation_turn = outcome.messages().to_vec();
             Ok(DivergentTaskOutput {
-                output,
+                ready_to_materialise: false,
+                assistant_message,
+                open_questions: Vec::new(),
+                transcript: outcome.messages().to_vec(),
+                findings: input.findings.clone(),
                 conversation_turn,
             })
-        },
-    ))
-    .validate(check_fn(
-        |_r: &R, _input: DiscoveryInput, o: DivergentTaskOutput| {
-            Box::pin(future::ok(validate_divergent(&o.output)))
-        },
-    ))
-    .repair_with(repair_fn(|r, a| {
-        Box::pin(async move {
-            repair_divergent(r, a)
-                .await
-                .map_err(|error| TaskError::Build(WorkflowBuildError::Human(error)))
         })
-    }))
-    .retry_policy(RetryPolicy::unlimited())
-    .build_persistent()
-    .map(|task_output| task_output.output)
+    });
+
+    Step::builder(task)
+        .materialise(materialise_big_picture)
+        .validate(check_fn(|_r: &R, _input: DiscoveryInput, o: BigPicture| {
+            Box::pin(future::ok(validate_divergent(&o)))
+        }))
+        .repair_with(repair_fn(|r, a| {
+            Box::pin(async move {
+                repair_divergent(r, a)
+                    .await
+                    .map_err(|error| TaskError::Build(WorkflowBuildError::Human(error)))
+            })
+        }))
+        .retry_policy(RetryPolicy::unlimited())
+        .build_persistent()
 }
 
 pub(super) fn convergent_step_with_repository_tools<C, R, E>(
@@ -468,6 +552,17 @@ where
         let workspace_root = workspace_root.clone();
         let message_source = message_source.clone();
         Box::pin(async move {
+            if user_requested_convergence(&input) {
+                return Ok(DivergentTaskOutput {
+                    ready_to_materialise: true,
+                    assistant_message: String::new(),
+                    open_questions: Vec::new(),
+                    transcript: input.messages.clone(),
+                    findings: input.findings.clone(),
+                    conversation_turn: Vec::new(),
+                });
+            }
+
             let request = build_divergent_request(&input, Some(&system_prompt));
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
@@ -484,8 +579,7 @@ where
                     )))
                 })?;
 
-            let output: BigPicture =
-                decode_outcome(outcome.clone()).map_err(AdaptorError::Decode)?;
+            let assistant_message = outcome.final_message().content.clone().unwrap_or_default();
 
             let input_message_count = input.messages.len();
             let conversation_turn = outcome
@@ -496,18 +590,28 @@ where
                 .collect();
 
             Ok(DivergentTaskOutput {
-                output,
+                ready_to_materialise: false,
+                assistant_message,
+                open_questions: Vec::new(),
+                transcript: outcome.messages().to_vec(),
+                findings: input.findings.clone(),
                 conversation_turn,
             })
         })
     });
 
+    let materialise_client = (*agent.executor().client()).clone();
+    let materialise_big_picture =
+        materialiser_fn(move |runtime: &R, output: DivergentTaskOutput| {
+            let client = materialise_client.clone();
+            Box::pin(async move { materialise_big_picture(&client, runtime, output).await })
+        });
+
     Step::builder(task)
-        .validate(check_fn(
-            |_r: &R, _input: DiscoveryInput, o: DivergentTaskOutput| {
-                Box::pin(future::ok(validate_divergent(&o.output)))
-            },
-        ))
+        .materialise(materialise_big_picture)
+        .validate(check_fn(|_r: &R, _input: DiscoveryInput, o: BigPicture| {
+            Box::pin(future::ok(validate_divergent(&o)))
+        }))
         .repair_with(repair_fn(|r, a| {
             Box::pin(async move {
                 repair_divergent(r, a)
@@ -517,7 +621,6 @@ where
         }))
         .retry_policy(RetryPolicy::unlimited())
         .build_persistent()
-        .map(|task_output| task_output.output)
 }
 
 // ─── Convergent discovery message builders ────────────────────────────────
@@ -666,35 +769,19 @@ fn build_divergent_initial_user_message(input: &DiscoveryInput) -> String {
 
     lines.push(String::new());
     lines.push(
-        "Return only one JSON object. Do not include markdown, prose, code fences, or hidden reasoning in the assistant content."
+        "Respond conversationally in explore mode. Do not return JSON. Think with the user, map interesting territory, and keep the discussion open-ended."
             .to_string(),
     );
     lines.push(
-        "The JSON object must use this exact shape: {\"ready_to_converge\":boolean,\"full_scope\":string,\"outer_boundaries\":string[],\"out_of_scope\":string[],\"design_space\":string,\"divergent_approaches\":string[],\"trade_off_dimensions\":string[],\"prior_art_insights\":string[],\"non_obvious_risks\":string[],\"binding_constraints\":string[],\"open_choices\":string[],\"assistant_message\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}"
+        "Use repository context and prior art to surface tensions, patterns, analogies, and unknowns. When sources suggest different directions, preserve that disagreement instead of resolving it."
             .to_string(),
     );
     lines.push(
-        "Use assistant_message for concise, conversational exploration that can be shown to the user before the next question."
+        "If it feels useful, end with an invitation such as 'Which thread is interesting to pull on?' or 'Where does this map feel wrong or incomplete?' Do not ask the user to choose an implementation seam."
             .to_string(),
     );
     lines.push(
-        "Map the full design space. Surface multiple divergent approaches. Research prior art. Identify binding constraints vs open choices. Use ASCII diagrams in design_space when they help visualise the space."
-            .to_string(),
-    );
-    lines.push(
-        "outer_boundaries are the things that are DEFINITELY in scope — they become immutable once this phase completes. out_of_scope are the things that are DEFINITELY not in scope."
-            .to_string(),
-    );
-    lines.push(
-        "trade_off_dimensions are the axes along which approaches differ (e.g. simplicity vs performance, time-to-market vs completeness)."
-            .to_string(),
-    );
-    lines.push(
-        "Only set ready_to_converge true when you have mapped enough of the design space to feel confident that the user can make an informed choice about direction. When you set it, ask the user if they agree — let them decide."
-            .to_string(),
-    );
-    lines.push(
-        "Include explicit uncertainty in prior_art_insights, non_obvious_risks, or open_questions as appropriate."
+        "If the design space feels mapped enough to crystallise later, briefly tell the user they can say `ready to converge` to materialise the BigPicture."
             .to_string(),
     );
 
@@ -720,7 +807,108 @@ fn build_divergent_request(
         messages.push(Message::user(build_divergent_turn_instructions(input)));
     }
 
-    CompletionRequest::new(MODEL.to_string(), messages).with_metadata(json!({
+    CompletionRequest::new(MODEL.to_string(), messages)
+}
+
+fn build_divergent_system_prompt_with_base(turn_count: usize, base: &str) -> String {
+    let phase_hint = if turn_count == 0 {
+        "This is the first turn of divergent discovery. Start like explore mode: react to the material, map interesting territory, and invite the user into the conversation."
+    } else {
+        "This is a continuation of divergent discovery. Follow the user's latest interest and deepen the exploration without forcing a decision."
+    };
+    format!(
+        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
+    )
+}
+
+fn build_divergent_turn_instructions(_input: &DiscoveryInput) -> String {
+    let mut lines = vec![
+        "Continue in explore mode. Follow what is interesting in the conversation so far and keep the response open-ended."
+            .to_string(),
+    ];
+
+    lines.push(String::new());
+    lines.push(
+        "Respond conversationally. Do not return JSON. Keep following the exploration unless the user explicitly asks to converge, narrow, summarise the BigPicture, or start planning."
+            .to_string(),
+    );
+    lines.push(
+        "When appropriate, remind the user they can say `ready to converge` to materialise the explored conversation into a BigPicture."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+async fn materialise_big_picture<C, R, E>(
+    client: &C,
+    runtime: &R,
+    output: DivergentTaskOutput,
+) -> Result<BigPicture, DiscoveryStepError<C, R, E>>
+where
+    C: LlmClient<Runtime = R> + Clone + 'static,
+    C::Error: Display + 'static,
+    E: 'static,
+    R: HumanIO + 'static,
+    R::Error: Debug + 'static,
+{
+    if !output.ready_to_materialise {
+        // This is not the materialised BigPicture. It is a rejected placeholder
+        // that carries the latest exploratory assistant message through Naaf's
+        // materialisation pipeline so validation can keep the conversation open
+        // until the user explicitly asks to converge.
+        return Ok(BigPicture {
+            ready_to_converge: false,
+            assistant_message: output.assistant_message,
+            open_questions: output.open_questions,
+            ..Default::default()
+        });
+    }
+
+    let request = build_big_picture_materialisation_request(&output);
+    let executor = Executor::new(client.clone());
+    let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
+        .await
+        .map_err(|error| {
+            AdaptorError::Build(WorkflowBuildError::Workflow(format!(
+                "executor failed: {error}"
+            )))
+        })?;
+
+    decode_outcome(outcome).map_err(AdaptorError::Decode)
+}
+
+fn build_big_picture_materialisation_request(output: &DivergentTaskOutput) -> CompletionRequest {
+    let mut lines = vec![
+        "Materialise the exploratory conversation into a BigPicture handoff.".to_string(),
+        "This is synthesis after exploration, not a live exploratory response.".to_string(),
+        "Return only one JSON object. Do not include markdown, prose, code fences, or hidden reasoning in the assistant content.".to_string(),
+        "The JSON object must use this exact shape: {\"ready_to_converge\":boolean,\"full_scope\":string,\"outer_boundaries\":string[],\"out_of_scope\":string[],\"design_space\":string,\"divergent_approaches\":string[],\"trade_off_dimensions\":string[],\"prior_art_insights\":string[],\"non_obvious_risks\":string[],\"binding_constraints\":string[],\"open_choices\":string[],\"assistant_message\":string,\"open_questions\":[{\"prompt\":string,\"choices\":string[]}]}".to_string(),
+        "Set ready_to_converge true. Capture the explored design space, alternatives, tensions, prior-art insights, risks, and open choices without inventing decisions that were not present in the conversation.".to_string(),
+    ];
+
+    if !output.findings.is_empty() {
+        lines.push(String::new());
+        lines.push("Address these previous materialisation findings:".to_string());
+        lines.extend(output.findings.iter().map(|finding| format!("- {finding}")));
+    }
+
+    lines.push(String::new());
+    lines.push("Conversation transcript:".to_string());
+    lines.push(render_messages_for_materialisation(&output.transcript));
+
+    CompletionRequest::new(
+        MODEL.to_string(),
+        vec![
+            Message::system(
+                "You materialise exploratory discovery conversations into structured BigPicture handoffs. Use International English exclusively."
+                    .to_string(),
+            ),
+            Message::user(lines.join("\n")),
+        ],
+    )
+    .with_metadata(json!({
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -736,42 +924,59 @@ fn build_divergent_request(
     }))
 }
 
-fn build_divergent_system_prompt_with_base(turn_count: usize, base: &str) -> String {
-    let phase_hint = if turn_count == 0 {
-        "This is the first turn of divergent discovery. Begin by understanding the user's idea and mapping the full design space. Surface alternatives and prior art."
-    } else {
-        "This is a continuation of divergent discovery. Do not re-summarise the full_scope, outer_boundaries, or design_space unless they have changed. Focus on what is new and respond to the user's latest answers."
-    };
-    format!(
-        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns.\n\n{}",
-        crate::plan::ENGLISH_DIRECTIVE
-    )
+fn render_messages_for_materialisation(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::System { content } => Some(format!("SYSTEM: {content}")),
+            Message::User { content } => Some(format!("USER: {content}")),
+            Message::Assistant(message) => message
+                .content
+                .as_ref()
+                .map(|content| format!("ASSISTANT: {content}")),
+            Message::Tool(tool) => Some(format!("TOOL {}: {}", tool.tool_name, tool.content)),
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-fn build_divergent_turn_instructions(input: &DiscoveryInput) -> String {
-    let mut lines = vec![
-        "Continue the divergent discovery conversation based on what has been discussed so far."
-            .to_string(),
-    ];
+fn user_requested_convergence(input: &DiscoveryInput) -> bool {
+    input
+        .answers
+        .last()
+        .is_some_and(|answer| contains_convergence_signal(&answer.answer))
+        || input
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::User { content } => Some(contains_convergence_signal(content)),
+                _ => None,
+            })
+            == Some(true)
+}
 
-    if !input.findings.is_empty() {
-        lines.push(String::new());
-        lines.push("Address these validation findings in your response:".to_string());
-        lines.extend(
-            input
-                .findings
-                .iter()
-                .map(|finding| format!("- {}", finding)),
-        );
-    }
-
-    lines.push(String::new());
-    lines.push(
-        "Return only one JSON object with the same shape as before. Only update fields if they have changed based on the latest user answers."
-            .to_string(),
-    );
-
-    lines.join("\n")
+fn contains_convergence_signal(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "ready to converge",
+        "let's converge",
+        "lets converge",
+        "we can converge",
+        "move to convergence",
+        "start narrowing",
+        "begin narrowing",
+        "materialise the bigpicture",
+        "materialize the bigpicture",
+        "materialise the big picture",
+        "materialize the big picture",
+        "summarise the bigpicture",
+        "summarize the bigpicture",
+        "summarise the big picture",
+        "summarize the big picture",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
 }
 
 fn maybe_compact_messages(messages: &mut Vec<Message>, max_input_tokens: usize) {
@@ -953,9 +1158,25 @@ where
 
     let mut answers = latest_attempt.input.answers.clone();
 
+    if divergent_findings_require_model_retry(&latest_attempt.findings) {
+        return Ok(DiscoveryInput {
+            initial_prompt: latest_attempt.input.initial_prompt.clone(),
+            answers,
+            findings: latest_attempt
+                .findings
+                .iter()
+                .map(|f| f.to_string())
+                .collect(),
+            last_output: None,
+            messages,
+            turn_count: latest_attempt.input.turn_count + 1,
+            big_picture: None,
+        });
+    }
+
     // Use structured open_questions where available, falling back to assistant_message
     // only when no questions are present. This mirrors repair_convergent.
-    let output = &latest_attempt.output.output;
+    let output = &latest_attempt.output;
     let structured_questions: Vec<&DiscoveryQuestion> = output
         .open_questions
         .iter()
@@ -1015,6 +1236,15 @@ where
     })
 }
 
+fn divergent_findings_require_model_retry(findings: &[DivergentFinding]) -> bool {
+    findings.iter().any(|finding| {
+        matches!(
+            finding,
+            DivergentFinding::PrematureSynthesis | DivergentFinding::ConvergentQuestionAsked
+        )
+    })
+}
+
 fn validate_convergent(
     output: &DiscoveryOutput,
     authoritative_big_picture: Option<&BigPicture>,
@@ -1069,7 +1299,9 @@ fn validate_divergent(output: &BigPicture) -> Vec<DivergentFinding> {
     let has_prior_art = !output.prior_art_insights.is_empty();
     let has_boundaries = !output.outer_boundaries.is_empty();
 
-    if output.ready_to_converge {
+    if !output.ready_to_converge {
+        findings.push(DivergentFinding::StillExploring);
+    } else {
         // When the model offers convergence, ensure it has mapped enough space.
         if !has_design_space {
             findings.push(DivergentFinding::InsufficientDesignSpace);
@@ -1107,7 +1339,82 @@ fn validate_divergent(output: &BigPicture) -> Vec<DivergentFinding> {
         }
     }
 
+    if contains_premature_synthesis(&output.assistant_message) {
+        findings.push(DivergentFinding::PrematureSynthesis);
+    }
+
+    if output
+        .open_questions
+        .iter()
+        .any(|q| contains_convergent_question(&q.prompt))
+    {
+        findings.push(DivergentFinding::ConvergentQuestionAsked);
+    }
+
     findings
+}
+
+/// Checks whether the assistant message contains recommendation or synthesis
+/// language that violates the divergent exploration contract.
+fn contains_premature_synthesis(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let recommendation_phrases = [
+        "i would narrow",
+        "i would not choose",
+        "i recommend",
+        "best narrowing",
+        "the best approach is",
+        "the strongest convergence point",
+        "the strongest convergence",
+        "a merged architecture",
+        "we should adopt",
+        "let's adopt",
+        "i suggest we",
+        "the optimal",
+        "the clear winner",
+        "we should proceed with",
+        "my recommendation",
+        "i propose",
+        "we should standardise",
+        "we should standardize",
+        "the canonical",
+        "the right choice",
+        "the preferred",
+        "this keeps the",
+        "this avoids the",
+        "this gives us",
+        "we should treat",
+        "we should make",
+        "we should use",
+        "the most promising",
+        "the natural choice",
+    ];
+    recommendation_phrases
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+}
+
+/// Checks whether a question prompt contains convergent "should" language
+/// instead of presenting an option map or open thread.
+fn contains_convergent_question(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let convergent_starters = [
+        "what should",
+        "how should",
+        "where should",
+        "when should",
+        "who should",
+        "which should",
+        "what is the canonical",
+        "what is the best",
+        "what is the optimal",
+        "what is the preferred",
+        "what is the right",
+        "how do we choose between",
+    ];
+    convergent_starters
+        .iter()
+        .any(|phrase| lower.contains(phrase))
 }
 
 /// Checks whether the convergent output narrows beyond the BigPicture boundaries.
@@ -1570,6 +1877,164 @@ mod tests {
     }
 
     #[test]
+    fn validate_divergent_detects_premature_synthesis() {
+        let mut output = sample_big_picture();
+        output.assistant_message =
+            "I would narrow the next discovery pass around a merged architecture.".to_string();
+
+        let findings = validate_divergent(&output);
+
+        assert!(findings.contains(&DivergentFinding::PrematureSynthesis));
+    }
+
+    #[test]
+    fn validate_divergent_detects_best_narrowing_language() {
+        let mut output = sample_big_picture();
+        output.assistant_message =
+            "I would not choose a pure ABI-first rewrite. The best narrowing is a merged path."
+                .to_string();
+
+        let findings = validate_divergent(&output);
+
+        assert!(findings.contains(&DivergentFinding::PrematureSynthesis));
+    }
+
+    #[test]
+    fn validate_divergent_detects_convergent_question() {
+        let mut output = sample_big_picture();
+        output.open_questions = vec![DiscoveryQuestion {
+            prompt: "What should be the canonical stable ABI centre?".to_string(),
+            choices: Vec::new(),
+        }];
+
+        let findings = validate_divergent(&output);
+
+        assert!(findings.contains(&DivergentFinding::ConvergentQuestionAsked));
+    }
+
+    #[test]
+    fn validate_divergent_accepts_option_map_question() {
+        let mut output = sample_big_picture();
+        output.open_questions = vec![DiscoveryQuestion {
+            prompt: "The ABI could live at three different levels — what resonates with you?"
+                .to_string(),
+            choices: Vec::new(),
+        }];
+
+        let findings = validate_divergent(&output);
+
+        assert!(!findings.contains(&DivergentFinding::ConvergentQuestionAsked));
+    }
+
+    #[test]
+    fn validate_divergent_accepts_speculative_language() {
+        let mut output = sample_big_picture();
+        output.assistant_message = "What if we imagined the host as a primitive shell?".to_string();
+
+        let findings = validate_divergent(&output);
+
+        assert!(!findings.contains(&DivergentFinding::PrematureSynthesis));
+    }
+
+    #[test]
+    fn divergent_prompt_exposes_convergence_signal() {
+        let prompt = build_divergent_initial_user_message(&DiscoveryInput::new("Explore this"));
+
+        assert!(prompt.contains("ready to converge"));
+        assert!(prompt.contains("materialise the BigPicture"));
+        assert!(DIVERGENT_SYSTEM_PROMPT.contains("ready to converge"));
+    }
+
+    #[test]
+    fn big_picture_materialisation_request_uses_transcript() {
+        let output = DivergentTaskOutput {
+            ready_to_materialise: true,
+            assistant_message: String::new(),
+            open_questions: Vec::new(),
+            transcript: vec![
+                Message::user("Explore arch3"),
+                Message::assistant(AssistantMessage::from_text(
+                    "I see tensions around ABI and system guests.",
+                )),
+            ],
+            findings: Vec::new(),
+            conversation_turn: Vec::new(),
+        };
+
+        let request = build_big_picture_materialisation_request(&output);
+        let text = request
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::User { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("Materialise the exploratory conversation"));
+        assert!(text.contains("USER: Explore arch3"));
+        assert!(text.contains("ASSISTANT: I see tensions around ABI and system guests."));
+    }
+
+    #[tokio::test]
+    async fn materialise_big_picture_returns_placeholder_until_ready() {
+        let client = ScriptedClient::new(Vec::<String>::new());
+        let runtime = AnsweringRuntime::new(Vec::<String>::new());
+        let output = DivergentTaskOutput {
+            ready_to_materialise: false,
+            assistant_message: "I see several unresolved threads.".to_string(),
+            open_questions: vec![DiscoveryQuestion {
+                prompt: "Which thread is interesting to pull on?".to_string(),
+                choices: Vec::new(),
+            }],
+            transcript: vec![Message::user("Explore this")],
+            findings: Vec::new(),
+            conversation_turn: Vec::new(),
+        };
+
+        let result = materialise_big_picture::<ScriptedClient, AnsweringRuntime, Infallible>(
+            &client, &runtime, output,
+        )
+        .await
+        .expect("placeholder materialisation should succeed");
+
+        assert!(!result.ready_to_converge);
+        assert_eq!(
+            result.assistant_message,
+            "I see several unresolved threads."
+        );
+        assert_eq!(result.open_questions.len(), 1);
+        assert!(client.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn materialise_big_picture_calls_llm_when_ready() {
+        let bp = sample_big_picture();
+        let client = ScriptedClient::new(vec![
+            serde_json::to_string(&bp).expect("big picture should serialise"),
+        ]);
+        let runtime = AnsweringRuntime::new(Vec::<String>::new());
+        let output = DivergentTaskOutput {
+            ready_to_materialise: true,
+            assistant_message: String::new(),
+            open_questions: Vec::new(),
+            transcript: vec![Message::user("Explore this")],
+            findings: Vec::new(),
+            conversation_turn: Vec::new(),
+        };
+
+        let result = materialise_big_picture::<ScriptedClient, AnsweringRuntime, Infallible>(
+            &client, &runtime, output,
+        )
+        .await
+        .expect("ready materialisation should succeed");
+
+        assert!(result.ready_to_converge);
+        assert_eq!(client.requests().len(), 1);
+    }
+
+    #[test]
     fn validate_convergent_detects_contradicts_big_picture() {
         let mut output = complete_output();
         // "video chat" is explicitly out_of_scope in sample_big_picture
@@ -1596,22 +2061,19 @@ mod tests {
 
     #[tokio::test]
     async fn divergent_repair_asks_structured_questions() {
-        let divergent_output = BigPicture {
-            assistant_message: "Here's what I found.".to_string(),
-            open_questions: vec![
-                DiscoveryQuestion {
-                    prompt: String::new(),
-                    choices: Vec::new(),
-                },
-                DiscoveryQuestion {
-                    prompt: "Which approach resonates?".to_string(),
-                    choices: vec!["CRDT-first".to_string(), "op-first".to_string()],
-                },
-            ],
-            ..sample_big_picture()
-        };
+        let assistant_message = "Here's what I found.".to_string();
+        let open_questions = vec![
+            DiscoveryQuestion {
+                prompt: String::new(),
+                choices: Vec::new(),
+            },
+            DiscoveryQuestion {
+                prompt: "Which approach resonates?".to_string(),
+                choices: vec!["CRDT-first".to_string(), "op-first".to_string()],
+            },
+        ];
         let client = ScriptedClient::new(vec![
-            serde_json::to_string(&divergent_output).expect("output should serialise"),
+            serde_json::to_string(&sample_big_picture()).expect("output should serialise"),
         ]);
         let agent = LlmAgent::new(client);
         let runtime = AnsweringRuntime::new(["CRDT-first".to_string()]);
@@ -1623,7 +2085,11 @@ mod tests {
         let attempt = Attempt {
             input: input.clone(),
             output: DivergentTaskOutput {
-                output: divergent_output,
+                ready_to_materialise: false,
+                assistant_message,
+                open_questions,
+                transcript: Vec::new(),
+                findings: Vec::new(),
                 conversation_turn: Vec::new(),
             },
             findings: Vec::new(),
@@ -1638,6 +2104,43 @@ mod tests {
         );
         assert_eq!(repaired.answers.len(), 1);
         assert_eq!(repaired.answers[0].answer, "CRDT-first");
+    }
+
+    #[tokio::test]
+    async fn divergent_repair_retries_internally_for_narrowing_findings() {
+        let open_questions = vec![DiscoveryQuestion {
+            prompt: "What should be the canonical stable ABI centre?".to_string(),
+            choices: Vec::new(),
+        }];
+        let runtime = AnsweringRuntime::new(Vec::<String>::new());
+        let attempt = Attempt {
+            input: DiscoveryInput::new("Plan the rewrite"),
+            output: DivergentTaskOutput {
+                ready_to_materialise: false,
+                assistant_message: "I recommend a merged architecture.".to_string(),
+                open_questions,
+                transcript: Vec::new(),
+                findings: Vec::new(),
+                conversation_turn: Vec::new(),
+            },
+            findings: vec![
+                DivergentFinding::PrematureSynthesis,
+                DivergentFinding::ConvergentQuestionAsked,
+            ],
+        };
+
+        let repaired = repair_divergent(&runtime, vec![attempt])
+            .await
+            .expect("repair should retry without asking the user");
+
+        assert!(runtime.questions().is_empty());
+        assert!(repaired.answers.is_empty());
+        assert!(repaired.findings.contains(
+            &"assistant message synthesises or recommends rather than exploring".to_string()
+        ));
+        assert!(repaired.findings.contains(
+            &"open question asks convergent 'should' rather than presenting options".to_string()
+        ));
     }
 
     #[tokio::test]
@@ -1678,10 +2181,11 @@ mod tests {
     async fn divergent_step_produces_big_picture() {
         let bp = sample_big_picture();
         let client = ScriptedClient::new(vec![
+            "I see a few interesting threads to explore.".to_string(),
             serde_json::to_string(&bp).expect("big picture should serialise"),
         ]);
         let agent = LlmAgent::new(client);
-        let runtime = AnsweringRuntime::new(Vec::<String>::new());
+        let runtime = AnsweringRuntime::new(["ready to converge".to_string()]);
 
         let input = DiscoveryInput::new("Build a real-time collaboration system");
 
@@ -1722,11 +2226,12 @@ mod tests {
         let ready = sample_big_picture();
 
         let client = ScriptedClient::new(vec![
+            "There are several possible framings here.".to_string(),
             serde_json::to_string(&premature).expect("should serialise"),
             serde_json::to_string(&ready).expect("should serialise"),
         ]);
         let agent = LlmAgent::new(client);
-        let runtime = AnsweringRuntime::new(["Let's explore more".to_string()]);
+        let runtime = AnsweringRuntime::new(["ready to converge".to_string()]);
 
         let input = DiscoveryInput::new("Build a system");
         let result = divergent_step(&agent)
