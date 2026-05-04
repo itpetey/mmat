@@ -353,6 +353,7 @@ where
     R::Error: Debug + 'static,
 {
     let client = (*agent.executor().client()).clone();
+    let message_source = agent.message_source().cloned();
     let base_prompt = format!(
         "{}\n\nYou have access to repository tools rooted at the selected project: `glob_paths`, `search_files`, and `read_file`. Use them before making claims about existing project code, structure, documentation, or dependencies.",
         SYSTEM_PROMPT
@@ -362,6 +363,7 @@ where
         let client = client.clone();
         let base_prompt = base_prompt.clone();
         let workspace_root = workspace_root.clone();
+        let message_source = message_source.clone();
         Box::pin(async move {
             // Compose the system prompt: base + BigPicture context if available.
             let system_prompt = if let Some(bp) = &input.big_picture {
@@ -387,7 +389,10 @@ where
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
-            let executor = Executor::with_tools(client, tools);
+            let mut executor = Executor::with_tools(client, tools);
+            if let Some(source) = message_source {
+                executor = executor.with_message_source(source);
+            }
             let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
                 .await
                 .map_err(|error| {
@@ -451,6 +456,7 @@ where
     R::Error: Debug + 'static,
 {
     let client = (*agent.executor().client()).clone();
+    let message_source = agent.message_source().cloned();
     let system_prompt = format!(
         "{}\n\nYou have access to repository tools rooted at the selected project: `glob_paths`, `search_files`, and `read_file`. Use them before making claims about existing project code, structure, documentation, or dependencies.",
         DIVERGENT_SYSTEM_PROMPT
@@ -460,12 +466,16 @@ where
         let client = client.clone();
         let system_prompt = system_prompt.clone();
         let workspace_root = workspace_root.clone();
+        let message_source = message_source.clone();
         Box::pin(async move {
             let request = build_divergent_request(&input, Some(&system_prompt));
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
-            let executor = Executor::with_tools(client, tools);
+            let mut executor = Executor::with_tools(client, tools);
+            if let Some(source) = message_source {
+                executor = executor.with_message_source(source);
+            }
             let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
                 .await
                 .map_err(|error| {
@@ -618,7 +628,8 @@ fn build_convergent_system_prompt_with_base(turn_count: usize, base: &str) -> St
         "This is a continuation of convergent discovery. Do not re-summarise the problem statement, goals, or constraints unless they have changed. Focus on what is new and respond to the user's latest answers."
     };
     format!(
-        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns."
+        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
     )
 }
 
@@ -732,7 +743,8 @@ fn build_divergent_system_prompt_with_base(turn_count: usize, base: &str) -> Str
         "This is a continuation of divergent discovery. Do not re-summarise the full_scope, outer_boundaries, or design_space unless they have changed. Focus on what is new and respond to the user's latest answers."
     };
     format!(
-        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns."
+        "{base}\n\n{phase_hint}\n\nDo not repeat information the user has already seen. Keep responses concise and forward-moving. It is normal to take many discovery turns.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
     )
 }
 

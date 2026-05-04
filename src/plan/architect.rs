@@ -24,7 +24,7 @@ pub(super) type ArchitectStep<C, R, E> =
 
 const MAX_ARCHITECT_ATTEMPTS: usize = 3;
 pub const MODEL: &str = "gpt-5.5";
-pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff. If useful, you may request references to existing knowledge groups that have been materialised using `@knowledge_search` tool.";
+pub const SYSTEM_PROMPT: &str = "You are the software architect stage for MMAT. Your job is to refine the selected solution into an execution-ready architectural handoff. If useful, you may request references to existing knowledge groups that have been materialised using `@knowledge_search` tool. Use International English exclusively (Oxford spelling, -ise/-isation suffixes, colour, favour, metre, etc.).";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ArchitectPlan {
@@ -170,12 +170,14 @@ where
 
     let kb = knowledge_backend.clone();
     let client = (*agent.executor().client()).clone();
+    let message_source = agent.message_source().cloned();
 
     let task = task_fn(move |_runtime: &R, input: ArchitectInput| {
         let kb = kb.clone();
         let system_prompt = system_prompt.clone();
         let client = client.clone();
         let workspace_root = workspace_root.clone();
+        let message_source = message_source.clone();
         Box::pin(async move {
             let user_content = build_prompt(input.clone());
             let request = CompletionRequest::new(
@@ -224,11 +226,14 @@ where
                 }
             }
 
-            let executor: Executor<C, R, naaf_knowledge::KnowledgeError> =
+            let mut executor: Executor<C, R, naaf_knowledge::KnowledgeError> =
                 Executor::with_tools(client, tools).with_config(
                     ExecutorConfig::default()
                         .with_max_input_tokens(input_token_budget_for_model(MODEL)),
                 );
+            if let Some(source) = message_source {
+                executor = executor.with_message_source(source);
+            }
 
             let outcome = execute_with_turn_limit_retry(&executor, _runtime, request)
                 .await

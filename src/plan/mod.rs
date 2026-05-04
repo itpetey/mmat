@@ -10,7 +10,7 @@ use std::{
 use naaf_core::{PhaseId, Pipeline, Route, Step, StepError, task_fn};
 use naaf_llm::{
     CompletionRequest, ExecutionOutcome, Executor, ExecutorError, HumanIO, LlmAgent, LlmClient,
-    OpenAiClient, OpenAiConfig, OpenAiStreamObserver, TaskError,
+    MessageSource, OpenAiClient, OpenAiConfig, OpenAiStreamObserver, TaskError,
 };
 use naaf_persistence_sqlite::SqliteKnowledgeGroupStore;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,9 @@ const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const INPUT_TOKEN_FRACTION: f64 = 0.75;
 const MAX_EXECUTOR_RETRIES: usize = 10;
+
+/// Directive appended to every system prompt to enforce International English.
+pub const ENGLISH_DIRECTIVE: &str = "Use International English exclusively (Oxford spelling, -ise/-isation suffixes, colour, favour, metre, etc.).";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnowledgeRuntimeConfig {
@@ -326,19 +329,28 @@ pub async fn greenfield<R>(
     init_prompt: String,
     runtime: R,
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
+    message_source: Option<Arc<dyn MessageSource>>,
 ) -> Result<DomainMappedReport, MmatError>
 where
     R: HumanIO + Clone + 'static,
     R::Error: Debug + Display + 'static,
 {
     let knowledge_config = KnowledgeRuntimeConfig::from_env()?;
-    greenfield_with_knowledge_config(init_prompt, runtime, stream_observer, knowledge_config).await
+    greenfield_with_knowledge_config(
+        init_prompt,
+        runtime,
+        stream_observer,
+        message_source,
+        knowledge_config,
+    )
+    .await
 }
 
 pub async fn greenfield_for_project<R>(
     init_prompt: String,
     runtime: R,
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
+    message_source: Option<Arc<dyn MessageSource>>,
     project: &ProjectConfig,
 ) -> Result<DomainMappedReport, MmatError>
 where
@@ -346,13 +358,21 @@ where
     R::Error: Debug + Display + 'static,
 {
     let knowledge_config = KnowledgeRuntimeConfig::from_project(project)?;
-    greenfield_with_knowledge_config(init_prompt, runtime, stream_observer, knowledge_config).await
+    greenfield_with_knowledge_config(
+        init_prompt,
+        runtime,
+        stream_observer,
+        message_source,
+        knowledge_config,
+    )
+    .await
 }
 
 pub async fn greenfield_with_knowledge_config<R>(
     init_prompt: String,
     runtime: R,
     stream_observer: Option<Arc<dyn OpenAiStreamObserver<R>>>,
+    message_source: Option<Arc<dyn MessageSource>>,
     knowledge_config: KnowledgeRuntimeConfig,
 ) -> Result<DomainMappedReport, MmatError>
 where
@@ -364,7 +384,10 @@ where
     if let Some(stream_observer) = stream_observer {
         oai_client = oai_client.with_stream_observer(stream_observer);
     }
-    let agent = LlmAgent::new(oai_client);
+    let mut agent = LlmAgent::new(oai_client);
+    if let Some(source) = message_source {
+        agent = agent.with_message_source(source);
+    }
     let knowledge_store = Arc::new(knowledge_config.open_store()?);
     let knowledge_backend = Arc::new(knowledge_config.qdrant_backend::<R>());
     let workspace_root = knowledge_config.workspace_root.clone();

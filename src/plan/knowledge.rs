@@ -40,7 +40,7 @@ type KnowledgeStepError<C, R, E> = WorkflowTaskError<C, R, E>;
 
 const MAX_PLANNING_ATTEMPTS: usize = 3;
 pub const MODEL: &str = "gpt-5.5";
-pub const SYSTEM_PROMPT: &str = "You are the knowledge planning stage for MMAT. Your job is to identify the minimum useful knowledge groups for downstream work, scope each group to the stages that need it, and name the concrete sources that should be materialised.";
+pub const SYSTEM_PROMPT: &str = "You are the knowledge planning stage for MMAT. Your job is to identify the minimum useful knowledge groups for downstream work, scope each group to the stages that need it, and name the concrete sources that should be materialised. Use International English exclusively (Oxford spelling, -ise/-isation suffixes, colour, favour, metre, etc.).";
 pub const UPSTREAM_NAAF_FOLLOW_UPS: &[&str] = &[
     "Add first-class web and paper acquisition helpers to naaf-knowledge.",
     "Add duplicate and near-duplicate detection to naaf-knowledge linting.",
@@ -641,6 +641,7 @@ where
 {
     let lint_check = knowledge_lint_check(store.as_ref(), &collection_prefix);
     let client = (*agent.executor().client()).clone();
+    let message_source = agent.message_source().cloned();
     let system_prompt = format!(
         "{}\n\nYou have access to repository tools: `glob_paths`, `search_files`, and `read_file`. Use them to inspect the workspace before choosing repository knowledge sources.",
         SYSTEM_PROMPT
@@ -650,6 +651,7 @@ where
         let client = client.clone();
         let system_prompt = system_prompt.clone();
         let workspace_root = workspace_root.clone();
+        let message_source = message_source.clone();
         Box::pin(async move {
             let request = CompletionRequest::new(
                 MODEL.to_string(),
@@ -675,10 +677,13 @@ where
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
-            let executor = Executor::with_tools(client, tools).with_config(
+            let mut executor = Executor::with_tools(client, tools).with_config(
                 ExecutorConfig::default()
                     .with_max_input_tokens(input_token_budget_for_model(MODEL)),
             );
+            if let Some(source) = message_source {
+                executor = executor.with_message_source(source);
+            }
             let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
                 .await
                 .map_err(|error| {

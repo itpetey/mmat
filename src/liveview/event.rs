@@ -131,6 +131,10 @@ pub enum FrontendEvent {
     DeliveryBatchCompleted {
         batch_index: usize,
     },
+    InterruptStep,
+    MessageQueued {
+        text: String,
+    },
     Quit,
 }
 
@@ -226,6 +230,8 @@ impl fmt::Display for FrontendEvent {
             Self::DeliveryBatchCompleted { batch_index } => {
                 write!(f, "delivery batch {batch_index} completed")
             }
+            Self::InterruptStep => write!(f, "interrupt step"),
+            Self::MessageQueued { .. } => write!(f, "message queued"),
             Self::Quit => write!(f, "quit"),
         }
     }

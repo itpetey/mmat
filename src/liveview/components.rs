@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use dioxus::prelude::*;
@@ -43,6 +44,7 @@ struct ComposerProps {
     ui_state: Arc<UiState>,
     mode: ComposerMode,
     pending_prompt: Option<PendingPromptSnapshot>,
+    message_queue_count: usize,
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -143,6 +145,7 @@ impl PartialEq for ComposerProps {
         Arc::ptr_eq(&self.ui_state, &other.ui_state)
             && self.mode == other.mode
             && self.pending_prompt == other.pending_prompt
+            && self.message_queue_count == other.message_queue_count
     }
 }
 
@@ -246,47 +249,57 @@ pub(super) fn RootApp(props: RootAppProps) -> Element {
                     }
                 }
                 div { class: "mmat-content",
-                    div { class: "mmat-project-bar",
-                        div { class: "active-project",
-                            span { class: "project-name", "{snapshot_value.active_project.name}" }
-                            span { class: "project-root", "{snapshot_value.active_project.root.display()}" }
-                        }
-                        RegisterProjectForm { ui_state: props.ui_state.clone() }
-                    }
-                    if snapshot_value.domain_tree_nodes.is_empty() {
-                        // Single-column layout for projects without a domain tree.
-                        div { class: "mmat-conversation",
-                            if snapshot_value.conversation.is_empty() && matches!(snapshot_value.composer_mode, ComposerMode::InitialPrompt) {
-                                div { class: "conversation-entry connecting", "Ready for a new run." }
-                            }
-                            for (index, entry) in snapshot_value.conversation.iter().enumerate() {
-                                {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
-                            }
-                            if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
-                                if let Some(summary) = &snapshot_value.run_summary {
-                                    div { class: "conversation-entry status", "{format_run_summary(summary)}" }
-                                }
-                            }
-                        }
-                        QueuePanel {
-                            queue: snapshot_value.queue.clone(),
-                            worker_summary: snapshot_value.worker_summary.clone(),
-                        }
-                        div { class: "mmat-composer",
-                            Composer {
-                                ui_state: props.ui_state.clone(),
-                                mode: snapshot_value.composer_mode.clone(),
-                                pending_prompt: snapshot_value.pending_prompt.clone(),
-                            }
-                            RawLogsDisclosure { history: snapshot_value.history.clone() }
+                    if snapshot_value.is_first_boot {
+                        div { class: "first-boot-shell",
+                            NewProjectForm { ui_state: props.ui_state.clone() }
                         }
                     } else {
-                        // Multi-column layout for domain-mapped projects.
-                        MultiDomainShell {
-                            ui_state: props.ui_state.clone(),
-                            snapshot: snapshot_value,
-                            show_reasoning: show_reasoning_value,
-                            local_reasoning_overrides,
+                        div { class: "mmat-project-bar",
+                            div { class: "active-project",
+                                span { class: "project-name", "{snapshot_value.active_project.name}" }
+                                span { class: "project-root", "{snapshot_value.active_project.root.display()}" }
+                            }
+                            RegisterProjectForm { ui_state: props.ui_state.clone() }
+                        }
+                        if snapshot_value.domain_tree_nodes.is_empty() {
+                            // Single-column layout for projects without a domain tree.
+                            div { class: "mmat-conversation",
+                                if snapshot_value.conversation.is_empty() && matches!(snapshot_value.composer_mode, ComposerMode::InitialPrompt) {
+                                    div { class: "conversation-entry connecting", "Ready for a new run." }
+                                }
+                                for (index, entry) in snapshot_value.conversation.iter().enumerate() {
+                                    {render_conversation_entry(index, entry, show_reasoning_value, local_reasoning_overrides)}
+                                }
+                                if matches!(snapshot_value.composer_mode, ComposerMode::Working) {
+                                    if let Some(summary) = &snapshot_value.run_summary {
+                                        div { class: "conversation-entry status", "{format_run_summary(summary)}" }
+                                    }
+                                }
+                                if matches!(snapshot_value.composer_mode, ComposerMode::Reply) && snapshot_value.step_interrupted {
+                                    div { class: "conversation-entry status", "Step interrupted." }
+                                }
+                            }
+                            QueuePanel {
+                                queue: snapshot_value.queue.clone(),
+                                worker_summary: snapshot_value.worker_summary.clone(),
+                            }
+                            div { class: "mmat-composer",
+                                Composer {
+                                    ui_state: props.ui_state.clone(),
+                                    mode: snapshot_value.composer_mode.clone(),
+                                    pending_prompt: snapshot_value.pending_prompt.clone(),
+                                    message_queue_count: snapshot_value.message_queue_count,
+                                }
+                                RawLogsDisclosure { history: snapshot_value.history.clone() }
+                            }
+                        } else {
+                            // Multi-column layout for domain-mapped projects.
+                            MultiDomainShell {
+                                ui_state: props.ui_state.clone(),
+                                snapshot: snapshot_value,
+                                show_reasoning: show_reasoning_value,
+                                local_reasoning_overrides,
+                            }
                         }
                     }
                 }
@@ -324,6 +337,9 @@ fn BackflowBanner(props: BackflowBannerProps) -> Element {
 #[allow(non_snake_case)]
 fn Composer(props: ComposerProps) -> Element {
     let mut input = use_signal(String::new);
+    let mut interrupt_pending = use_signal(|| false);
+    let mut interrupt_pressed_at = use_signal(|| None::<Instant>);
+    let mut timeout_id = use_signal(|| 0u64);
     let is_working = matches!(props.mode, ComposerMode::Working);
 
     let key_submit_state = props.ui_state.clone();
@@ -351,6 +367,16 @@ fn Composer(props: ComposerProps) -> Element {
         .unwrap_or_default();
 
     rsx! {
+        if *interrupt_pending.read() {
+            div { class: "interrupt-confirmation",
+                "Esc again to interrupt"
+            }
+        }
+        if props.message_queue_count > 0 {
+            div { class: "message-queue-indicator",
+                "{props.message_queue_count} message(s) queued"
+            }
+        }
         if !choices.is_empty() {
             div { class: "composer-choices",
                 for choice in choices {
@@ -379,12 +405,62 @@ fn Composer(props: ComposerProps) -> Element {
                 placeholder: "Cmd+Enter to submit...",
                 rows: "2",
                 autofocus: true,
-                oninput: move |event| input.set(event.value()),
+                oninput: move |event| {
+                    input.set(event.value());
+                    if *interrupt_pending.read() {
+                        interrupt_pending.set(false);
+                        interrupt_pressed_at.set(None);
+                    }
+                },
                 onkeydown: move |event| {
                     let modifiers = event.modifiers();
                     let should_submit = event.key() == Key::Enter && (modifiers.meta() || modifiers.ctrl());
 
-                    if !should_submit || is_working {
+                    if event.key() == Key::Escape {
+                        if is_working {
+                            let already_pending = *interrupt_pending.read();
+                            if already_pending {
+                                let within_window = (*interrupt_pressed_at.read())
+                                    .map(|pressed_at| pressed_at.elapsed() <= Duration::from_secs(3))
+                                    .unwrap_or(false);
+                                if within_window {
+                                    props.ui_state.interrupt_step();
+                                    interrupt_pending.set(false);
+                                    interrupt_pressed_at.set(None);
+                                    return;
+                                }
+                            }
+                            let current_id = *timeout_id.read() + 1;
+                            timeout_id.set(current_id);
+                            interrupt_pending.set(true);
+                            interrupt_pressed_at.set(Some(Instant::now()));
+                            spawn(async move {
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                                if *timeout_id.read() == current_id {
+                                    interrupt_pending.set(false);
+                                    interrupt_pressed_at.set(None);
+                                }
+                            });
+                        }
+                        return;
+                    }
+
+                    if *interrupt_pending.read() {
+                        interrupt_pending.set(false);
+                        interrupt_pressed_at.set(None);
+                    }
+
+                    if !should_submit {
+                        return;
+                    }
+
+                    if is_working {
+                        let text = input.read().trim().to_string();
+                        if !text.is_empty() {
+                            let project_id = props.ui_state.active_project().id;
+                            props.ui_state.queue_message(project_id, text);
+                            input.set(String::new());
+                        }
                         return;
                     }
 
@@ -529,6 +605,9 @@ fn MultiDomainShell(props: MultiDomainShellProps) -> Element {
                             div { class: "conversation-entry status", "{format_run_summary(summary)}" }
                         }
                     }
+                    if matches!(snapshot.composer_mode, ComposerMode::Reply) && snapshot.step_interrupted {
+                        div { class: "conversation-entry status", "Step interrupted." }
+                    }
                 }
             }
             RightDetailPanel {
@@ -545,6 +624,7 @@ fn MultiDomainShell(props: MultiDomainShellProps) -> Element {
                 ui_state: props.ui_state.clone(),
                 mode: snapshot.composer_mode.clone(),
                 pending_prompt: snapshot.pending_prompt.clone(),
+                message_queue_count: snapshot.message_queue_count,
             }
             RawLogsDisclosure { history: snapshot.history.clone() }
         }
@@ -704,6 +784,90 @@ fn RegisterProjectForm(props: RegisterProjectFormProps) -> Element {
                     }
                 },
                 "+"
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone)]
+struct NewProjectFormProps {
+    ui_state: Arc<UiState>,
+}
+
+impl PartialEq for NewProjectFormProps {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ui_state, &other.ui_state)
+    }
+}
+
+#[allow(non_snake_case)]
+fn NewProjectForm(props: NewProjectFormProps) -> Element {
+    let mut name = use_signal(String::new);
+    let mut root = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+    let form_state = props.ui_state.clone();
+
+    rsx! {
+        div { class: "new-project-form",
+            h2 { "Welcome to MMAT" }
+            p { "Create your first project to get started." }
+            div { class: "form-row",
+                label { "Project name" }
+                input {
+                    class: "project-input",
+                    value: "{name}",
+                    placeholder: "my_project",
+                    oninput: move |event| {
+                        name.set(event.value());
+                        error.set(None);
+                    },
+                }
+            }
+            div { class: "form-row",
+                label { "Repository root" }
+                input {
+                    class: "project-input root",
+                    value: "{root}",
+                    placeholder: "/path/to/project",
+                    oninput: move |event| {
+                        root.set(event.value());
+                        error.set(None);
+                    },
+                }
+            }
+            if let Some(error_message) = error.read().as_ref() {
+                div { class: "form-error", "{error_message}" }
+            }
+            button {
+                class: "project-submit",
+                r#type: "button",
+                onclick: move |_| {
+                    let submitted_name = name.read().trim().to_string();
+                    let submitted_root = root.read().trim().to_string();
+                    if submitted_name.is_empty() {
+                        error.set(Some("Project name is required.".to_string()));
+                        return;
+                    }
+                    if !submitted_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                        error.set(Some("Project name must contain only letters, numbers, and underscores.".to_string()));
+                        return;
+                    }
+                    if submitted_root.is_empty() {
+                        error.set(Some("Repository root is required.".to_string()));
+                        return;
+                    }
+                    match form_state.register_project(submitted_name, submitted_root) {
+                        Ok(_) => {
+                            name.set(String::new());
+                            root.set(String::new());
+                            error.set(None);
+                        }
+                        Err(e) => {
+                            error.set(Some(e));
+                        }
+                    }
+                },
+                "Create project"
             }
         }
     }
@@ -924,6 +1088,12 @@ fn render_conversation_entry(
         ConversationEntry::UserMessage { text } => rsx! {
             div { key: "conv-{index}", class: "conversation-entry user",
                 span { class: "entry-role", "user" }
+                span { class: "entry-body", "{text}" }
+            }
+        },
+        ConversationEntry::QueuedUserMessage { text } => rsx! {
+            div { key: "conv-{index}", class: "conversation-entry queued",
+                span { class: "entry-role", "queued" }
                 span { class: "entry-body", "{text}" }
             }
         },

@@ -11,7 +11,9 @@ use mmat::{
     plan,
     project::{ProjectConfig, ProjectId, ProjectRegistryStore},
 };
-use naaf_llm::{AssistantMessage, ChannelHumanIO, HumanAnswer, OpenAiStreamObserver};
+use naaf_llm::{
+    AssistantMessage, ChannelHumanIO, HumanAnswer, MessageSource, OpenAiStreamObserver,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "frontend", about = "Run the MMAT LiveView frontend")]
@@ -82,8 +84,15 @@ impl<R> OpenAiStreamObserver<R> for UiStreamObserver {
     }
 }
 
-fn default_project_root() -> std::path::PathBuf {
-    mmat::project::default_project_path()
+struct UiStateMessageSource {
+    ui_state: Arc<UiState>,
+    project_id: ProjectId,
+}
+
+impl MessageSource for UiStateMessageSource {
+    fn drain_messages(&self) -> Vec<String> {
+        self.ui_state.drain_message_queue(&self.project_id)
+    }
 }
 
 fn delivery_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
@@ -181,10 +190,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ProjectRegistryStore::open_default()
             .map_err(|e| format!("Failed to open project registry: {e}"))?,
     );
-
-    registry_store
-        .ensure_default_project(default_project_root())
-        .map_err(|e| format!("Failed to ensure default project: {e}"))?;
 
     let projects = registry_store
         .list_projects()
@@ -286,6 +291,13 @@ async fn run_workflow_when_prompted(
         "Prompt received. Starting plan.",
     );
     send_summary(&event_tx, &project, &prompt, "running", "discovery", None);
+    ui_state.reset_interrupt();
+    ui_state.clear_step_interrupted(&project_id);
+
+    let message_source: Arc<dyn MessageSource> = Arc::new(UiStateMessageSource {
+        ui_state: ui_state.clone(),
+        project_id: project_id.clone(),
+    });
 
     let (runtime, pending_questions) = ChannelHumanIO::new(1024 * 512);
     let human_bridge = tokio::spawn(forward_human_questions(
@@ -296,13 +308,41 @@ async fn run_workflow_when_prompted(
 
     let stream_observer: Arc<dyn OpenAiStreamObserver<ChannelHumanIO>> =
         Arc::new(UiStreamObserver::new(event_tx.clone(), project_id.clone()));
-    let result =
-        plan::greenfield_for_project(prompt.clone(), runtime, Some(stream_observer), &project)
-            .await;
+    let mut cancel_rx = ui_state.subscribe_cancel();
+    let cancel_fut = async {
+        while !*cancel_rx.borrow() {
+            if cancel_rx.changed().await.is_err() {
+                break;
+            }
+        }
+    };
+
+    let result = tokio::select! {
+        result = plan::greenfield_for_project(prompt.clone(), runtime, Some(stream_observer), Some(message_source), &project) => Some(result),
+        _ = cancel_fut => None,
+    };
     human_bridge.abort();
 
+    if result.is_none() && ui_state.step_interrupted() {
+        send_summary(
+            &event_tx,
+            &project,
+            &prompt,
+            "interrupted",
+            "discovery",
+            Some("Step interrupted by user.".to_string()),
+        );
+        send_log(
+            &event_tx,
+            &project_id,
+            tracing::Level::INFO,
+            "Step interrupted.",
+        );
+        return;
+    }
+
     match result {
-        Ok(report) => {
+        Some(Ok(report)) => {
             let tree_nodes: Vec<DomainNodeUiSnapshot> = report
                 .tree
                 .nodes
@@ -363,7 +403,7 @@ async fn run_workflow_when_prompted(
                 ),
             );
         }
-        Err(error) => {
+        Some(Err(error)) => {
             send_summary(
                 &event_tx,
                 &project,
@@ -377,6 +417,22 @@ async fn run_workflow_when_prompted(
                 &project_id,
                 tracing::Level::ERROR,
                 format!("Plan failed: {error}"),
+            );
+        }
+        None => {
+            send_summary(
+                &event_tx,
+                &project,
+                &prompt,
+                "failed",
+                "plan",
+                Some("Workflow was cancelled.".to_string()),
+            );
+            send_log(
+                &event_tx,
+                &project_id,
+                tracing::Level::ERROR,
+                "Workflow was cancelled.",
             );
         }
     }

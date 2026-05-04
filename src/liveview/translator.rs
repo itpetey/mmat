@@ -202,7 +202,11 @@ fn dispatch_event(
             }
         }
         FrontendEvent::RunSummary(summary) => {
+            let is_interrupted = summary.status == "interrupted";
             ui_state.set_run_summary(RunSummary::from(summary));
+            if is_interrupted && let Some(project_id) = &project_id {
+                ui_state.set_step_interrupted(project_id);
+            }
         }
         FrontendEvent::DomainNodePhaseChanged { node_id, phase } => {
             if let Ok(node_id) = node_id.parse() {
@@ -227,7 +231,9 @@ fn dispatch_event(
         | FrontendEvent::BackflowHalting { .. }
         | FrontendEvent::DeliveryGraphUpdated
         | FrontendEvent::DeliveryBatchStarted { .. }
-        | FrontendEvent::DeliveryBatchCompleted { .. } => {}
+        | FrontendEvent::DeliveryBatchCompleted { .. }
+        | FrontendEvent::InterruptStep
+        | FrontendEvent::MessageQueued { .. } => {}
     }
 }
 

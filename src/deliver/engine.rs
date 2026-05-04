@@ -666,8 +666,10 @@ async fn build_knowledge_search_tool(
 }
 
 fn contract_validation_system_prompt() -> String {
-    "You are MMAT's delivery contract validator. Check whether the implementation satisfies the task card, approved architect handoff, and acceptance criteria. Flag stubs, TODO placeholders, fake values, missing behaviour, or unproven claims. Return raw JSON only with this shape: {\"summary\":string,\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}]}. Use an empty findings array only when the work genuinely satisfies the contract."
-        .to_string()
+    format!(
+        "You are MMAT's delivery contract validator. Check whether the implementation satisfies the task card, approved architect handoff, and acceptance criteria. Flag stubs, TODO placeholders, fake values, missing behaviour, or unproven claims. Return raw JSON only with this shape: {{\"summary\":string,\"findings\":[{{\"severity\":string,\"category\":string,\"message\":string}}]}}. Use an empty findings array only when the work genuinely satisfies the contract.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
+    )
 }
 
 fn delivery_model() -> String {
@@ -694,13 +696,17 @@ where
 }
 
 fn final_review_system_prompt() -> String {
-    "You are MMAT's final delivery reviewer. Assess the completed delivery against the approved architect handoff, execution plan, task results, evidence, and repository state. Be strict and non-interactive. Return raw JSON only with this shape: {\"summary\":string,\"ready\":boolean,\"strengths\":string[],\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}],\"remediation_items\":[{\"id\":string,\"title\":string,\"description\":string,\"acceptance_criteria\":string[],\"related_item_ids\":string[]}],\"next_step\":string}. When ready is true, remediation_items must be empty."
-        .to_string()
+    format!(
+        "You are MMAT's final delivery reviewer. Assess the completed delivery against the approved architect handoff, execution plan, task results, evidence, and repository state. Be strict and non-interactive. Return raw JSON only with this shape: {{\"summary\":string,\"ready\":boolean,\"strengths\":string[],\"findings\":[{{\"severity\":string,\"category\":string,\"message\":string}}],\"remediation_items\":[{{\"id\":string,\"title\":string,\"description\":string,\"acceptance_criteria\":string[],\"related_item_ids\":string[]}}],\"next_step\":string}}. When ready is true, remediation_items must be empty.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
+    )
 }
 
 fn implementation_system_prompt() -> String {
-    "You are MMAT's non-interactive delivery implementation stage. Inspect the repository using tools before proposing changes. Implement exactly the requested task card and return complete file deltas only. Do not ask the user questions. Return raw JSON only with this shape: {\"summary\":string,\"rationale\":string[],\"changes\":[{\"path\":string,\"action\":string,\"content\":string|null}]}. Allowed actions are `write` and `delete`; write actions must include complete file contents."
-        .to_string()
+    format!(
+        "You are MMAT's non-interactive delivery implementation stage. Inspect the repository using tools before proposing changes. Implement exactly the requested task card and return complete file deltas only. Do not ask the user questions. Return raw JSON only with this shape: {{\"summary\":string,\"rationale\":string[],\"changes\":[{{\"path\":string,\"action\":string,\"content\":string|null}}]}}. Allowed actions are `write` and `delete`; write actions must include complete file contents.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
+    )
 }
 
 fn ordered_task_cards(task_cards: &[TaskCard]) -> Result<Vec<TaskCard>, DeliveryError> {
@@ -726,13 +732,17 @@ fn ordered_task_cards(task_cards: &[TaskCard]) -> Result<Vec<TaskCard>, Delivery
 }
 
 fn peer_review_system_prompt() -> String {
-    "You are MMAT's delivery peer reviewer. Review the proposed implementation delta for correctness, code quality, maintainability, and fit with the existing project. Return raw JSON only with this shape: {\"summary\":string,\"findings\":[{\"severity\":string,\"category\":string,\"message\":string}]}. Use an empty findings array only when the work is ready to merge."
-        .to_string()
+    format!(
+        "You are MMAT's delivery peer reviewer. Review the proposed implementation delta for correctness, code quality, maintainability, and fit with the existing project. Return raw JSON only with this shape: {{\"summary\":string,\"findings\":[{{\"severity\":string,\"category\":string,\"message\":string}}]}}. Use an empty findings array only when the work is ready to merge.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
+    )
 }
 
 fn planning_system_prompt() -> String {
-    "You are MMAT's non-interactive delivery planning stage. Convert the approved software architect handoff into concrete execution milestones and task cards. Do not ask the user questions. If ambiguity remains, record explicit assumptions inside task acceptance criteria or risks. Return raw JSON only with this shape: {\"summary\":string,\"milestones\":[{\"id\":string,\"title\":string,\"objective\":string,\"task_card_ids\":string[]}],\"task_cards\":[{\"id\":string,\"source\":string,\"milestone_id\":string|null,\"title\":string,\"objective\":string,\"contract_refs\":string[],\"acceptance_criteria\":string[],\"expected_files\":string[],\"verification_commands\":string[],\"dependencies\":string[],\"rollback_notes\":string[]}],\"risks\":string[]}."
-        .to_string()
+    format!(
+        "You are MMAT's non-interactive delivery planning stage. Convert the approved software architect handoff into concrete execution milestones and task cards. Do not ask the user questions. If ambiguity remains, record explicit assumptions inside task acceptance criteria or risks. Return raw JSON only with this shape: {{\"summary\":string,\"milestones\":[{{\"id\":string,\"title\":string,\"objective\":string,\"task_card_ids\":string[]}}],\"task_cards\":[{{\"id\":string,\"source\":string,\"milestone_id\":string|null,\"title\":string,\"objective\":string,\"contract_refs\":string[],\"acceptance_criteria\":string[],\"expected_files\":string[],\"verification_commands\":string[],\"dependencies\":string[],\"rollback_notes\":string[]}}],\"risks\":string[]}}.\n\n{}",
+        crate::plan::ENGLISH_DIRECTIVE
+    )
 }
 
 fn read_env(name: &str) -> Option<String> {

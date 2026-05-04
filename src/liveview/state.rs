@@ -26,6 +26,7 @@ const EVENT_HISTORY_CAP: usize = 256;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConversationEntry {
     UserMessage { text: String },
+    QueuedUserMessage { text: String },
     AssistantQuestion { question: String },
     AssistantReasoning { text: String, complete: bool },
     AssistantMessage { text: String, complete: bool },
@@ -142,6 +143,9 @@ pub struct UiSnapshot {
     pub run_summary: Option<RunSummary>,
     pub queue: Vec<BuildJobSnapshot>,
     pub worker_summary: Vec<ProjectWorkerSnapshot>,
+    pub message_queue_count: usize,
+    pub step_interrupted: bool,
+    pub is_first_boot: bool,
     /// Domain-mapped project fields. These are empty when the project does not
     /// use domain-mapped planning.
     pub domain_tree_nodes: Vec<DomainNodeUiSnapshot>,
@@ -167,12 +171,14 @@ struct ProjectUiState {
     pending_prompt: Option<PendingPrompt>,
     run_summary: Option<RunSummary>,
     queue: Vec<BuildJobSnapshot>,
+    message_queue: VecDeque<String>,
     domain_states: BTreeMap<DomainNodeId, DomainUiState>,
     domain_tree_nodes: Vec<DomainNodeUiSnapshot>,
     delivery_graph: Option<DeliveryGraph>,
     backflow_notifications: Vec<BackflowNotificationSnapshot>,
     open_domain_tabs: Vec<DomainNodeId>,
     active_domain_node_id: Option<DomainNodeId>,
+    step_interrupted: bool,
 }
 
 #[derive(Debug, Error)]
@@ -200,6 +206,7 @@ pub struct UiState {
     pending_initial_input: Mutex<Option<oneshot::Sender<ProjectPrompt>>>,
     next_event_id: Mutex<u64>,
     version_tx: watch::Sender<u64>,
+    cancel_tx: watch::Sender<bool>,
 }
 
 impl From<&FrontendEvent> for UiEvent {
@@ -261,6 +268,8 @@ impl From<&FrontendEvent> for UiEvent {
             | FrontendEvent::DeliveryGraphUpdated
             | FrontendEvent::DeliveryBatchStarted { .. }
             | FrontendEvent::DeliveryBatchCompleted { .. }
+            | FrontendEvent::InterruptStep
+            | FrontendEvent::MessageQueued { .. }
             | FrontendEvent::Quit => Self::Log {
                 level: "INFO".to_string(),
                 message: event.to_string(),
@@ -366,12 +375,34 @@ impl ConversationHistoryStore {
     }
 }
 
+fn dummy_project() -> ProjectConfig {
+    use crate::project::ProjectId;
+    ProjectConfig {
+        id: ProjectId::new("placeholder").expect("placeholder id should be valid"),
+        name: String::new(),
+        root: std::path::PathBuf::new(),
+        data_dir: std::path::PathBuf::new(),
+        enabled: false,
+        qdrant_collection_prefix: String::new(),
+        repo_label: None,
+    }
+}
+
 impl UiState {
     pub fn new() -> Self {
-        let default_project =
-            ProjectConfig::default_for_root(crate::project::default_project_path())
-                .expect("default project config should be valid");
-        Self::with_projects(vec![default_project], None)
+        let (version_tx, _version_rx) = watch::channel(0);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        Self {
+            projects: Mutex::new(Vec::new()),
+            active_project_id: Mutex::new(dummy_project().id),
+            project_states: Mutex::new(BTreeMap::new()),
+            registry_store: None,
+            conversation_store: None,
+            pending_initial_input: Mutex::new(None),
+            next_event_id: Mutex::new(0),
+            version_tx,
+            cancel_tx,
+        }
     }
 
     pub fn with_projects(
@@ -387,19 +418,11 @@ impl UiState {
         conversation_store: Option<Arc<ConversationHistoryStore>>,
     ) -> Self {
         let (version_tx, _version_rx) = watch::channel(0);
-        let projects = if projects.is_empty() {
-            vec![
-                ProjectConfig::default_for_root(crate::project::default_project_path())
-                    .expect("default project config should be valid"),
-            ]
-        } else {
-            projects
-        };
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
         let active_project_id = projects
             .first()
-            .expect("projects should not be empty")
-            .id
-            .clone();
+            .map(|project| project.id.clone())
+            .unwrap_or_else(|| dummy_project().id);
         let project_states = projects
             .iter()
             .map(|project| {
@@ -436,11 +459,16 @@ impl UiState {
             pending_initial_input: Mutex::new(None),
             next_event_id: Mutex::new(0),
             version_tx,
+            cancel_tx,
         }
     }
 
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.version_tx.subscribe()
+    }
+
+    pub fn subscribe_cancel(&self) -> watch::Receiver<bool> {
+        self.cancel_tx.subscribe()
     }
 
     pub fn prepare_initial_input(&self, sender: oneshot::Sender<ProjectPrompt>) {
@@ -451,6 +479,19 @@ impl UiState {
     pub fn bump_version(&self) {
         let next = self.version_tx.borrow().saturating_add(1);
         let _ = self.version_tx.send(next);
+    }
+
+    pub fn interrupt_step(&self) {
+        let _ = self.cancel_tx.send(true);
+        self.bump_version();
+    }
+
+    pub fn step_interrupted(&self) -> bool {
+        *self.cancel_tx.borrow()
+    }
+
+    pub fn reset_interrupt(&self) {
+        let _ = self.cancel_tx.send(false);
     }
 
     pub fn push_event(&self, event: UiEvent) {
@@ -488,6 +529,59 @@ impl UiState {
             .or_default()
             .run_summary = Some(summary);
         self.bump_version();
+    }
+
+    pub fn set_step_interrupted(&self, project_id: &ProjectId) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .step_interrupted = true;
+        self.bump_version();
+    }
+
+    pub fn clear_step_interrupted(&self, project_id: &ProjectId) {
+        self.project_states
+            .lock()
+            .entry(project_id.clone())
+            .or_default()
+            .step_interrupted = false;
+        self.bump_version();
+    }
+
+    pub fn queue_message(&self, project_id: ProjectId, text: String) {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        state.message_queue.push_back(text.clone());
+        Self::push_conversation_entry_locked(
+            &mut state.conversation_history,
+            ConversationEntry::QueuedUserMessage { text },
+        );
+        let conversation = state.conversation_history.clone();
+        drop(states);
+        self.persist_project_conversation(&project_id, &conversation);
+        self.bump_version();
+    }
+
+    pub fn drain_message_queue(&self, project_id: &ProjectId) -> Vec<String> {
+        let mut states = self.project_states.lock();
+        let state = states.entry(project_id.clone()).or_default();
+        let drained: Vec<String> = state.message_queue.drain(..).collect();
+        if !drained.is_empty() {
+            for entry in &mut state.conversation_history {
+                if let ConversationEntry::QueuedUserMessage { text } = entry {
+                    let text = std::mem::take(text);
+                    *entry = ConversationEntry::UserMessage { text };
+                }
+            }
+        }
+        let conversation = state.conversation_history.clone();
+        drop(states);
+        if !drained.is_empty() {
+            self.persist_project_conversation(project_id, &conversation);
+            self.bump_version();
+        }
+        drained
     }
 
     pub fn set_project_domain_tree_nodes(
@@ -1119,7 +1213,7 @@ impl UiState {
             .find(|project| project.id == active_project_id)
             .cloned()
             .or_else(|| projects.first().cloned())
-            .expect("ui state should have at least one project");
+            .unwrap_or_else(dummy_project);
         let states = self.project_states.lock();
         let current = states.get(&active_project.id);
         let history = current
@@ -1176,11 +1270,14 @@ impl UiState {
         } else {
             current.and_then(|state| state.run_summary.clone())
         };
+        let step_interrupted = current.map(|state| state.step_interrupted).unwrap_or(false);
+        let message_queue_count = current.map(|state| state.message_queue.len()).unwrap_or(0);
+        let is_first_boot = projects.is_empty();
         drop(states);
 
         let composer_mode = if has_pending_input {
             ComposerMode::InitialPrompt
-        } else if has_pending_prompt {
+        } else if has_pending_prompt || step_interrupted {
             ComposerMode::Reply
         } else {
             ComposerMode::Working
@@ -1196,6 +1293,9 @@ impl UiState {
             run_summary,
             queue,
             worker_summary,
+            message_queue_count,
+            step_interrupted,
+            is_first_boot,
             domain_tree_nodes,
             domain_states,
             delivery_graph,

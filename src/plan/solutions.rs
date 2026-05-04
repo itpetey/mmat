@@ -31,8 +31,8 @@ type SolutionCollectStep<C, R, E> = Step<
 
 const MAX_BRANCH_ATTEMPTS: usize = 3;
 const MAX_COLLECT_ATTEMPTS: usize = 3;
-pub const BRANCH_SYSTEM_PROMPT: &str = "You are a solution branch planner for MMAT. Your job is to produce one distinct implementation direction that can be compared with alternatives.";
-pub const COLLECT_SYSTEM_PROMPT: &str = "You are the solution collection stage for MMAT. Your job is to compare candidate branches, preserve the tradeoffs, and recommend either one branch or a coherent hybrid.";
+pub const BRANCH_SYSTEM_PROMPT: &str = "You are a solution branch planner for MMAT. Your job is to produce one distinct implementation direction that can be compared with alternatives. Use International English exclusively (Oxford spelling, -ise/-isation suffixes, colour, favour, metre, etc.).";
+pub const COLLECT_SYSTEM_PROMPT: &str = "You are the solution collection stage for MMAT. Your job is to compare candidate branches, preserve the tradeoffs, and recommend either one branch or a coherent hybrid. Use International English exclusively (Oxford spelling, -ise/-isation suffixes, colour, favour, metre, etc.).";
 pub const MODEL: &str = "gpt-5.5";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +279,7 @@ where
     R::Error: Debug + 'static,
 {
     let client = (*agent.executor().client()).clone();
+    let message_source = agent.message_source().cloned();
     let system_prompt = format!(
         "{}\n\nYou have access to repository tools: `glob_paths`, `search_files`, and `read_file`. Use them when repository structure or implementation details matter.",
         BRANCH_SYSTEM_PROMPT
@@ -288,6 +289,7 @@ where
         let client = client.clone();
         let system_prompt = system_prompt.clone();
         let workspace_root = workspace_root.clone();
+        let message_source = message_source.clone();
         Box::pin(async move {
             let request = CompletionRequest::new(
                 MODEL.to_string(),
@@ -313,10 +315,13 @@ where
 
             let mut tools = ToolRegistry::<R, Infallible>::new();
             register_repository_tools(&mut tools, workspace_root);
-            let executor = Executor::with_tools(client, tools).with_config(
+            let mut executor = Executor::with_tools(client, tools).with_config(
                 ExecutorConfig::default()
                     .with_max_input_tokens(input_token_budget_for_model(MODEL)),
             );
+            if let Some(source) = message_source {
+                executor = executor.with_message_source(source);
+            }
             let outcome = execute_with_turn_limit_retry(&executor, runtime, request)
                 .await
                 .map_err(|error| {

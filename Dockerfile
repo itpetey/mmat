@@ -35,7 +35,7 @@ RUN cargo build --release --bin frontend --bin delivery
 FROM debian:trixie-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 mmat \
     && mkdir -p /data/mmat \
