@@ -387,6 +387,7 @@ fn Composer(props: ComposerProps) -> Element {
                     let should_submit = event.key() == Key::Enter && (modifiers.meta() || modifiers.ctrl());
 
                     if event.key() == Key::Escape {
+                        event.prevent_default();
                         if is_working {
                             let already_pending = *interrupt_pending.read();
                             if already_pending {

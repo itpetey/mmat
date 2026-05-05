@@ -89,6 +89,14 @@ grounded, visually useful where helpful, and open-ended. A structured BigPicture
 handoff is materialised later from the conversation transcript; do not try to
 produce that handoff during live exploration.
 
+CRITICAL: Do not self-converge. You must never generate BigPicture JSON
+(fields like ready_to_converge, full_scope, outer_boundaries, etc.), discovery
+output JSON (fields like problem_statement, goals, constraints,
+ready_for_solution, etc.), or any structured convergent handoff. Do not declare
+convergence, narrow the design space, ask convergent "should" questions, or
+recommend an approach. Your ONLY job is to explore and invite the user into the
+conversation. End with an open question or a choice among threads.
+
 When the exploration feels substantial enough that the user might want to move
 on, mention this conversationally: "If this feels mapped enough, say `ready to converge` and I'll turn the exploration into a BigPicture." Do not pressure
 the user to do so."#;
@@ -822,11 +830,26 @@ fn build_divergent_system_prompt_with_base(turn_count: usize, base: &str) -> Str
     )
 }
 
-fn build_divergent_turn_instructions(_input: &DiscoveryInput) -> String {
+fn build_divergent_turn_instructions(input: &DiscoveryInput) -> String {
     let mut lines = vec![
         "Continue in explore mode. Follow what is interesting in the conversation so far and keep the response open-ended."
             .to_string(),
     ];
+
+    if !input.findings.is_empty() {
+        lines.push(String::new());
+        lines.push(
+            "The previous divergent response was rejected for violating the exploration contract:"
+                .to_string(),
+        );
+        for finding in &input.findings {
+            lines.push(format!("- {finding}"));
+        }
+        lines.push(
+            "Correct these: do not converge, narrow, recommend, return JSON, ask convergent questions, or synthesise approaches. Keep exploring and inviting the user."
+                .to_string(),
+        );
+    }
 
     lines.push(String::new());
     lines.push(
@@ -1343,6 +1366,10 @@ fn validate_divergent(output: &BigPicture) -> Vec<DivergentFinding> {
         findings.push(DivergentFinding::PrematureSynthesis);
     }
 
+    if contains_structured_output(&output.assistant_message) {
+        findings.push(DivergentFinding::PrematureSynthesis);
+    }
+
     if output
         .open_questions
         .iter()
@@ -1354,6 +1381,41 @@ fn validate_divergent(output: &BigPicture) -> Vec<DivergentFinding> {
     findings
 }
 
+/// Checks whether the assistant message contains BigPicture or DiscoveryOutput
+/// JSON key patterns, indicating the model self-materialised or self-converged
+/// within a divergent exploration turn.
+///
+/// Uses JSON-adjacent patterns (key followed by colon or colon-quote) to avoid
+/// false-positives on prose mentions such as "say `ready to converge`".
+fn contains_structured_output(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    // BigPicture keys followed by JSON-like delimiter
+    let bp_keys = [
+        "ready_to_converge\":",
+        "ready_to_converge\": ",
+        "full_scope\":",
+        "outer_boundaries\":",
+        "out_of_scope\":",
+        "design_space\":",
+        "divergent_approaches\":",
+        "trade_off_dimensions\":",
+        "prior_art_insights\":",
+        "non_obvious_risks\":",
+        "binding_constraints\":",
+        "open_choices\":",
+    ];
+    // DiscoveryOutput keys followed by JSON-like delimiter
+    let do_keys = [
+        "problem_statement\":",
+        "ready_for_solution\":",
+        "recommended_path\":",
+        "sub_domains\":",
+        "chosen_approach\":",
+    ];
+
+    bp_keys.iter().any(|k| lower.contains(k)) || do_keys.iter().any(|k| lower.contains(k))
+}
+
 /// Checks whether the assistant message contains recommendation or synthesis
 /// language that violates the divergent exploration contract.
 fn contains_premature_synthesis(text: &str) -> bool {
@@ -1361,6 +1423,11 @@ fn contains_premature_synthesis(text: &str) -> bool {
     let recommendation_phrases = [
         "i would narrow",
         "i would not choose",
+        "i would converge",
+        "i would pick",
+        "i would select",
+        "i'd converge",
+        "i'd narrow",
         "i recommend",
         "best narrowing",
         "the best approach is",
@@ -1369,6 +1436,9 @@ fn contains_premature_synthesis(text: &str) -> bool {
         "a merged architecture",
         "we should adopt",
         "let's adopt",
+        "let me narrow",
+        "let's narrow",
+        "i'll narrow",
         "i suggest we",
         "the optimal",
         "the clear winner",
@@ -1388,6 +1458,15 @@ fn contains_premature_synthesis(text: &str) -> bool {
         "we should use",
         "the most promising",
         "the natural choice",
+        "let me materialise",
+        "let's materialise",
+        "i'll materialise",
+        "materialise the bigpicture",
+        "materialize the bigpicture",
+        "here is the big picture",
+        "here's the big picture",
+        "i would go with",
+        "i'd go with",
     ];
     recommendation_phrases
         .iter()
