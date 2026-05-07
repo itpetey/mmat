@@ -55,6 +55,10 @@ impl EventBus {
             filter: filter_set,
         }
     }
+
+    pub fn store(&self) -> Option<Arc<EventStore>> {
+        self.store.clone()
+    }
 }
 
 impl EventReceiver {

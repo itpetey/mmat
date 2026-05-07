@@ -166,6 +166,24 @@ impl EventStore {
         }
         Ok(None)
     }
+
+    pub fn get_by_event_id(&self, event_id: EventId) -> Result<Option<SemanticEvent>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT payload FROM events WHERE event_id = ?1")?;
+        let mut rows = stmt.query([&event_id.to_string()])?;
+        if let Some(row) = rows.next()? {
+            let payload: String = row.get(0)?;
+            let event: SemanticEvent = serde_json::from_str(&payload).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            return Ok(Some(event));
+        }
+        Ok(None)
+    }
 }
 
 impl std::fmt::Debug for EventStore {
@@ -183,6 +201,8 @@ fn event_source_agent(event: &SemanticEvent) -> String {
         SemanticEvent::MemoryAccepted { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::MemoryRejected { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::MemorySuperseded { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::EvidenceChainBroken { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::ProcessSkipped { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::PolicyViolationDetected { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::TaskAssigned { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::TaskStarted { source_agent, .. } => source_agent.to_string(),
@@ -212,6 +232,8 @@ fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
         SemanticEvent::MemoryAccepted { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::MemoryRejected { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::MemorySuperseded { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::EvidenceChainBroken { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ProcessSkipped { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::PolicyViolationDetected { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::TaskAssigned { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::TaskStarted { timestamp_ns, .. } => *timestamp_ns,

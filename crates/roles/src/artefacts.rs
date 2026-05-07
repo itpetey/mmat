@@ -180,6 +180,40 @@ pub struct ReviewFindings {
     pub accepted: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceChainStatus {
+    pub claim_id: String,
+    pub evidence_refs_checked: Vec<String>,
+    pub broken_refs: Vec<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessAdherenceCheck {
+    pub claim_id: String,
+    pub required_step: String,
+    pub found: bool,
+    pub temporal_order_valid: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfidenceAssessment {
+    pub claim_id: String,
+    pub claimed_confidence: f64,
+    pub evidence_strength: String,
+    pub assessment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditReport {
+    pub report_id: String,
+    pub violation_counts: std::collections::HashMap<String, u32>,
+    pub evidence_chain_statuses: Vec<EvidenceChainStatus>,
+    pub process_checks: Vec<ProcessAdherenceCheck>,
+    pub confidence_assessments: Vec<ConfidenceAssessment>,
+    pub summary: String,
+}
+
 impl FailureClass {
     pub fn as_str(&self) -> &'static str {
         match self {

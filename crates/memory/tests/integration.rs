@@ -1,9 +1,9 @@
+use std::sync::Arc;
+use std::time::Duration;
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
 };
-use std::sync::Arc;
-use std::time::Duration;
 
 use event_stream::event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent};
 use event_stream::event_bus::EventBus;

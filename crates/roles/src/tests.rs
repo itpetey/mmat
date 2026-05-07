@@ -1493,4 +1493,6 @@ mod tests {
         let ready = graph.ready_tasks();
         assert!(ready.is_empty(), "Assigned task should not be ready");
     }
+
+    mod auditor_tests;
 }

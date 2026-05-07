@@ -39,7 +39,11 @@ impl Librarian {
     }
 
     pub async fn run(&self, bus: Arc<EventBus>) -> Result<()> {
-        let mut rx = bus.subscribe(&[EventType::MemoryProposed, EventType::MemorySuperseded]);
+        let mut rx = bus.subscribe(&[
+            EventType::MemoryProposed,
+            EventType::MemorySuperseded,
+            EventType::PolicyViolationDetected,
+        ]);
 
         let mut decay_timer = interval(self.decay_scan_interval);
 
@@ -94,6 +98,15 @@ impl Librarian {
                 ..
             } => {
                 self.process_superseded(bus, *old_memory_id, *new_memory_id)
+                    .await?;
+            }
+            SemanticEvent::PolicyViolationDetected {
+                violation_type,
+                description,
+                related_event_id,
+                ..
+            } => {
+                self.process_audit_violation(bus, violation_type, description, *related_event_id)
                     .await?;
             }
             _ => {}
@@ -475,6 +488,72 @@ impl Librarian {
         if let Err(e) = self.qdrant.delete(old_id).await {
             tracing::warn!("Failed to delete superseded memory vector: {}", e);
         }
+        Ok(())
+    }
+
+    async fn process_audit_violation(
+        &self,
+        bus: &EventBus,
+        violation_type: &str,
+        description: &str,
+        related_event_id: Option<EventId>,
+    ) -> Result<()> {
+        let Some(related_event_id) = related_event_id else {
+            return Ok(());
+        };
+        let memory_id = MemoryId(related_event_id.0);
+        let Some(memory) = self.store.get_by_id(memory_id)? else {
+            return Ok(());
+        };
+        if memory.superseded_by.is_some() {
+            return Ok(());
+        }
+
+        if memory.authority >= Authority::UserInstruction {
+            let request = SemanticEvent::new_human_feedback_requested(
+                RoleId::new("librarian-001"),
+                format!("Audit finding requires review for memory {}", memory.id),
+                format!("{violation_type}: {description}"),
+            );
+            if let Err(e) = bus.publish(request) {
+                tracing::error!("Failed to publish HumanFeedbackRequested event: {}", e);
+            }
+            return Ok(());
+        }
+
+        let marker = Memory::builder()
+            .memory_type(memory.memory_type)
+            .content(format!(
+                "[audit-flagged] {} ({}: {})",
+                memory.content, violation_type, description
+            ))
+            .scope(memory.scope)
+            .authority(Authority::ReviewFindings)
+            .confidence(Confidence::new(1.0).unwrap_or_default())
+            .decay_policy(crate::types::DecayPolicy::SupersededOnly)
+            .evidence_refs(vec![related_event_id])
+            .source_agent(RoleId::new("librarian-001"))
+            .build()?;
+
+        self.store.insert(&marker)?;
+        self.store.supersede(memory.id, marker.id)?;
+        if let Err(e) = self.qdrant.delete(memory.id).await {
+            tracing::warn!("Failed to delete audit-flagged memory vector: {}", e);
+        }
+
+        let superseded = SemanticEvent::new_memory_superseded(
+            RoleId::new("librarian-001"),
+            memory.id.0.into(),
+            marker.id.0.into(),
+            format!("audit violation: {violation_type}"),
+        );
+        if let Err(e) = bus.publish(superseded) {
+            tracing::error!(
+                "Failed to publish MemorySuperseded for audit violation: {}",
+                e
+            );
+        }
+
         Ok(())
     }
 

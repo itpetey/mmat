@@ -193,7 +193,10 @@ impl AuthorityScope {
             ),
             Self::Audit => matches!(
                 event_type,
-                EventType::PolicyViolationDetected | EventType::ArtefactProduced
+                EventType::PolicyViolationDetected
+                    | EventType::EvidenceChainBroken
+                    | EventType::ProcessSkipped
+                    | EventType::ArtefactProduced
             ),
         }
     }

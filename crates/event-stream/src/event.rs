@@ -105,6 +105,21 @@ pub enum SemanticEvent {
         new_memory_id: EventId,
         reason: String,
     },
+    EvidenceChainBroken {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        claim_id: EventId,
+        broken_ref: EventId,
+        claim_text: String,
+    },
+    ProcessSkipped {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        step: String,
+        claim_id: EventId,
+    },
     PolicyViolationDetected {
         event_id: EventId,
         source_agent: RoleId,
@@ -243,6 +258,8 @@ pub enum EventType {
     MemoryAccepted,
     MemoryRejected,
     MemorySuperseded,
+    EvidenceChainBroken,
+    ProcessSkipped,
     PolicyViolationDetected,
     TaskAssigned,
     TaskStarted,
@@ -430,6 +447,36 @@ impl SemanticEvent {
             old_memory_id,
             new_memory_id,
             reason: reason.into(),
+        }
+    }
+
+    pub fn new_evidence_chain_broken(
+        source_agent: RoleId,
+        claim_id: EventId,
+        broken_ref: EventId,
+        claim_text: impl Into<String>,
+    ) -> Self {
+        Self::EvidenceChainBroken {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            claim_id,
+            broken_ref,
+            claim_text: claim_text.into(),
+        }
+    }
+
+    pub fn new_process_skipped(
+        source_agent: RoleId,
+        step: impl Into<String>,
+        claim_id: EventId,
+    ) -> Self {
+        Self::ProcessSkipped {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            step: step.into(),
+            claim_id,
         }
     }
 
@@ -688,6 +735,8 @@ impl SemanticEvent {
             Self::MemoryAccepted { event_id, .. } => *event_id,
             Self::MemoryRejected { event_id, .. } => *event_id,
             Self::MemorySuperseded { event_id, .. } => *event_id,
+            Self::EvidenceChainBroken { event_id, .. } => *event_id,
+            Self::ProcessSkipped { event_id, .. } => *event_id,
             Self::PolicyViolationDetected { event_id, .. } => *event_id,
             Self::TaskAssigned { event_id, .. } => *event_id,
             Self::TaskStarted { event_id, .. } => *event_id,
@@ -717,6 +766,8 @@ impl SemanticEvent {
             Self::MemoryAccepted { .. } => "MemoryAccepted",
             Self::MemoryRejected { .. } => "MemoryRejected",
             Self::MemorySuperseded { .. } => "MemorySuperseded",
+            Self::EvidenceChainBroken { .. } => "EvidenceChainBroken",
+            Self::ProcessSkipped { .. } => "ProcessSkipped",
             Self::PolicyViolationDetected { .. } => "PolicyViolationDetected",
             Self::TaskAssigned { .. } => "TaskAssigned",
             Self::TaskStarted { .. } => "TaskStarted",
@@ -746,6 +797,8 @@ impl SemanticEvent {
             Self::MemoryAccepted { .. } => EventType::MemoryAccepted,
             Self::MemoryRejected { .. } => EventType::MemoryRejected,
             Self::MemorySuperseded { .. } => EventType::MemorySuperseded,
+            Self::EvidenceChainBroken { .. } => EventType::EvidenceChainBroken,
+            Self::ProcessSkipped { .. } => EventType::ProcessSkipped,
             Self::PolicyViolationDetected { .. } => EventType::PolicyViolationDetected,
             Self::TaskAssigned { .. } => EventType::TaskAssigned,
             Self::TaskStarted { .. } => EventType::TaskStarted,
@@ -777,6 +830,8 @@ impl EventType {
             Self::MemoryAccepted => "MemoryAccepted",
             Self::MemoryRejected => "MemoryRejected",
             Self::MemorySuperseded => "MemorySuperseded",
+            Self::EvidenceChainBroken => "EvidenceChainBroken",
+            Self::ProcessSkipped => "ProcessSkipped",
             Self::PolicyViolationDetected => "PolicyViolationDetected",
             Self::TaskAssigned => "TaskAssigned",
             Self::TaskStarted => "TaskStarted",
@@ -844,6 +899,8 @@ mod tests {
             EventType::MemoryAccepted.name(),
             EventType::MemoryRejected.name(),
             EventType::MemorySuperseded.name(),
+            EventType::EvidenceChainBroken.name(),
+            EventType::ProcessSkipped.name(),
             EventType::PolicyViolationDetected.name(),
             EventType::TaskAssigned.name(),
             EventType::TaskStarted.name(),

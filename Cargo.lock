@@ -1703,6 +1703,7 @@ dependencies = [
  "process",
  "project",
  "qdrant-client",
+ "reqwest 0.13.3",
  "serde",
  "serde_json",
  "tempfile",
@@ -1710,6 +1711,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
