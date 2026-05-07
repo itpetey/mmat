@@ -1349,6 +1349,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "project"
+version = "0.1.0"
+dependencies = [
+ "process",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "prost"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1687,6 +1701,7 @@ dependencies = [
  "memory",
  "parking_lot",
  "process",
+ "project",
  "qdrant-client",
  "serde",
  "serde_json",

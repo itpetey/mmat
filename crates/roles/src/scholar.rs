@@ -18,8 +18,8 @@ use crate::artefacts::{EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestion
 use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
 const DEFAULT_MAX_LLM_CALLS: usize = 20;
-const DEFAULT_MAX_WEB_SEARCHES: usize = 10;
 const DEFAULT_MAX_TOOL_INVOCATIONS: usize = 50;
+const DEFAULT_MAX_WEB_SEARCHES: usize = 10;
 
 pub struct Scholar {
     id: EventRoleId,
@@ -30,12 +30,6 @@ pub struct Scholar {
     max_llm_calls: usize,
     max_web_searches: usize,
     max_tool_invocations: usize,
-}
-
-impl Default for Scholar {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl Scholar {
@@ -505,5 +499,11 @@ impl Role for Scholar {
 
         info!("Scholar completed");
         Ok(())
+    }
+}
+
+impl Default for Scholar {
+    fn default() -> Self {
+        Self::new()
     }
 }

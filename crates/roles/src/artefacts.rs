@@ -96,3 +96,98 @@ pub struct DeliveryStandards {
     pub pr_size_limit: String,
     pub review_requirements: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Adr {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub context: String,
+    pub decision: String,
+    pub alternatives: Vec<String>,
+    pub tradeoffs: String,
+    pub consequences: String,
+    pub references: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceSpec {
+    pub id: String,
+    pub module_name: String,
+    pub input_types: Vec<String>,
+    pub output_types: Vec<String>,
+    pub error_modes: Vec<String>,
+    pub backwards_compatibility: String,
+    pub adr_reference: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyRules {
+    pub id: String,
+    pub module: String,
+    pub allowed_dependencies: Vec<String>,
+    pub forbidden_dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCard {
+    pub id: String,
+    pub description: String,
+    pub contract: String,
+    pub dependencies: Vec<String>,
+    pub adr_references: Vec<String>,
+    pub validation_policy: Option<ValidationPolicy>,
+    pub acceptance_criteria: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Milestone {
+    pub id: String,
+    pub name: String,
+    pub completed_tasks: Vec<String>,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImplementationPatch {
+    pub id: String,
+    pub task_id: String,
+    pub diff: String,
+    pub files_changed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureClass {
+    ImplementationDefect,
+    ArchitecturalConflict,
+    MissingKnowledge,
+    AmbiguousIntent,
+    BrokenProcess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewFindingDetail {
+    pub dimension: String,
+    pub description: String,
+    pub location: Option<String>,
+    pub failure_class: FailureClass,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewFindings {
+    pub task_id: String,
+    pub findings: Vec<ReviewFindingDetail>,
+    pub accepted: bool,
+}
+
+impl FailureClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ImplementationDefect => "ImplementationDefect",
+            Self::ArchitecturalConflict => "ArchitecturalConflict",
+            Self::MissingKnowledge => "MissingKnowledge",
+            Self::AmbiguousIntent => "AmbiguousIntent",
+            Self::BrokenProcess => "BrokenProcess",
+        }
+    }
+}

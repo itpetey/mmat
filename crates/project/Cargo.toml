@@ -1,0 +1,16 @@
+[package]
+name = "project"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+process = { path = "../process" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

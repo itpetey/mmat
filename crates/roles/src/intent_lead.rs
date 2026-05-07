@@ -21,12 +21,6 @@ pub struct IntentLead {
     read_tools: RoleToolRegistry,
 }
 
-impl Default for IntentLead {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl IntentLead {
     pub fn new() -> Self {
         Self {
@@ -493,5 +487,11 @@ impl Role for IntentLead {
 
         info!("IntentLead completed");
         Ok(())
+    }
+}
+
+impl Default for IntentLead {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -14,6 +14,9 @@ mod tests {
     use qdrant_client::qdrant::Value;
     use tempfile::tempdir;
 
+    use crate::artefacts::{Adr, FailureClass, TaskCard};
+    use crate::project_manager::{DeliveryGraph, TaskStatus};
+    use crate::{Architect, ProjectManager, Reviewer, Worker};
     use crate::{IntentLead, OpsManager, Scholar};
 
     #[derive(Default)]
@@ -613,5 +616,881 @@ mod tests {
         };
         let json = serde_json::to_string(&standards).unwrap();
         assert!(json.contains("feature/<desc>"));
+    }
+
+    #[test]
+    fn test_architect_creation() {
+        let architect = Architect::new();
+        assert_eq!(architect.id().0, "architect-001");
+    }
+
+    #[test]
+    fn test_architect_spec() {
+        let architect = Architect::new();
+        let spec = architect.spec();
+        assert_eq!(spec.role_type, coordinator::RoleType::Architect);
+        assert!(matches!(
+            spec.authority_scope,
+            coordinator::AuthorityScope::Architecture
+        ));
+        assert!(spec.output_contract.contains(&EventType::DecisionRecorded));
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+    }
+
+    #[test]
+    fn test_architect_subscriptions() {
+        let architect = Architect::new();
+        let subs = architect.subscriptions();
+        assert!(subs.contains(&EventType::TaskAssigned));
+    }
+
+    #[test]
+    fn test_project_manager_creation() {
+        let pm = ProjectManager::new();
+        assert_eq!(pm.id().0, "pm-001");
+    }
+
+    #[test]
+    fn test_project_manager_spec() {
+        let pm = ProjectManager::new();
+        let spec = pm.spec();
+        assert_eq!(spec.role_type, coordinator::RoleType::ProjectManager);
+        assert!(matches!(
+            spec.authority_scope,
+            coordinator::AuthorityScope::Planning
+        ));
+        assert!(spec.output_contract.contains(&EventType::TaskAssigned));
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+    }
+
+    #[test]
+    fn test_project_manager_subscriptions() {
+        let pm = ProjectManager::new();
+        let subs = pm.subscriptions();
+        assert!(subs.contains(&EventType::TaskAssigned));
+        assert!(subs.contains(&EventType::TaskCompleted));
+        assert!(subs.contains(&EventType::TaskFailed));
+    }
+
+    #[test]
+    fn test_worker_creation() {
+        let worker = Worker::new();
+        assert_eq!(worker.id().0, "worker-001");
+    }
+
+    #[test]
+    fn test_worker_spec() {
+        let worker = Worker::new();
+        let spec = worker.spec();
+        assert_eq!(spec.role_type, coordinator::RoleType::Worker);
+        assert!(matches!(
+            spec.authority_scope,
+            coordinator::AuthorityScope::Implementation
+        ));
+        assert!(spec.output_contract.contains(&EventType::ToolExecuted));
+        assert!(spec.output_contract.contains(&EventType::TaskCompleted));
+    }
+
+    #[test]
+    fn test_worker_subscriptions() {
+        let worker = Worker::new();
+        let subs = worker.subscriptions();
+        assert!(subs.contains(&EventType::TaskAssigned));
+    }
+
+    #[test]
+    fn test_reviewer_creation() {
+        let reviewer = Reviewer::new();
+        assert_eq!(reviewer.id().0, "reviewer-001");
+    }
+
+    #[test]
+    fn test_reviewer_spec() {
+        let reviewer = Reviewer::new();
+        let spec = reviewer.spec();
+        assert_eq!(spec.role_type, coordinator::RoleType::Reviewer);
+        assert!(matches!(
+            spec.authority_scope,
+            coordinator::AuthorityScope::Review
+        ));
+        assert!(spec.output_contract.contains(&EventType::ReviewCompleted));
+        assert!(
+            spec.output_contract
+                .contains(&EventType::EscalationRequested)
+        );
+    }
+
+    #[test]
+    fn test_reviewer_subscriptions() {
+        let reviewer = Reviewer::new();
+        let subs = reviewer.subscriptions();
+        assert!(subs.contains(&EventType::ReviewRequested));
+        assert!(subs.contains(&EventType::TaskCompleted));
+    }
+
+    #[test]
+    fn test_delivery_graph_topological_sort() {
+        let mut graph = DeliveryGraph::new();
+
+        let task_a = TaskCard {
+            id: "task-a".to_string(),
+            description: "Task A".to_string(),
+            contract: "contract-a".to_string(),
+            dependencies: vec![],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+        let task_b = TaskCard {
+            id: "task-b".to_string(),
+            description: "Task B".to_string(),
+            contract: "contract-b".to_string(),
+            dependencies: vec!["task-a".to_string()],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+        let task_c = TaskCard {
+            id: "task-c".to_string(),
+            description: "Task C".to_string(),
+            contract: "contract-c".to_string(),
+            dependencies: vec!["task-a".to_string(), "task-b".to_string()],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+
+        graph.add_node(task_a, vec![]);
+        graph.add_node(task_b, vec!["task-a".to_string()]);
+        graph.add_node(task_c, vec!["task-a".to_string(), "task-b".to_string()]);
+
+        let sorted = graph.topological_sort().unwrap();
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0], "task-a");
+        let b_idx = sorted.iter().position(|s| s == "task-b").unwrap();
+        let c_idx = sorted.iter().position(|s| s == "task-c").unwrap();
+        assert!(b_idx < c_idx);
+    }
+
+    #[test]
+    fn test_delivery_graph_ready_tasks() {
+        let mut graph = DeliveryGraph::new();
+
+        let task_a = TaskCard {
+            id: "task-a".to_string(),
+            description: "Task A".to_string(),
+            contract: "contract-a".to_string(),
+            dependencies: vec![],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+        let task_b = TaskCard {
+            id: "task-b".to_string(),
+            description: "Task B".to_string(),
+            contract: "contract-b".to_string(),
+            dependencies: vec!["task-a".to_string()],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+
+        graph.add_node(task_a, vec![]);
+        graph.add_node(task_b, vec!["task-a".to_string()]);
+
+        let ready = graph.ready_tasks();
+        assert_eq!(ready, vec!["task-a"]);
+
+        graph.update_status("task-a", TaskStatus::Completed);
+        let ready = graph.ready_tasks();
+        assert_eq!(ready, vec!["task-b"]);
+    }
+
+    #[test]
+    fn test_delivery_graph_cycle_detection() {
+        let mut graph = DeliveryGraph::new();
+
+        let task_a = TaskCard {
+            id: "task-a".to_string(),
+            description: "Task A".to_string(),
+            contract: "contract-a".to_string(),
+            dependencies: vec!["task-b".to_string()],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+        let task_b = TaskCard {
+            id: "task-b".to_string(),
+            description: "Task B".to_string(),
+            contract: "contract-b".to_string(),
+            dependencies: vec!["task-a".to_string()],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+
+        graph.add_node(task_a, vec!["task-b".to_string()]);
+        graph.add_node(task_b, vec!["task-a".to_string()]);
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_architect_receives_task_and_produces_adr() {
+        let (bus, _memory_store) = setup_test_env();
+
+        let architect = Arc::new(Architect::new());
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let coordinator = coordinator::CoordinatorHandle::new(tx);
+
+        let receiver = bus.subscribe(&[EventType::TaskAssigned]);
+
+        let bus_clone = bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut received_decision = false;
+            let mut received_artefact = false;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let contract = TaskContract {
+                contract_id: "test-contract".to_string(),
+                description: "Design the data storage layer".to_string(),
+            };
+            let event = SemanticEvent::new_task_assigned(
+                EventRoleId("pm-001".to_string()),
+                "test-task",
+                EventRoleId("architect-001".to_string()),
+                contract,
+                vec![],
+            );
+            bus_clone.publish(event).unwrap();
+
+            let mut sub =
+                bus_clone.subscribe(&[EventType::DecisionRecorded, EventType::ArtefactProduced]);
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    result = sub.recv() => {
+                        if let Ok(evt) = result {
+                            match evt.as_ref() {
+                                SemanticEvent::DecisionRecorded { .. } => {
+                                    received_decision = true;
+                                }
+                                SemanticEvent::ArtefactProduced { artefact_type, .. } => {
+                                    if artefact_type == "adr" || artefact_type == "interface_spec" || artefact_type == "dependency_rules" {
+                                        received_artefact = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            if received_decision && received_artefact {
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
+                }
+            }
+
+            (received_decision, received_artefact)
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store: Arc::new(
+                MemoryStore::open(tempdir().unwrap().path().join("test-arch.db")).unwrap(),
+            ),
+            coordinator,
+            tools: Box::new(()),
+        };
+
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), architect.run(ctx)).await;
+        assert!(result.is_ok());
+
+        let (received_decision, received_artefact) = handle.await.unwrap();
+        assert!(
+            received_decision,
+            "Architect should publish DecisionRecorded"
+        );
+        assert!(
+            received_artefact,
+            "Architect should publish ArtefactProduced"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_worker_receives_task_and_completes() {
+        let (bus, _memory_store) = setup_test_env();
+
+        let worker = Arc::new(
+            Worker::new()
+                .with_validation_commands(vec![])
+                .with_fallback_worktree(true),
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let coordinator = coordinator::CoordinatorHandle::new(tx);
+
+        let receiver = bus.subscribe(&[EventType::TaskAssigned]);
+
+        let bus_clone = bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut received_completed = false;
+            let mut received_tool_executed = false;
+            let mut received_claim = false;
+            let mut received_artefact = false;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let contract = TaskContract {
+                contract_id: "test-contract".to_string(),
+                description: "Add error handling to module X".to_string(),
+            };
+            let event = SemanticEvent::new_task_assigned(
+                EventRoleId("pm-001".to_string()),
+                "test-task",
+                EventRoleId("worker-001".to_string()),
+                contract,
+                vec![],
+            );
+            bus_clone.publish(event).unwrap();
+
+            let mut sub = bus_clone.subscribe(&[
+                EventType::TaskCompleted,
+                EventType::ToolExecuted,
+                EventType::ClaimMade,
+                EventType::ArtefactProduced,
+            ]);
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    result = sub.recv() => {
+                        if let Ok(evt) = result {
+                            match evt.as_ref() {
+                                SemanticEvent::TaskCompleted { .. } => {
+                                    received_completed = true;
+                                }
+                                SemanticEvent::ToolExecuted { .. } => {
+                                    received_tool_executed = true;
+                                }
+                                SemanticEvent::ClaimMade { .. } => {
+                                    received_claim = true;
+                                }
+                                SemanticEvent::ArtefactProduced { artefact_type, .. } => {
+                                    if artefact_type == "implementation_patch" {
+                                        received_artefact = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            if received_completed && received_tool_executed && received_claim && received_artefact {
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
+                }
+            }
+
+            (
+                received_completed,
+                received_tool_executed,
+                received_claim,
+                received_artefact,
+            )
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store: Arc::new(
+                MemoryStore::open(tempdir().unwrap().path().join("test-worker.db")).unwrap(),
+            ),
+            coordinator,
+            tools: Box::new(()),
+        };
+
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), worker.run(ctx)).await;
+        assert!(result.is_ok());
+
+        let (completed, tool_executed, claim, artefact) = handle.await.unwrap();
+        assert!(completed, "Worker should publish TaskCompleted");
+        assert!(tool_executed, "Worker should publish ToolExecuted");
+        assert!(claim, "Worker should publish ClaimMade");
+        assert!(
+            artefact,
+            "Worker should publish ArtefactProduced with patch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_worker_does_not_fallback_by_default() {
+        let (bus, _memory_store) = setup_test_env();
+
+        let worker = Arc::new(Worker::new().with_validation_commands(vec![]));
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let coordinator = coordinator::CoordinatorHandle::new(tx);
+
+        let receiver = bus.subscribe(&[EventType::TaskAssigned]);
+
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let contract = TaskContract {
+                contract_id: "test-contract".to_string(),
+                description: "Task with invalid branch name".to_string(),
+            };
+            let event = SemanticEvent::new_task_assigned(
+                EventRoleId("pm-001".to_string()),
+                "bad..branch",
+                EventRoleId("worker-001".to_string()),
+                contract,
+                vec![],
+            );
+            bus_clone.publish(event).unwrap();
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store: Arc::new(
+                MemoryStore::open(tempdir().unwrap().path().join("test-worker-no-fallback.db"))
+                    .unwrap(),
+            ),
+            coordinator,
+            tools: Box::new(()),
+        };
+
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), worker.run(ctx)).await;
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "Worker should return the git worktree error when fallback is disabled: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_reviewer_failure_classification() {
+        let reviewer = Reviewer::new();
+
+        let defect = event_stream::event::ReviewFinding {
+            finding: "Missing error handling".to_string(),
+            severity: "high".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&defect, &[]),
+            FailureClass::ImplementationDefect
+        ));
+
+        let arch_conflict = event_stream::event::ReviewFinding {
+            finding: "Architectural dependency violation".to_string(),
+            severity: "high".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&arch_conflict, &[]),
+            FailureClass::ArchitecturalConflict
+        ));
+
+        let missing_knowledge = event_stream::event::ReviewFinding {
+            finding: "Missing domain knowledge about X".to_string(),
+            severity: "medium".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&missing_knowledge, &[]),
+            FailureClass::MissingKnowledge
+        ));
+
+        let ambiguous = event_stream::event::ReviewFinding {
+            finding: "Ambiguous intent in task description".to_string(),
+            severity: "high".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&ambiguous, &[]),
+            FailureClass::AmbiguousIntent
+        ));
+
+        let broken_process = event_stream::event::ReviewFinding {
+            finding: "Broken process detected".to_string(),
+            severity: "medium".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&broken_process, &[]),
+            FailureClass::BrokenProcess
+        ));
+    }
+
+    #[test]
+    fn test_reviewer_escalation_targets() {
+        let reviewer = Reviewer::new();
+
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::ArchitecturalConflict)
+                .0,
+            "architect-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::MissingKnowledge)
+                .0,
+            "scholar-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::AmbiguousIntent)
+                .0,
+            "intent-lead-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::BrokenProcess)
+                .0,
+            "ops-manager-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::ImplementationDefect)
+                .0,
+            "worker-001"
+        );
+    }
+
+    #[test]
+    fn test_adr_serialisation() {
+        let adr = Adr {
+            id: "adr-001".to_string(),
+            title: "Use SQLite for storage".to_string(),
+            status: "accepted".to_string(),
+            context: "Need lightweight storage".to_string(),
+            decision: "Use SQLite".to_string(),
+            alternatives: vec!["PostgreSQL".to_string(), "MongoDB".to_string()],
+            tradeoffs: "Simplicity vs scalability".to_string(),
+            consequences: "Limited concurrent writes".to_string(),
+            references: vec!["intent-brief".to_string()],
+        };
+
+        let json = serde_json::to_string(&adr).unwrap();
+        assert!(json.contains("Use SQLite"));
+        assert!(json.contains("PostgreSQL"));
+
+        let back: Adr = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, adr.id);
+        assert_eq!(back.alternatives.len(), 2);
+    }
+
+    #[test]
+    fn test_task_card_serialisation() {
+        let card = TaskCard {
+            id: "task-001".to_string(),
+            description: "Implement storage layer".to_string(),
+            contract: "Create storage module".to_string(),
+            dependencies: vec!["task-000".to_string()],
+            adr_references: vec!["adr-001".to_string()],
+            validation_policy: None,
+            acceptance_criteria: vec!["Tests pass".to_string()],
+        };
+
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("Implement storage layer"));
+
+        let back: TaskCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn test_failure_class_serialisation() {
+        let classes = vec![
+            FailureClass::ImplementationDefect,
+            FailureClass::ArchitecturalConflict,
+            FailureClass::MissingKnowledge,
+            FailureClass::AmbiguousIntent,
+            FailureClass::BrokenProcess,
+        ];
+
+        for class in classes {
+            let json = serde_json::to_string(&class).unwrap();
+            let back: FailureClass = serde_json::from_str(&json).unwrap();
+            assert_eq!(class, back);
+            assert!(!class.as_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_worker_path_traversal_is_blocked() {
+        let worktree_path = std::env::temp_dir().join("test-worktree-safe");
+        let _ = std::fs::create_dir_all(&worktree_path);
+
+        let content = "FILE: ../../etc/passwd\nroot:x:0:0\n";
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(Worker::parse_and_write_files(content, &worktree_path));
+        assert!(
+            result.is_err(),
+            "Path traversal should be rejected: {:?}",
+            result
+        );
+
+        let content2 = "FILE: /etc/passwd\nroot:x:0:0\n";
+        let result2 = rt.block_on(Worker::parse_and_write_files(content2, &worktree_path));
+        assert!(
+            result2.is_err(),
+            "Absolute paths should be rejected: {:?}",
+            result2
+        );
+
+        let safe_content = "FILE: src/lib.rs\npub fn safe() {}\n";
+        let written = rt
+            .block_on(Worker::parse_and_write_files(safe_content, &worktree_path))
+            .unwrap();
+        assert_eq!(written, vec!["src/lib.rs".to_string()]);
+        assert!(worktree_path.join("src/lib.rs").exists());
+    }
+
+    #[tokio::test]
+    async fn test_reviewer_extracts_implementation_from_task_completed() {
+        let (bus, _memory_store) = setup_test_env();
+        let reviewer = Arc::new(Reviewer::new());
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let coordinator = coordinator::CoordinatorHandle::new(tx);
+
+        let receiver = bus.subscribe(&[EventType::TaskCompleted]);
+
+        let bus_clone = bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut sub =
+                bus_clone.subscribe(&[EventType::ReviewRequested, EventType::ReviewCompleted]);
+            let mut got_request = false;
+            let mut got_completed = false;
+            let mut findings_empty = true;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let patch_content =
+                "# Implementation Patch\n\n## File: src/lib.rs\n\n```rust\nfn main() {}\n```\n";
+            let artefact_ref = event_stream::event::ArtefactRef {
+                artefact_type: "implementation_patch".to_string(),
+                reference: format!("patch-test-uuid|{}", patch_content),
+            };
+
+            let completed_event = SemanticEvent::new_task_completed(
+                EventRoleId("worker-001".to_string()),
+                "task-001",
+                "contract-001",
+                artefact_ref,
+            );
+            bus_clone.publish(completed_event).unwrap();
+
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    result = sub.recv() => {
+                        if let Ok(evt) = result {
+                            match evt.as_ref() {
+                                SemanticEvent::ReviewRequested { .. } => {
+                                    got_request = true;
+                                }
+                                SemanticEvent::ReviewCompleted { findings, .. } => {
+                                    got_completed = true;
+                                    findings_empty = findings.iter().any(|f| f.finding.contains("No implementation content"));
+                                }
+                                _ => {}
+                            }
+                            if got_request && got_completed {
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {}
+                }
+            }
+            (got_request, got_completed, findings_empty)
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store: Arc::new(
+                MemoryStore::open(tempdir().unwrap().path().join("test-reviewer.db")).unwrap(),
+            ),
+            coordinator,
+            tools: Box::new(()),
+        };
+
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), reviewer.run(ctx)).await;
+
+        let (got_request, got_completed, findings_empty) = handle.await.unwrap();
+        assert!(got_request, "Reviewer should publish ReviewRequested");
+        assert!(got_completed, "Reviewer should publish ReviewCompleted");
+        assert!(
+            !findings_empty,
+            "Reviewer should see implementation content, not complain about missing it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pm_deduplicates_adrs() {
+        let (bus, _memory_store) = setup_test_env();
+        let pm = Arc::new(ProjectManager::new());
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let coordinator = coordinator::CoordinatorHandle::new(tx);
+
+        let receiver = bus.subscribe(&[EventType::DecisionRecorded]);
+
+        let bus_clone = bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut assigned_count = 0;
+            let mut sub = bus_clone.subscribe(&[EventType::TaskAssigned]);
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+            // Publish the same ADR twice via DecisionRecorded and ArtefactProduced
+            let adr_event = SemanticEvent::new_decision_recorded(
+                EventRoleId("architect-001".to_string()),
+                "Use X",
+                vec![],
+            );
+            bus_clone.publish(adr_event).unwrap();
+
+            let adr_artefact = SemanticEvent::new_artefact_produced(
+                EventRoleId("architect-001".to_string()),
+                "adr",
+                "adr-dedup-001|{\"id\":\"adr-dedup-001\",\"title\":\"Use X\",\"status\":\"proposed\",\"context\":\"Test\",\"decision\":\"Use X\",\"alternatives\":[],\"tradeoffs\":\"None\",\"consequences\":\"None\",\"references\":[]}",
+                EventRoleId("architect-001".to_string()),
+            );
+            bus_clone.publish(adr_artefact).unwrap();
+
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    result = sub.recv() => {
+                        if let Ok(evt) = result {
+                            if matches!(evt.as_ref(), SemanticEvent::TaskAssigned { .. }) {
+                                assigned_count += 1;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {}
+                }
+            }
+            assigned_count
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store: Arc::new(
+                MemoryStore::open(tempdir().unwrap().path().join("test-pm-dedup.db")).unwrap(),
+            ),
+            coordinator,
+            tools: Box::new(()),
+        };
+
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), pm.clone().run(ctx)).await;
+
+        let assigned_count = handle.await.unwrap();
+        assert_eq!(
+            assigned_count, 1,
+            "Duplicate ADRs should produce exactly one TaskAssigned event"
+        );
+
+        let graph = pm.delivery_graph();
+        let graph = graph.read();
+        let task = graph
+            .nodes
+            .values()
+            .next()
+            .expect("PM should create a task");
+        assert_eq!(
+            task.task_card.adr_references,
+            vec!["adr-dedup-001".to_string()],
+            "PM should preserve the real ADR artefact id rather than synthetic DecisionRecorded id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pm_marks_failed_task_in_delivery_graph() {
+        let (bus, _memory_store) = setup_test_env();
+        let pm = Arc::new(ProjectManager::new());
+
+        let task = TaskCard {
+            id: "task-failed-001".to_string(),
+            description: "Test".to_string(),
+            contract: "Test".to_string(),
+            dependencies: vec![],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+        {
+            let graph = pm.delivery_graph();
+            let mut graph = graph.write();
+            graph.add_node(task, vec![]);
+            graph.update_status("task-failed-001", TaskStatus::Assigned);
+        }
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let coordinator = coordinator::CoordinatorHandle::new(tx);
+
+        let receiver = bus.subscribe(&[EventType::TaskFailed]);
+
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let failed = SemanticEvent::new_task_failed(
+                EventRoleId("worker-001".to_string()),
+                "task-failed-001",
+                "validation failed",
+            );
+            bus_clone.publish(failed).unwrap();
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store: Arc::new(
+                MemoryStore::open(tempdir().unwrap().path().join("test-pm-failed.db")).unwrap(),
+            ),
+            coordinator,
+            tools: Box::new(()),
+        };
+
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_secs(2), pm.clone().run(ctx)).await;
+
+        let graph = pm.delivery_graph();
+        let graph = graph.read();
+        assert_eq!(
+            graph.nodes["task-failed-001"].status,
+            TaskStatus::Failed,
+            "TaskFailed events should update delivery graph status"
+        );
+    }
+
+    #[test]
+    fn test_delivery_graph_status_updated_on_assignment() {
+        let mut graph = DeliveryGraph::new();
+        let task = TaskCard {
+            id: "task-status-001".to_string(),
+            description: "Test".to_string(),
+            contract: "Test".to_string(),
+            dependencies: vec![],
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        };
+        graph.add_node(task.clone(), vec![]);
+        assert_eq!(graph.nodes["task-status-001"].status, TaskStatus::Pending);
+
+        graph.update_status("task-status-001", TaskStatus::Assigned);
+        assert_eq!(graph.nodes["task-status-001"].status, TaskStatus::Assigned);
+
+        let ready = graph.ready_tasks();
+        assert!(ready.is_empty(), "Assigned task should not be ready");
     }
 }

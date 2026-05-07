@@ -9,8 +9,10 @@ event-stream = { path = "../event-stream" }
 llm = { path = "../llm" }
 memory = { path = "../memory" }
 process = { path = "../process" }
+project = { path = "../project" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -19,6 +21,5 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-parking_lot = { workspace = true }
 qdrant-client = { workspace = true }
 tempfile = { workspace = true }

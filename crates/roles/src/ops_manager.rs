@@ -34,12 +34,6 @@ pub struct OpsManager {
     review_interval_seconds: u64,
 }
 
-impl Default for OpsManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl OpsManager {
     pub fn new() -> Self {
         Self {
@@ -763,5 +757,11 @@ impl Role for OpsManager {
 
             self.research_external_best_practices(&ctx).await?;
         }
+    }
+}
+
+impl Default for OpsManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
