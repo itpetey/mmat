@@ -126,5 +126,6 @@ fn is_valid_trigger_event(event_type: &EventType) -> bool {
             | EventType::ReviewRequested
             | EventType::EscalationRequested
             | EventType::HumanFeedbackRequested
+            | EventType::HumanFeedbackReceived
     )
 }

@@ -1,0 +1,24 @@
+[package]
+name = "roles"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+coordinator = { path = "../coordinator" }
+event-stream = { path = "../event-stream" }
+llm = { path = "../llm" }
+memory = { path = "../memory" }
+process = { path = "../process" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+parking_lot = { workspace = true }
+qdrant-client = { workspace = true }
+tempfile = { workspace = true }

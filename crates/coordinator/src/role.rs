@@ -167,7 +167,11 @@ impl AuthorityScope {
             Self::FullAccess => true,
             Self::IntentOnly => matches!(
                 event_type,
-                EventType::HumanFeedbackRequested | EventType::HumanFeedbackReceived
+                EventType::HumanFeedbackRequested
+                    | EventType::HumanFeedbackReceived
+                    | EventType::ArtefactProduced
+                    | EventType::MemoryProposed
+                    | EventType::TaskAssigned
             ),
             Self::Architecture => matches!(
                 event_type,

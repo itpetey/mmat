@@ -563,9 +563,12 @@ impl Librarian {
         match role.0.as_str() {
             "compiler" => Authority::CompilerOutput,
             "user" => Authority::UserInstruction,
+            "intent-lead-001" => Authority::UserInstruction,
             "repository" => Authority::RepositoryState,
             "architect" => Authority::AcceptedADR,
+            "ops-manager-001" => Authority::AcceptedADR,
             "reviewer" => Authority::ReviewFindings,
+            "scholar-001" => Authority::ReviewFindings,
             "llm" => Authority::LLMInference,
             _ => Authority::SpeculativeReasoning,
         }

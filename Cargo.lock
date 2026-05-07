@@ -1676,6 +1676,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "roles"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "coordinator",
+ "event-stream",
+ "llm",
+ "memory",
+ "parking_lot",
+ "process",
+ "qdrant-client",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "rsqlite-vfs"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
