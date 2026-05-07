@@ -1,49 +1,22 @@
-[package]
-name = "mmat"
-version = "0.1.0"
+[workspace]
+resolver = "3"
+members = ["crates/event-stream", "crates/llm", "crates/process"]
+
+[workspace.package]
 edition = "2024"
-repository = "https://github.com/itpetey/mmat"
-license = "MPL-2.0"
+version = "0.1.0"
 
-[[bin]]
-name = "frontend"
-path = "src/bin/frontend.rs"
-
-[[bin]]
-name = "delivery"
-path = "src/bin/delivery.rs"
-
-[dependencies]
-axum = { version = "0.8", features = ["http1", "tokio", "ws"] }
-clap = { version = "4.6", features = ["derive", "help", "std", "usage"] }
-dioxus = { version = "0.7", features = ["liveview", "server"] }
-dioxus-liveview = { version = "0.7", features = ["axum"] }
-futures = { version = "0.3", features = ["alloc", "std"] }
-ipc-channel = "0.21"
-naaf-core = { git = "https://github.com/itpetey/naaf" }
-naaf-knowledge = { git = "https://github.com/itpetey/naaf" }
-naaf-llm = { git = "https://github.com/itpetey/naaf", features = [
-  "openai",
-  "web-search"
-] }
-naaf-persistence-sqlite = { git = "https://github.com/itpetey/naaf" }
-naaf-qdrant = { git = "https://github.com/itpetey/naaf" }
-naaf-workspace = { git = "https://github.com/itpetey/naaf" }
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+async-trait = "0.1"
+futures-util = "0.3"
 parking_lot = "0.12"
-pulldown-cmark = "0.13"
-rusqlite = "0.39"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["std"] }
-thiserror = "2.0"
-tokio = { version = "1.52", features = [
-  "macros",
-  "net",
-  "process",
-  "rt-multi-thread",
-  "signal",
-  "sync",
-  "time"
-] }
-tracing = { version = "0.1", features = ["std"] }
-tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "std"] }
-uuid = { version = "1.23", features = ["serde", "v4"] }
+reqwest = { version = "0.12", features = ["json", "default-tls", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
+wiremock = "0.6"
