@@ -82,7 +82,7 @@ mod tests {
     async fn subscriber_receives_event() {
         let bus = EventBus::new(16);
         let mut rx = bus.subscribe(&[]);
-        let event = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "");
+        let event = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "", 0);
         bus.publish(event.clone()).unwrap();
         let received = rx.recv().await.unwrap();
         assert_eq!(received.variant_name(), "ToolExecuted");
@@ -99,6 +99,7 @@ mod tests {
             0,
             "",
             "",
+            0,
         ))
         .unwrap();
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
@@ -108,7 +109,7 @@ mod tests {
     #[test]
     fn publish_without_store_succeeds() {
         let bus = EventBus::new(16);
-        let event = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "");
+        let event = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "", 0);
         assert!(bus.publish(event).is_ok());
     }
 
@@ -130,6 +131,7 @@ mod tests {
                     0,
                     "",
                     "",
+                    0,
                 );
                 bus_clone.publish(event).unwrap();
             }

@@ -53,6 +53,7 @@ pub enum SemanticEvent {
         exit_code: i32,
         stdout: String,
         stderr: String,
+        token_usage: u64,
     },
     ClaimMade {
         event_id: EventId,
@@ -133,6 +134,7 @@ pub enum SemanticEvent {
         source_agent: RoleId,
         timestamp_ns: u64,
         task_id: String,
+        contract_id: String,
         output_artefact: ArtefactRef,
     },
     TaskFailed {
@@ -187,9 +189,52 @@ pub enum SemanticEvent {
         reference: String,
         producer_role: RoleId,
     },
+    BudgetWarning {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        contract_id: String,
+        message: String,
+        usage_percent: u8,
+    },
+    EscalationAccepted {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        escalation_event_id: EventId,
+        target_role: RoleId,
+        chain_depth: u32,
+    },
+    RoleStateChanged {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        role_id: RoleId,
+        old_state: String,
+        new_state: String,
+    },
+    OrganisationStarted {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+    },
+    OrganisationStopped {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        reason: String,
+    },
+    Heartbeat {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        active_roles: u32,
+        completed_roles: u32,
+        failed_roles: u32,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventType {
     ToolExecuted,
     ClaimMade,
@@ -209,6 +254,12 @@ pub enum EventType {
     HumanFeedbackRequested,
     HumanFeedbackReceived,
     ArtefactProduced,
+    BudgetWarning,
+    EscalationAccepted,
+    RoleStateChanged,
+    OrganisationStarted,
+    OrganisationStopped,
+    Heartbeat,
 }
 
 impl EventId {
@@ -267,6 +318,7 @@ impl SemanticEvent {
         exit_code: i32,
         stdout: impl Into<String>,
         stderr: impl Into<String>,
+        token_usage: u64,
     ) -> Self {
         Self::ToolExecuted {
             event_id: EventId::new(),
@@ -277,6 +329,7 @@ impl SemanticEvent {
             exit_code,
             stdout: stdout.into(),
             stderr: stderr.into(),
+            token_usage,
         }
     }
 
@@ -431,6 +484,7 @@ impl SemanticEvent {
     pub fn new_task_completed(
         source_agent: RoleId,
         task_id: impl Into<String>,
+        contract_id: impl Into<String>,
         output_artefact: ArtefactRef,
     ) -> Self {
         Self::TaskCompleted {
@@ -438,6 +492,7 @@ impl SemanticEvent {
             source_agent,
             timestamp_ns: now_ns(),
             task_id: task_id.into(),
+            contract_id: contract_id.into(),
             output_artefact,
         }
     }
@@ -543,6 +598,87 @@ impl SemanticEvent {
         }
     }
 
+    pub fn new_budget_warning(
+        source_agent: RoleId,
+        contract_id: impl Into<String>,
+        message: impl Into<String>,
+        usage_percent: u8,
+    ) -> Self {
+        Self::BudgetWarning {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            contract_id: contract_id.into(),
+            message: message.into(),
+            usage_percent,
+        }
+    }
+
+    pub fn new_escalation_accepted(
+        source_agent: RoleId,
+        escalation_event_id: EventId,
+        target_role: RoleId,
+        chain_depth: u32,
+    ) -> Self {
+        Self::EscalationAccepted {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            escalation_event_id,
+            target_role,
+            chain_depth,
+        }
+    }
+
+    pub fn new_role_state_changed(
+        source_agent: RoleId,
+        role_id: RoleId,
+        old_state: impl Into<String>,
+        new_state: impl Into<String>,
+    ) -> Self {
+        Self::RoleStateChanged {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            role_id,
+            old_state: old_state.into(),
+            new_state: new_state.into(),
+        }
+    }
+
+    pub fn new_organisation_started(source_agent: RoleId) -> Self {
+        Self::OrganisationStarted {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+        }
+    }
+
+    pub fn new_organisation_stopped(source_agent: RoleId, reason: impl Into<String>) -> Self {
+        Self::OrganisationStopped {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn new_heartbeat(
+        source_agent: RoleId,
+        active_roles: u32,
+        completed_roles: u32,
+        failed_roles: u32,
+    ) -> Self {
+        Self::Heartbeat {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            active_roles,
+            completed_roles,
+            failed_roles,
+        }
+    }
+
     pub fn event_id(&self) -> EventId {
         match self {
             Self::ToolExecuted { event_id, .. } => *event_id,
@@ -563,6 +699,12 @@ impl SemanticEvent {
             Self::HumanFeedbackRequested { event_id, .. } => *event_id,
             Self::HumanFeedbackReceived { event_id, .. } => *event_id,
             Self::ArtefactProduced { event_id, .. } => *event_id,
+            Self::BudgetWarning { event_id, .. } => *event_id,
+            Self::EscalationAccepted { event_id, .. } => *event_id,
+            Self::RoleStateChanged { event_id, .. } => *event_id,
+            Self::OrganisationStarted { event_id, .. } => *event_id,
+            Self::OrganisationStopped { event_id, .. } => *event_id,
+            Self::Heartbeat { event_id, .. } => *event_id,
         }
     }
 
@@ -586,6 +728,12 @@ impl SemanticEvent {
             Self::HumanFeedbackRequested { .. } => "HumanFeedbackRequested",
             Self::HumanFeedbackReceived { .. } => "HumanFeedbackReceived",
             Self::ArtefactProduced { .. } => "ArtefactProduced",
+            Self::BudgetWarning { .. } => "BudgetWarning",
+            Self::EscalationAccepted { .. } => "EscalationAccepted",
+            Self::RoleStateChanged { .. } => "RoleStateChanged",
+            Self::OrganisationStarted { .. } => "OrganisationStarted",
+            Self::OrganisationStopped { .. } => "OrganisationStopped",
+            Self::Heartbeat { .. } => "Heartbeat",
         }
     }
 
@@ -609,6 +757,12 @@ impl SemanticEvent {
             Self::HumanFeedbackRequested { .. } => EventType::HumanFeedbackRequested,
             Self::HumanFeedbackReceived { .. } => EventType::HumanFeedbackReceived,
             Self::ArtefactProduced { .. } => EventType::ArtefactProduced,
+            Self::BudgetWarning { .. } => EventType::BudgetWarning,
+            Self::EscalationAccepted { .. } => EventType::EscalationAccepted,
+            Self::RoleStateChanged { .. } => EventType::RoleStateChanged,
+            Self::OrganisationStarted { .. } => EventType::OrganisationStarted,
+            Self::OrganisationStopped { .. } => EventType::OrganisationStopped,
+            Self::Heartbeat { .. } => EventType::Heartbeat,
         }
     }
 }
@@ -634,6 +788,12 @@ impl EventType {
             Self::HumanFeedbackRequested => "HumanFeedbackRequested",
             Self::HumanFeedbackReceived => "HumanFeedbackReceived",
             Self::ArtefactProduced => "ArtefactProduced",
+            Self::BudgetWarning => "BudgetWarning",
+            Self::EscalationAccepted => "EscalationAccepted",
+            Self::RoleStateChanged => "RoleStateChanged",
+            Self::OrganisationStarted => "OrganisationStarted",
+            Self::OrganisationStopped => "OrganisationStopped",
+            Self::Heartbeat => "Heartbeat",
         }
     }
 }
@@ -666,6 +826,7 @@ mod tests {
             0,
             "out",
             "err",
+            0,
         );
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("ToolExecuted"));
@@ -694,6 +855,12 @@ mod tests {
             EventType::HumanFeedbackRequested.name(),
             EventType::HumanFeedbackReceived.name(),
             EventType::ArtefactProduced.name(),
+            EventType::BudgetWarning.name(),
+            EventType::EscalationAccepted.name(),
+            EventType::RoleStateChanged.name(),
+            EventType::OrganisationStarted.name(),
+            EventType::OrganisationStopped.name(),
+            EventType::Heartbeat.name(),
         ];
         let unique: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(names.len(), unique.len());

@@ -194,6 +194,12 @@ fn event_source_agent(event: &SemanticEvent) -> String {
         SemanticEvent::HumanFeedbackRequested { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::HumanFeedbackReceived { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::ArtefactProduced { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::BudgetWarning { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::EscalationAccepted { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::RoleStateChanged { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::OrganisationStarted { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::OrganisationStopped { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::Heartbeat { source_agent, .. } => source_agent.to_string(),
     }
 }
 
@@ -217,6 +223,12 @@ fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
         SemanticEvent::HumanFeedbackRequested { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::HumanFeedbackReceived { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::ArtefactProduced { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::BudgetWarning { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::EscalationAccepted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::RoleStateChanged { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::OrganisationStarted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::OrganisationStopped { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::Heartbeat { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 
@@ -229,7 +241,7 @@ mod tests {
     fn store_create_and_insert() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let store = EventStore::open(tmp.path()).unwrap();
-        let event = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "");
+        let event = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "", 0);
         let id = store.insert(&event).unwrap();
         assert_eq!(id, event.event_id());
     }
@@ -238,7 +250,7 @@ mod tests {
     fn replay_events() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let store = EventStore::open(tmp.path()).unwrap();
-        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "");
+        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
         let e2 = SemanticEvent::new_claim_made(RoleId::new("a"), "claim", vec![], 0.9);
         store.insert(&e1).unwrap();
         store.insert(&e2).unwrap();
@@ -251,7 +263,7 @@ mod tests {
     fn query_by_variant() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let store = EventStore::open(tmp.path()).unwrap();
-        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "");
+        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
         let e2 = SemanticEvent::new_claim_made(RoleId::new("a"), "claim", vec![], 0.9);
         store.insert(&e1).unwrap();
         store.insert(&e2).unwrap();
@@ -265,7 +277,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let store = EventStore::open(tmp.path()).unwrap();
         assert_eq!(store.latest_row().unwrap(), None);
-        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "");
+        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
         store.insert(&e1).unwrap();
         assert_eq!(store.latest_row().unwrap(), Some(1));
     }
@@ -274,7 +286,7 @@ mod tests {
     fn row_for_event_id() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let store = EventStore::open(tmp.path()).unwrap();
-        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "");
+        let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
         let id = store.insert(&e1).unwrap();
         assert_eq!(store.row_for_event_id(id).unwrap(), Some(1));
         assert_eq!(store.row_for_event_id(EventId::new()).unwrap(), None);

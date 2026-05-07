@@ -365,6 +365,7 @@ async fn integration_provenance_trace() {
         0,
         "All tests passed",
         "",
+        0,
     );
     let tool_event_id = tool_event.event_id();
     event_store.insert(&tool_event).unwrap();

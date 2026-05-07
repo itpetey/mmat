@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/event-stream", "crates/llm", "crates/memory", "crates/process"]
+members = ["crates/coordinator", "crates/event-stream", "crates/llm", "crates/memory", "crates/process"]
 
 [workspace.package]
 edition = "2024"

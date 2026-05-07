@@ -477,6 +477,7 @@ mod tests {
             0,
             "",
             "",
+            0,
         );
         assert!(AttentionEngine::score_salience(&tool) >= 0.7);
     }
@@ -502,6 +503,7 @@ mod tests {
             0,
             "Build succeeded",
             "",
+            0,
         );
         let (mem_type, scope, authority) = AttentionEngine::infer_metadata(&event);
         assert!(matches!(mem_type, MemoryType::Fact));
@@ -518,6 +520,7 @@ mod tests {
             1,
             "",
             "Build failed",
+            0,
         );
         let (mem_type, _, _) = AttentionEngine::infer_metadata(&event);
         assert!(matches!(mem_type, MemoryType::Incident));

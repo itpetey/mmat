@@ -40,7 +40,7 @@ async fn publish_subscribe_and_store() {
 
     let mut rx = bus.subscribe(&[]);
     let event =
-        SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "out", "err");
+        SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "out", "err", 0);
     bus.publish(event.clone()).unwrap();
 
     let received = rx.recv().await.unwrap();
@@ -55,9 +55,9 @@ async fn publish_subscribe_and_store() {
 async fn subscriber_replays_after_lag() {
     let bus = EventBus::new(2);
 
-    let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "");
-    let e2 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t2", "{}", 0, "", "");
-    let e3 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t3", "{}", 0, "", "");
+    let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
+    let e2 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t2", "{}", 0, "", "", 0);
+    let e3 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t3", "{}", 0, "", "", 0);
 
     let mut rx = bus.subscribe(&[]);
     bus.publish(e1).unwrap();

@@ -331,8 +331,15 @@ mod tests {
     #[test]
     fn assess_confidence_with_tool_evidence() {
         let engine = ProvenanceEngine::new();
-        let tool_event =
-            SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "success", "");
+        let tool_event = SemanticEvent::new_tool_executed(
+            RoleId::new("worker"),
+            "test",
+            "{}",
+            0,
+            "success",
+            "",
+            0,
+        );
         let tool_event_id = tool_event.event_id();
 
         let evidence_ref = EvidenceRef {
