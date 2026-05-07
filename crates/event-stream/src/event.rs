@@ -124,6 +124,8 @@ pub enum SemanticEvent {
         content: String,
         scope: String,
         proposed_authority: RoleId,
+        evidence_refs: Vec<EvidenceRef>,
+        confidence: f64,
     },
     MemoryAccepted {
         event_id: EventId,
@@ -132,6 +134,15 @@ pub enum SemanticEvent {
         memory_id: EventId,
         accepted_authority: RoleId,
     },
+    MemoryRejected {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        proposed_memory_type: String,
+        proposed_content: String,
+        rejection_gate: String,
+        rejection_reason: String,
+    },
     MemorySuperseded {
         event_id: EventId,
         source_agent: RoleId,
@@ -139,6 +150,14 @@ pub enum SemanticEvent {
         old_memory_id: EventId,
         new_memory_id: EventId,
         reason: String,
+    },
+    PolicyViolationDetected {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        violation_type: String,
+        description: String,
+        related_event_id: Option<EventId>,
     },
     TaskAssigned {
         event_id: EventId,
@@ -274,6 +293,8 @@ impl SemanticEvent {
         content: impl Into<String>,
         scope: impl Into<String>,
         proposed_authority: RoleId,
+        evidence_refs: Vec<EvidenceRef>,
+        confidence: f64,
     ) -> Self {
         Self::MemoryProposed {
             event_id: EventId::new(),
@@ -283,6 +304,8 @@ impl SemanticEvent {
             content: content.into(),
             scope: scope.into(),
             proposed_authority,
+            evidence_refs,
+            confidence,
         }
     }
 
@@ -300,6 +323,24 @@ impl SemanticEvent {
         }
     }
 
+    pub fn new_memory_rejected(
+        source_agent: RoleId,
+        proposed_memory_type: impl Into<String>,
+        proposed_content: impl Into<String>,
+        rejection_gate: impl Into<String>,
+        rejection_reason: impl Into<String>,
+    ) -> Self {
+        Self::MemoryRejected {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            proposed_memory_type: proposed_memory_type.into(),
+            proposed_content: proposed_content.into(),
+            rejection_gate: rejection_gate.into(),
+            rejection_reason: rejection_reason.into(),
+        }
+    }
+
     pub fn new_memory_superseded(
         source_agent: RoleId,
         old_memory_id: EventId,
@@ -313,6 +354,22 @@ impl SemanticEvent {
             old_memory_id,
             new_memory_id,
             reason: reason.into(),
+        }
+    }
+
+    pub fn new_policy_violation_detected(
+        source_agent: RoleId,
+        violation_type: impl Into<String>,
+        description: impl Into<String>,
+        related_event_id: Option<EventId>,
+    ) -> Self {
+        Self::PolicyViolationDetected {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            violation_type: violation_type.into(),
+            description: description.into(),
+            related_event_id,
         }
     }
 
@@ -470,7 +527,9 @@ impl SemanticEvent {
             Self::DecisionRecorded { event_id, .. } => *event_id,
             Self::MemoryProposed { event_id, .. } => *event_id,
             Self::MemoryAccepted { event_id, .. } => *event_id,
+            Self::MemoryRejected { event_id, .. } => *event_id,
             Self::MemorySuperseded { event_id, .. } => *event_id,
+            Self::PolicyViolationDetected { event_id, .. } => *event_id,
             Self::TaskAssigned { event_id, .. } => *event_id,
             Self::TaskStarted { event_id, .. } => *event_id,
             Self::TaskCompleted { event_id, .. } => *event_id,
@@ -491,7 +550,9 @@ impl SemanticEvent {
             Self::DecisionRecorded { .. } => "DecisionRecorded",
             Self::MemoryProposed { .. } => "MemoryProposed",
             Self::MemoryAccepted { .. } => "MemoryAccepted",
+            Self::MemoryRejected { .. } => "MemoryRejected",
             Self::MemorySuperseded { .. } => "MemorySuperseded",
+            Self::PolicyViolationDetected { .. } => "PolicyViolationDetected",
             Self::TaskAssigned { .. } => "TaskAssigned",
             Self::TaskStarted { .. } => "TaskStarted",
             Self::TaskCompleted { .. } => "TaskCompleted",
@@ -512,7 +573,9 @@ impl SemanticEvent {
             Self::DecisionRecorded { .. } => EventType::DecisionRecorded,
             Self::MemoryProposed { .. } => EventType::MemoryProposed,
             Self::MemoryAccepted { .. } => EventType::MemoryAccepted,
+            Self::MemoryRejected { .. } => EventType::MemoryRejected,
             Self::MemorySuperseded { .. } => EventType::MemorySuperseded,
+            Self::PolicyViolationDetected { .. } => EventType::PolicyViolationDetected,
             Self::TaskAssigned { .. } => EventType::TaskAssigned,
             Self::TaskStarted { .. } => EventType::TaskStarted,
             Self::TaskCompleted { .. } => EventType::TaskCompleted,
@@ -527,7 +590,7 @@ impl SemanticEvent {
     }
 }
 
-fn now_ns() -> u64 {
+pub fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -541,7 +604,9 @@ pub enum EventType {
     DecisionRecorded,
     MemoryProposed,
     MemoryAccepted,
+    MemoryRejected,
     MemorySuperseded,
+    PolicyViolationDetected,
     TaskAssigned,
     TaskStarted,
     TaskCompleted,
@@ -562,7 +627,9 @@ impl EventType {
             Self::DecisionRecorded => "DecisionRecorded",
             Self::MemoryProposed => "MemoryProposed",
             Self::MemoryAccepted => "MemoryAccepted",
+            Self::MemoryRejected => "MemoryRejected",
             Self::MemorySuperseded => "MemorySuperseded",
+            Self::PolicyViolationDetected => "PolicyViolationDetected",
             Self::TaskAssigned => "TaskAssigned",
             Self::TaskStarted => "TaskStarted",
             Self::TaskCompleted => "TaskCompleted",
@@ -613,7 +680,9 @@ mod tests {
             EventType::DecisionRecorded.name(),
             EventType::MemoryProposed.name(),
             EventType::MemoryAccepted.name(),
+            EventType::MemoryRejected.name(),
             EventType::MemorySuperseded.name(),
+            EventType::PolicyViolationDetected.name(),
             EventType::TaskAssigned.name(),
             EventType::TaskStarted.name(),
             EventType::TaskCompleted.name(),

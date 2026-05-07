@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/event-stream", "crates/llm", "crates/process"]
+members = ["crates/event-stream", "crates/llm", "crates/memory", "crates/process"]
 
 [workspace.package]
 edition = "2024"
@@ -18,5 +18,7 @@ futures-util = "0.3"
 parking_lot = "0.12"
 reqwest = { version = "0.12", features = ["json", "default-tls", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+qdrant-client = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 wiremock = "0.6"
