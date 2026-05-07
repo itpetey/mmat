@@ -16,9 +16,9 @@ uuid = { version = "1", features = ["serde", "v4"] }
 async-trait = "0.1"
 futures-util = "0.3"
 parking_lot = "0.12"
-reqwest = { version = "0.12", features = ["json", "default-tls", "stream"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
-qdrant-client = "1.10"
+reqwest = { version = "0.13", features = ["json", "default-tls", "stream"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+qdrant-client = "1.17"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 wiremock = "0.6"
