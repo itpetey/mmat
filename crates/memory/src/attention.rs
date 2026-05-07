@@ -21,6 +21,11 @@ pub struct AttentionConfig {
     pub salience_batch_timeout_ms: u64,
 }
 
+pub struct AttentionEngine {
+    config: AttentionConfig,
+    salience_llm: Option<Arc<dyn LlmClient>>,
+}
+
 impl Default for AttentionConfig {
     fn default() -> Self {
         Self {
@@ -31,11 +36,6 @@ impl Default for AttentionConfig {
             salience_batch_timeout_ms: 1_000,
         }
     }
-}
-
-pub struct AttentionEngine {
-    config: AttentionConfig,
-    salience_llm: Option<Arc<dyn LlmClient>>,
 }
 
 impl AttentionEngine {

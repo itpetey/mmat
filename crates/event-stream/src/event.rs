@@ -1,60 +1,13 @@
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EventId(pub Uuid);
 
-impl EventId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for EventId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for EventId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<Uuid> for EventId {
-    fn from(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleId(pub String);
-
-impl RoleId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-}
-
-impl fmt::Display for RoleId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<String> for RoleId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for RoleId {
-    fn from(s: &str) -> Self {
-        Self(s.into())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceRef {
@@ -234,6 +187,76 @@ pub enum SemanticEvent {
         reference: String,
         producer_role: RoleId,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EventType {
+    ToolExecuted,
+    ClaimMade,
+    DecisionRecorded,
+    MemoryProposed,
+    MemoryAccepted,
+    MemoryRejected,
+    MemorySuperseded,
+    PolicyViolationDetected,
+    TaskAssigned,
+    TaskStarted,
+    TaskCompleted,
+    TaskFailed,
+    ReviewRequested,
+    ReviewCompleted,
+    EscalationRequested,
+    HumanFeedbackRequested,
+    HumanFeedbackReceived,
+    ArtefactProduced,
+}
+
+impl EventId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for EventId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for EventId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<Uuid> for EventId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl RoleId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+impl fmt::Display for RoleId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<String> for RoleId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for RoleId {
+    fn from(s: &str) -> Self {
+        Self(s.into())
+    }
 }
 
 impl SemanticEvent {
@@ -590,35 +613,6 @@ impl SemanticEvent {
     }
 }
 
-pub fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EventType {
-    ToolExecuted,
-    ClaimMade,
-    DecisionRecorded,
-    MemoryProposed,
-    MemoryAccepted,
-    MemoryRejected,
-    MemorySuperseded,
-    PolicyViolationDetected,
-    TaskAssigned,
-    TaskStarted,
-    TaskCompleted,
-    TaskFailed,
-    ReviewRequested,
-    ReviewCompleted,
-    EscalationRequested,
-    HumanFeedbackRequested,
-    HumanFeedbackReceived,
-    ArtefactProduced,
-}
-
 impl EventType {
     pub fn name(&self) -> &'static str {
         match self {
@@ -642,6 +636,13 @@ impl EventType {
             Self::ArtefactProduced => "ArtefactProduced",
         }
     }
+}
+
+pub fn now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 #[cfg(test)]

@@ -1,8 +1,16 @@
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use reqwest::Client;
+use tokio::sync::mpsc;
+
 use crate::error::{LlmError, Result};
 use crate::message::{CompletionRequest, CompletionResponse, CompletionStreamChunk};
-use reqwest::Client;
-use std::time::Duration;
-use tokio::sync::mpsc;
+
+#[async_trait::async_trait]
+pub trait LlmClient: Send + Sync {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+}
 
 #[derive(Clone, Debug)]
 pub struct OpenAiConfig {
@@ -11,17 +19,23 @@ pub struct OpenAiConfig {
     pub timeout: Duration,
 }
 
-impl OpenAiConfig {
-    pub fn builder() -> OpenAiConfigBuilder {
-        OpenAiConfigBuilder::default()
-    }
-}
-
 #[derive(Default)]
 pub struct OpenAiConfigBuilder {
     api_key: Option<String>,
     base_url: Option<String>,
     timeout: Option<Duration>,
+}
+
+#[derive(Clone, Debug)]
+pub struct OpenAiClient {
+    config: OpenAiConfig,
+    http: Client,
+}
+
+impl OpenAiConfig {
+    pub fn builder() -> OpenAiConfigBuilder {
+        OpenAiConfigBuilder::default()
+    }
 }
 
 impl OpenAiConfigBuilder {
@@ -49,17 +63,6 @@ impl OpenAiConfigBuilder {
             timeout: self.timeout.unwrap_or_else(|| Duration::from_secs(60)),
         }
     }
-}
-
-#[async_trait::async_trait]
-pub trait LlmClient: Send + Sync {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
-}
-
-#[derive(Clone, Debug)]
-pub struct OpenAiClient {
-    config: OpenAiConfig,
-    http: Client,
 }
 
 impl OpenAiClient {
@@ -167,8 +170,6 @@ impl LlmClient for OpenAiClient {
         Ok(json)
     }
 }
-
-use futures_util::StreamExt;
 
 #[cfg(test)]
 mod tests {

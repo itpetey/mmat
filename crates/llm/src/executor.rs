@@ -1,8 +1,9 @@
+use serde_json::Value;
+use thiserror::Error;
+
 use crate::client::LlmClient;
 use crate::message::{CompletionRequest, Message};
 use crate::tool::ToolRegistry;
-use serde_json::Value;
-use thiserror::Error;
 
 pub type Result<T, E> = std::result::Result<T, ExecutorError<E>>;
 
@@ -10,15 +11,6 @@ pub type Result<T, E> = std::result::Result<T, ExecutorError<E>>;
 pub struct ExecutorConfig {
     pub max_turns: usize,
     pub max_tokens: Option<u32>,
-}
-
-impl Default for ExecutorConfig {
-    fn default() -> Self {
-        Self {
-            max_turns: 10,
-            max_tokens: None,
-        }
-    }
 }
 
 #[derive(Error, Debug)]
@@ -40,6 +32,15 @@ pub enum ExecutorError<E> {
 }
 
 pub struct Executor;
+
+impl Default for ExecutorConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: 10,
+            max_tokens: None,
+        }
+    }
+}
 
 impl Executor {
     pub async fn run<Runtime, Error, Client>(

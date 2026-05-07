@@ -32,6 +32,11 @@ pub struct QdrantMemoryConfig {
     pub vector_dimension: u64,
 }
 
+pub struct QdrantMemoryBackend {
+    client: Qdrant,
+    collection_name: String,
+}
+
 impl Default for QdrantMemoryConfig {
     fn default() -> Self {
         Self {
@@ -41,11 +46,6 @@ impl Default for QdrantMemoryConfig {
             vector_dimension: 64,
         }
     }
-}
-
-pub struct QdrantMemoryBackend {
-    client: Qdrant,
-    collection_name: String,
 }
 
 impl QdrantMemoryBackend {

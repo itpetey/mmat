@@ -1,8 +1,10 @@
-use crate::event::{EventId, SemanticEvent};
+use std::path::Path;
+
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use std::path::Path;
 use thiserror::Error;
+
+use crate::event::{EventId, SemanticEvent};
 
 pub type Result<T> = std::result::Result<T, EventStoreError>;
 
@@ -17,12 +19,6 @@ pub enum EventStoreError {
 
 pub struct EventStore {
     conn: Mutex<Connection>,
-}
-
-impl std::fmt::Debug for EventStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventStore").finish_non_exhaustive()
-    }
 }
 
 impl EventStore {
@@ -172,26 +168,9 @@ impl EventStore {
     }
 }
 
-fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
-    match event {
-        SemanticEvent::ToolExecuted { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::ClaimMade { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::DecisionRecorded { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::MemoryProposed { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::MemoryAccepted { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::MemoryRejected { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::MemorySuperseded { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::PolicyViolationDetected { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::TaskAssigned { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::TaskStarted { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::TaskCompleted { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::TaskFailed { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::ReviewRequested { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::ReviewCompleted { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::EscalationRequested { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::HumanFeedbackRequested { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::HumanFeedbackReceived { timestamp_ns, .. } => *timestamp_ns,
-        SemanticEvent::ArtefactProduced { timestamp_ns, .. } => *timestamp_ns,
+impl std::fmt::Debug for EventStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventStore").finish_non_exhaustive()
     }
 }
 
@@ -215,6 +194,29 @@ fn event_source_agent(event: &SemanticEvent) -> String {
         SemanticEvent::HumanFeedbackRequested { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::HumanFeedbackReceived { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::ArtefactProduced { source_agent, .. } => source_agent.to_string(),
+    }
+}
+
+fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
+    match event {
+        SemanticEvent::ToolExecuted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ClaimMade { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::DecisionRecorded { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::MemoryProposed { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::MemoryAccepted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::MemoryRejected { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::MemorySuperseded { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::PolicyViolationDetected { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::TaskAssigned { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::TaskStarted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::TaskCompleted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::TaskFailed { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ReviewRequested { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ReviewCompleted { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::EscalationRequested { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::HumanFeedbackRequested { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::HumanFeedbackReceived { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ArtefactProduced { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 

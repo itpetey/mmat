@@ -1,31 +1,19 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+
+#[async_trait::async_trait]
+pub trait Tool<Runtime, Error>: Send + Sync {
+    fn spec(&self) -> ToolSpec;
+    async fn call(&self, runtime: &Runtime, arguments: Value) -> Result<Value, Error>;
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
-}
-
-impl ToolSpec {
-    pub fn to_openai_tool(&self) -> Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.input_schema,
-            }
-        })
-    }
-}
-
-#[async_trait::async_trait]
-pub trait Tool<Runtime, Error>: Send + Sync {
-    fn spec(&self) -> ToolSpec;
-    async fn call(&self, runtime: &Runtime, arguments: Value) -> Result<Value, Error>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -38,9 +26,16 @@ pub struct ToolRegistry<Runtime, Error> {
     tools: HashMap<String, Box<dyn Tool<Runtime, Error>>>,
 }
 
-impl<Runtime, Error> Default for ToolRegistry<Runtime, Error> {
-    fn default() -> Self {
-        Self::new()
+impl ToolSpec {
+    pub fn to_openai_tool(&self) -> Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            }
+        })
     }
 }
 
@@ -73,6 +68,12 @@ impl<Runtime, Error> ToolRegistry<Runtime, Error> {
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool<Runtime, Error>> {
         self.tools.get(name).map(|t| t.as_ref())
+    }
+}
+
+impl<Runtime, Error> Default for ToolRegistry<Runtime, Error> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

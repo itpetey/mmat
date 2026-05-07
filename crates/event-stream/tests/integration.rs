@@ -1,26 +1,8 @@
+use std::sync::Arc;
+
 use event_stream::event::{EventType, RoleId, SemanticEvent};
 use event_stream::event_bus::EventBus;
 use event_stream::event_store::EventStore;
-use std::sync::Arc;
-
-#[tokio::test]
-async fn publish_subscribe_and_store() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(EventStore::open(tmp.path()).unwrap());
-    let bus = EventBus::new(16).with_store(store.clone());
-
-    let mut rx = bus.subscribe(&[]);
-    let event =
-        SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "out", "err");
-    bus.publish(event.clone()).unwrap();
-
-    let received = rx.recv().await.unwrap();
-    assert_eq!(received.variant_name(), "ToolExecuted");
-
-    let replayed = store.replay(0, None).unwrap();
-    assert_eq!(replayed.len(), 1);
-    assert_eq!(replayed[0].variant_name(), "ToolExecuted");
-}
 
 #[tokio::test]
 async fn multiple_subscribers_with_filters() {
@@ -48,6 +30,25 @@ async fn multiple_subscribers_with_filters() {
 
     let b_result = tokio::time::timeout(std::time::Duration::from_millis(50), rx_b.recv()).await;
     assert!(b_result.is_err());
+}
+
+#[tokio::test]
+async fn publish_subscribe_and_store() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = Arc::new(EventStore::open(tmp.path()).unwrap());
+    let bus = EventBus::new(16).with_store(store.clone());
+
+    let mut rx = bus.subscribe(&[]);
+    let event =
+        SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "out", "err");
+    bus.publish(event.clone()).unwrap();
+
+    let received = rx.recv().await.unwrap();
+    assert_eq!(received.variant_name(), "ToolExecuted");
+
+    let replayed = store.replay(0, None).unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].variant_name(), "ToolExecuted");
 }
 
 #[tokio::test]

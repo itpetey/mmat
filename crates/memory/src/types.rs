@@ -1,12 +1,93 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use chrono::{DateTime, Utc};
+use event_stream::event::{EventId, RoleId};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemoryId(pub Uuid);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MemoryType {
+    Fact,
+    Decision,
+    Constraint,
+    Preference,
+    Risk,
+    Lesson,
+    SOP,
+    Incident,
+    Assumption,
+    OpenQuestion,
+    Relationship,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MemoryScope {
+    Ephemeral,
+    Project,
+    Organisational,
+    WorldModel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Authority {
+    CompilerOutput,
+    UserInstruction,
+    RepositoryState,
+    AcceptedADR,
+    ReviewFindings,
+    LLMInference,
+    SpeculativeReasoning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Confidence(f64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecayPolicy {
+    Never,
+    StaleAfterDays(u32),
+    SupersededOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Memory {
+    pub id: MemoryId,
+    pub memory_type: MemoryType,
+    pub content: String,
+    #[serde(skip)]
+    pub embedding: Option<Vec<f32>>,
+    pub scope: MemoryScope,
+    pub authority: Authority,
+    pub confidence: Confidence,
+    pub decay_policy: DecayPolicy,
+    pub evidence_refs: Vec<EventId>,
+    pub supersedes: Option<MemoryId>,
+    pub superseded_by: Option<MemoryId>,
+    pub created_at: DateTime<Utc>,
+    pub last_accessed_at: DateTime<Utc>,
+    pub source_agent: RoleId,
+}
+
+#[derive(Default)]
+pub struct MemoryBuilder {
+    id: Option<MemoryId>,
+    memory_type: Option<MemoryType>,
+    content: Option<String>,
+    embedding: Option<Vec<f32>>,
+    scope: Option<MemoryScope>,
+    authority: Option<Authority>,
+    confidence: Option<Confidence>,
+    decay_policy: Option<DecayPolicy>,
+    evidence_refs: Vec<EventId>,
+    supersedes: Option<MemoryId>,
+    superseded_by: Option<MemoryId>,
+    source_agent: Option<RoleId>,
+}
 
 impl MemoryId {
     pub fn new() -> Self {
@@ -30,21 +111,6 @@ impl From<Uuid> for MemoryId {
     fn from(uuid: Uuid) -> Self {
         Self(uuid)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MemoryType {
-    Fact,
-    Decision,
-    Constraint,
-    Preference,
-    Risk,
-    Lesson,
-    SOP,
-    Incident,
-    Assumption,
-    OpenQuestion,
-    Relationship,
 }
 
 impl MemoryType {
@@ -86,14 +152,6 @@ impl TryFrom<&str> for MemoryType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MemoryScope {
-    Ephemeral,
-    Project,
-    Organisational,
-    WorldModel,
-}
-
 impl MemoryScope {
     pub fn discriminant_str(&self) -> &'static str {
         match self {
@@ -126,17 +184,6 @@ impl TryFrom<&str> for MemoryScope {
             _ => Err(crate::error::Error::InvalidMemoryScope(s.to_string())),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Authority {
-    CompilerOutput,
-    UserInstruction,
-    RepositoryState,
-    AcceptedADR,
-    ReviewFindings,
-    LLMInference,
-    SpeculativeReasoning,
 }
 
 impl Authority {
@@ -182,9 +229,6 @@ impl TryFrom<&str> for Authority {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Confidence(f64);
-
 impl Confidence {
     pub fn new(value: f64) -> Result<Self> {
         if (0.0..=1.0).contains(&value) {
@@ -203,13 +247,6 @@ impl Default for Confidence {
     fn default() -> Self {
         Self(0.5)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DecayPolicy {
-    Never,
-    StaleAfterDays(u32),
-    SupersededOnly,
 }
 
 impl DecayPolicy {
@@ -255,45 +292,10 @@ impl TryFrom<&str> for DecayPolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Memory {
-    pub id: MemoryId,
-    pub memory_type: MemoryType,
-    pub content: String,
-    #[serde(skip)]
-    pub embedding: Option<Vec<f32>>,
-    pub scope: MemoryScope,
-    pub authority: Authority,
-    pub confidence: Confidence,
-    pub decay_policy: DecayPolicy,
-    pub evidence_refs: Vec<EventId>,
-    pub supersedes: Option<MemoryId>,
-    pub superseded_by: Option<MemoryId>,
-    pub created_at: DateTime<Utc>,
-    pub last_accessed_at: DateTime<Utc>,
-    pub source_agent: RoleId,
-}
-
 impl Memory {
     pub fn builder() -> MemoryBuilder {
         MemoryBuilder::default()
     }
-}
-
-#[derive(Default)]
-pub struct MemoryBuilder {
-    id: Option<MemoryId>,
-    memory_type: Option<MemoryType>,
-    content: Option<String>,
-    embedding: Option<Vec<f32>>,
-    scope: Option<MemoryScope>,
-    authority: Option<Authority>,
-    confidence: Option<Confidence>,
-    decay_policy: Option<DecayPolicy>,
-    evidence_refs: Vec<EventId>,
-    supersedes: Option<MemoryId>,
-    superseded_by: Option<MemoryId>,
-    source_agent: Option<RoleId>,
 }
 
 impl MemoryBuilder {
@@ -397,8 +399,6 @@ impl MemoryBuilder {
         })
     }
 }
-
-use event_stream::event::{EventId, RoleId};
 
 #[cfg(test)]
 mod tests {

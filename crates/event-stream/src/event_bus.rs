@@ -1,13 +1,27 @@
-use crate::event::{EventType, SemanticEvent};
-use crate::event_store::{EventStore, EventStoreError};
 use std::collections::HashSet;
 use std::sync::Arc;
+
 use tokio::sync::broadcast::{self, Receiver, Sender};
+
+use crate::event::{EventType, SemanticEvent};
+use crate::event_store::{EventStore, EventStoreError};
 
 #[derive(Clone, Debug)]
 pub struct EventBus {
     sender: Sender<Arc<SemanticEvent>>,
     store: Option<Arc<EventStore>>,
+}
+
+#[derive(Debug)]
+pub enum RecvError {
+    Closed,
+    Lagged(u64),
+}
+
+#[derive(Debug)]
+pub struct EventReceiver {
+    receiver: Receiver<Arc<SemanticEvent>>,
+    filter: HashSet<EventType>,
 }
 
 impl EventBus {
@@ -41,18 +55,6 @@ impl EventBus {
             filter: filter_set,
         }
     }
-}
-
-#[derive(Debug)]
-pub enum RecvError {
-    Closed,
-    Lagged(u64),
-}
-
-#[derive(Debug)]
-pub struct EventReceiver {
-    receiver: Receiver<Arc<SemanticEvent>>,
-    filter: HashSet<EventType>,
 }
 
 impl EventReceiver {

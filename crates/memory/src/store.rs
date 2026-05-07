@@ -1,8 +1,9 @@
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use event_stream::event::{EventId, RoleId};
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
 use uuid::Uuid;
 
 use crate::error::Result;

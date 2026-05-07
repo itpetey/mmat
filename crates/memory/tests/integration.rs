@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::time::Duration;
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
 };
+use std::sync::Arc;
+use std::time::Duration;
 
 use event_stream::event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent};
 use event_stream::event_bus::EventBus;
@@ -63,30 +63,29 @@ impl VectorMemoryBackend for FakeVectorBackend {
     }
 }
 
-fn make_test_memory() -> Memory {
-    Memory::builder()
-        .memory_type(MemoryType::Fact)
-        .content("This is a durable test fact with sufficient length")
-        .scope(MemoryScope::Project)
-        .authority(Authority::UserInstruction)
-        .confidence(Confidence::new(0.9).unwrap())
-        .source_agent(RoleId::new("user"))
-        .build()
-        .unwrap()
-}
-
 #[tokio::test]
-async fn integration_memory_lifecycle() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = MemoryStore::open(tmp.path()).unwrap();
-    let memory = make_test_memory();
+async fn integration_attention_proposal_carries_metadata() {
+    let claim = SemanticEvent::new_claim_made(
+        RoleId::new("llm"),
+        "The API returns 404 for missing resources",
+        vec![EvidenceRef {
+            event_id: EventId::new(),
+            description: "tool output".to_string(),
+        }],
+        0.85,
+    );
 
-    store.insert(&memory).unwrap();
+    let evidence_refs = AttentionEngine::extract_evidence_refs(&claim);
+    assert_eq!(evidence_refs.len(), 2);
+    assert!(evidence_refs.iter().any(|r| r.event_id == claim.event_id()));
 
-    let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
-    assert_eq!(retrieved.content, memory.content);
-    assert_eq!(retrieved.memory_type, MemoryType::Fact);
-    assert_eq!(retrieved.scope, MemoryScope::Project);
+    let confidence = AttentionEngine::extract_confidence(&claim);
+    assert!((confidence - 0.85).abs() < 0.01);
+
+    let (memory_type, scope, authority) = AttentionEngine::infer_metadata(&claim);
+    assert!(matches!(memory_type, MemoryType::Fact));
+    assert!(matches!(scope, MemoryScope::Project));
+    assert!(matches!(authority, Authority::LLMInference));
 }
 
 #[tokio::test]
@@ -148,6 +147,154 @@ async fn integration_attention_to_librarian_accepts_and_indexes_memory() {
 }
 
 #[tokio::test]
+async fn integration_contradiction_higher_authority() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let qdrant = Arc::new(FakeVectorBackend::default());
+    let bus = Arc::new(EventBus::new(64));
+
+    let old_memory = Memory::builder()
+        .memory_type(MemoryType::Fact)
+        .content("The API endpoint returns status 200 as of the latest test")
+        .scope(MemoryScope::Project)
+        .authority(Authority::LLMInference)
+        .confidence(Confidence::new(0.7).unwrap())
+        .source_agent(RoleId::new("llm"))
+        .build()
+        .unwrap();
+
+    store.insert(&old_memory).unwrap();
+
+    let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_secs(3600));
+    let mut accepted_rx = bus.subscribe(&[EventType::MemoryAccepted]);
+    let handle = tokio::spawn({
+        let bus = bus.clone();
+        async move { librarian.run(bus).await }
+    });
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    bus.publish(SemanticEvent::new_memory_proposed(
+        RoleId::new("compiler"),
+        "Fact",
+        "The API endpoint returns status 500 as of the latest test",
+        "Project",
+        RoleId::new("compiler"),
+        vec![],
+        0.95,
+    ))
+    .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), accepted_rx.recv())
+        .await
+        .expect("timeout waiting for MemoryAccepted")
+        .expect("channel closed");
+
+    let old = store.get_by_id(old_memory.id).unwrap().unwrap();
+    assert!(old.superseded_by.is_some());
+    assert_eq!(qdrant.deleted.lock().as_slice(), &[old_memory.id]);
+
+    let chain = store.get_supersession_chain(old_memory.id).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[0].id, old_memory.id);
+    assert_eq!(chain[1].supersedes, Some(old_memory.id));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_decay_scan_supersedes_stale() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let qdrant = Arc::new(FakeVectorBackend::default());
+    let bus = Arc::new(EventBus::new(64));
+
+    let stale_memory = Memory::builder()
+        .memory_type(MemoryType::Fact)
+        .content("This is a stale fact")
+        .scope(MemoryScope::Ephemeral)
+        .authority(Authority::LLMInference)
+        .confidence(Confidence::new(0.5).unwrap())
+        .decay_policy(DecayPolicy::StaleAfterDays(0))
+        .source_agent(RoleId::new("llm"))
+        .build()
+        .unwrap();
+
+    store.insert(&stale_memory).unwrap();
+    let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_millis(25));
+    let mut superseded_rx = bus.subscribe(&[EventType::MemorySuperseded]);
+    let handle = tokio::spawn({
+        let bus = bus.clone();
+        async move { librarian.run(bus).await }
+    });
+
+    let superseded = tokio::time::timeout(Duration::from_secs(2), superseded_rx.recv())
+        .await
+        .expect("timeout waiting for MemorySuperseded")
+        .expect("channel closed");
+    assert_eq!(superseded.variant_name(), "MemorySuperseded");
+
+    let decayed = store.query_decayed().unwrap();
+    assert!(decayed.is_empty());
+    assert_eq!(qdrant.deleted.lock().as_slice(), &[stale_memory.id]);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_grounding_gate_rejects_ungrounded_llm() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let qdrant = Arc::new(FakeVectorBackend::default());
+    let bus = Arc::new(EventBus::new(64));
+    let librarian = Librarian::new(store.clone(), qdrant, Duration::from_secs(3600));
+    let mut rejected_rx = bus.subscribe(&[EventType::MemoryRejected]);
+    let handle = tokio::spawn({
+        let bus = bus.clone();
+        async move { librarian.run(bus).await }
+    });
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    bus.publish(SemanticEvent::new_memory_proposed(
+        RoleId::new("llm"),
+        "Decision",
+        "We should change the API because the current behaviour is unclear",
+        "Project",
+        RoleId::new("llm"),
+        vec![],
+        0.5,
+    ))
+    .unwrap();
+
+    let rejected = tokio::time::timeout(Duration::from_secs(2), rejected_rx.recv())
+        .await
+        .expect("timeout waiting for MemoryRejected")
+        .expect("channel closed");
+    assert!(matches!(
+        rejected.as_ref(),
+        SemanticEvent::MemoryRejected { rejection_gate, .. } if rejection_gate == "grounding"
+    ));
+    assert!(
+        store
+            .query_by_type(MemoryType::Decision)
+            .unwrap()
+            .is_empty()
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_memory_lifecycle() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = MemoryStore::open(tmp.path()).unwrap();
+    let memory = make_test_memory();
+
+    store.insert(&memory).unwrap();
+
+    let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
+    assert_eq!(retrieved.content, memory.content);
+    assert_eq!(retrieved.memory_type, MemoryType::Fact);
+    assert_eq!(retrieved.scope, MemoryScope::Project);
+}
+
+#[tokio::test]
 async fn integration_near_duplicate_suppression() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
@@ -199,60 +346,6 @@ async fn integration_near_duplicate_suppression() {
             .await
             .is_err()
     );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn integration_contradiction_higher_authority() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
-    let qdrant = Arc::new(FakeVectorBackend::default());
-    let bus = Arc::new(EventBus::new(64));
-
-    let old_memory = Memory::builder()
-        .memory_type(MemoryType::Fact)
-        .content("The API endpoint returns status 200 as of the latest test")
-        .scope(MemoryScope::Project)
-        .authority(Authority::LLMInference)
-        .confidence(Confidence::new(0.7).unwrap())
-        .source_agent(RoleId::new("llm"))
-        .build()
-        .unwrap();
-
-    store.insert(&old_memory).unwrap();
-
-    let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_secs(3600));
-    let mut accepted_rx = bus.subscribe(&[EventType::MemoryAccepted]);
-    let handle = tokio::spawn({
-        let bus = bus.clone();
-        async move { librarian.run(bus).await }
-    });
-
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    bus.publish(SemanticEvent::new_memory_proposed(
-        RoleId::new("compiler"),
-        "Fact",
-        "The API endpoint returns status 500 as of the latest test",
-        "Project",
-        RoleId::new("compiler"),
-        vec![],
-        0.95,
-    ))
-    .unwrap();
-
-    tokio::time::timeout(Duration::from_secs(2), accepted_rx.recv())
-        .await
-        .expect("timeout waiting for MemoryAccepted")
-        .expect("channel closed");
-
-    let old = store.get_by_id(old_memory.id).unwrap().unwrap();
-    assert!(old.superseded_by.is_some());
-    assert_eq!(qdrant.deleted.lock().as_slice(), &[old_memory.id]);
-
-    let chain = store.get_supersession_chain(old_memory.id).unwrap();
-    assert_eq!(chain.len(), 2);
-    assert_eq!(chain[0].id, old_memory.id);
-    assert_eq!(chain[1].supersedes, Some(old_memory.id));
     handle.abort();
 }
 
@@ -309,107 +402,14 @@ async fn integration_provenance_trace() {
     assert!(!trace.is_empty());
 }
 
-#[tokio::test]
-async fn integration_decay_scan_supersedes_stale() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
-    let qdrant = Arc::new(FakeVectorBackend::default());
-    let bus = Arc::new(EventBus::new(64));
-
-    let stale_memory = Memory::builder()
+fn make_test_memory() -> Memory {
+    Memory::builder()
         .memory_type(MemoryType::Fact)
-        .content("This is a stale fact")
-        .scope(MemoryScope::Ephemeral)
-        .authority(Authority::LLMInference)
-        .confidence(Confidence::new(0.5).unwrap())
-        .decay_policy(DecayPolicy::StaleAfterDays(0))
-        .source_agent(RoleId::new("llm"))
+        .content("This is a durable test fact with sufficient length")
+        .scope(MemoryScope::Project)
+        .authority(Authority::UserInstruction)
+        .confidence(Confidence::new(0.9).unwrap())
+        .source_agent(RoleId::new("user"))
         .build()
-        .unwrap();
-
-    store.insert(&stale_memory).unwrap();
-    let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_millis(25));
-    let mut superseded_rx = bus.subscribe(&[EventType::MemorySuperseded]);
-    let handle = tokio::spawn({
-        let bus = bus.clone();
-        async move { librarian.run(bus).await }
-    });
-
-    let superseded = tokio::time::timeout(Duration::from_secs(2), superseded_rx.recv())
-        .await
-        .expect("timeout waiting for MemorySuperseded")
-        .expect("channel closed");
-    assert_eq!(superseded.variant_name(), "MemorySuperseded");
-
-    let decayed = store.query_decayed().unwrap();
-    assert!(decayed.is_empty());
-    assert_eq!(qdrant.deleted.lock().as_slice(), &[stale_memory.id]);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn integration_attention_proposal_carries_metadata() {
-    let claim = SemanticEvent::new_claim_made(
-        RoleId::new("llm"),
-        "The API returns 404 for missing resources",
-        vec![EvidenceRef {
-            event_id: EventId::new(),
-            description: "tool output".to_string(),
-        }],
-        0.85,
-    );
-
-    let evidence_refs = AttentionEngine::extract_evidence_refs(&claim);
-    assert_eq!(evidence_refs.len(), 2);
-    assert!(evidence_refs.iter().any(|r| r.event_id == claim.event_id()));
-
-    let confidence = AttentionEngine::extract_confidence(&claim);
-    assert!((confidence - 0.85).abs() < 0.01);
-
-    let (memory_type, scope, authority) = AttentionEngine::infer_metadata(&claim);
-    assert!(matches!(memory_type, MemoryType::Fact));
-    assert!(matches!(scope, MemoryScope::Project));
-    assert!(matches!(authority, Authority::LLMInference));
-}
-
-#[tokio::test]
-async fn integration_grounding_gate_rejects_ungrounded_llm() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
-    let qdrant = Arc::new(FakeVectorBackend::default());
-    let bus = Arc::new(EventBus::new(64));
-    let librarian = Librarian::new(store.clone(), qdrant, Duration::from_secs(3600));
-    let mut rejected_rx = bus.subscribe(&[EventType::MemoryRejected]);
-    let handle = tokio::spawn({
-        let bus = bus.clone();
-        async move { librarian.run(bus).await }
-    });
-
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    bus.publish(SemanticEvent::new_memory_proposed(
-        RoleId::new("llm"),
-        "Decision",
-        "We should change the API because the current behaviour is unclear",
-        "Project",
-        RoleId::new("llm"),
-        vec![],
-        0.5,
-    ))
-    .unwrap();
-
-    let rejected = tokio::time::timeout(Duration::from_secs(2), rejected_rx.recv())
-        .await
-        .expect("timeout waiting for MemoryRejected")
-        .expect("channel closed");
-    assert!(matches!(
-        rejected.as_ref(),
-        SemanticEvent::MemoryRejected { rejection_gate, .. } if rejection_gate == "grounding"
-    ));
-    assert!(
-        store
-            .query_by_type(MemoryType::Decision)
-            .unwrap()
-            .is_empty()
-    );
-    handle.abort();
+        .unwrap()
 }
