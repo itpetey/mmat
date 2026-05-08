@@ -200,7 +200,7 @@ impl fmt::Display for Severity {
     }
 }
 
-/// Converts an [`EscalationSeverity`](EscalationSeverity) into a [`Severity`].
+/// Converts an [`EscalationSeverity`] into a [`Severity`].
 impl From<EscalationSeverity> for Severity {
     fn from(s: EscalationSeverity) -> Self {
         match s {
