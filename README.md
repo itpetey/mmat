@@ -24,6 +24,7 @@ The core goals are:
 | `mmat-event-stream` | Semantic event types, publish-subscribe event bus, and optional SQLite-backed event persistence. |
 | `mmat-llm` | OpenAI-compatible chat completions, streaming responses, and tool execution support. |
 | `mmat-memory` | Typed semantic memory built on event streams, SQLite storage, Qdrant vector search, attention, provenance, and librarian workflows. |
+| `mmat-migration` | SQLite-to-Postgres migration utility for events, memories, and artefact blobs. |
 | `mmat-process` | Shell command execution with working-directory and environment support. |
 | `mmat-project` | Repository discovery, project type detection, project scaffolding, git worktree handling, and related project operations. |
 | `mmat-roles` | Built-in delivery roles including intent lead, scholar, architect, project manager, ops manager, reviewer, auditor, and worker. |
@@ -32,8 +33,21 @@ The core goals are:
 
 - Rust toolchain with Edition 2024 support.
 - Cargo.
+- Optional: Postgres 16 with pgvector for Postgres-backed event, memory, and artefact storage.
 - Optional: Qdrant for vector-backed memory experiments.
 - Optional: an OpenAI-compatible API endpoint for `mmat-llm` integration.
+
+Start the local Postgres service with:
+
+```bash
+docker compose up -d postgres
+```
+
+Use `.env.example` as the local storage configuration template:
+
+```bash
+DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
+```
 
 ## Usage
 
@@ -82,6 +96,18 @@ cargo build
 cargo test
 ```
 
+Migrate legacy SQLite stores into Postgres with:
+
+```bash
+cargo run -p mmat-migration -- \
+  --database-url postgres://mmat:mmat@localhost:5432/mmat \
+  --sqlite-events events.db \
+  --sqlite-memory memory.db \
+  --artefacts-dir .mmat/artefacts
+```
+
+Add `--dry-run` to count events, memories, and artefact files without writing to Postgres.
+
 ## Development
 
 Format, lint, and test before committing changes:
@@ -103,6 +129,8 @@ cargo build --release
 - The workspace uses Rust Edition 2024.
 - Dependencies are centralised in `[workspace.dependencies]` in the root `Cargo.toml`.
 - The event stream is the main integration surface between roles, memory, and coordination.
+- When `DATABASE_URL` is set, event, memory, and artefact storage use Postgres; otherwise legacy SQLite and `.mmat/artefacts/` file storage are used.
+- `**/.mmat/` remains ignored because the directory is only created in legacy SQLite/file-backed mode.
 - Memory entries carry metadata such as type, scope, authority, confidence, source role, evidence references, supersession, and decay policy.
 - LLM support is provider-shaped around OpenAI-compatible chat completions rather than hard-wiring higher-level role behaviour to one service.
 - Project operations are split into focused crates so orchestration code can remain separate from filesystem, process, and repository concerns.

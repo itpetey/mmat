@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use mmat_memory::{
     embedding::{EmbeddingProvider, HashEmbeddingProvider},
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{Authority, Memory, MemoryScope, MemoryType},
+    vector_backend::VectorMemoryBackend,
 };
 use serde::{Deserialize, Serialize};
 

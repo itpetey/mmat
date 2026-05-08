@@ -1,12 +1,15 @@
 //! Organisation runtime managing role execution, event processing, and shutdown.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use mmat_event_stream::{
     event::{EventType, RoleId, SemanticEvent},
     event_bus::EventBus,
     event_store::EventStore,
 };
+use mmat_memory::artefact_store::ArtefactStore;
 use mmat_memory::store::MemoryStore;
 use tokio::{
     signal,
@@ -32,10 +35,12 @@ pub struct OrganisationConfig {
     pub heartbeat_interval: Duration,
     /// Grace period for role shutdown before forced abort.
     pub shutdown_grace_period: Duration,
-    /// File path for the event store database.
-    pub event_store_path: PathBuf,
-    /// File path for the memory store database.
-    pub memory_store_path: PathBuf,
+    /// File path for the event store database (SQLite legacy).
+    pub event_store_path: Option<PathBuf>,
+    /// File path for the memory store database (SQLite legacy).
+    pub memory_store_path: Option<PathBuf>,
+    /// Postgres connection string (replaces event_store_path and memory_store_path when set).
+    pub database_url: Option<String>,
 }
 
 /// Runtime that owns and orchestrates the entire organisation: roles, event bus,
@@ -45,6 +50,7 @@ pub struct OrganisationRuntime {
     bus: EventBus,
     event_store: Arc<EventStore>,
     memory_store: Arc<MemoryStore>,
+    artefact_store: Arc<ArtefactStore>,
     registry: Arc<RoleRegistry>,
     scheduler: Arc<tokio::sync::Mutex<Scheduler>>,
     #[allow(dead_code)]
@@ -61,8 +67,9 @@ impl Default for OrganisationConfig {
             event_bus_capacity: 1024,
             heartbeat_interval: Duration::from_secs(30),
             shutdown_grace_period: Duration::from_secs(10),
-            event_store_path: PathBuf::from("events.db"),
-            memory_store_path: PathBuf::from("memory.db"),
+            event_store_path: Some(PathBuf::from("events.db")),
+            memory_store_path: Some(PathBuf::from("memory.db")),
+            database_url: None,
         }
     }
 }
@@ -73,15 +80,44 @@ impl OrganisationRuntime {
     /// Opens the event store and memory store, validates the registry is non-empty,
     /// and initialises the scheduler.
     pub fn new(config: OrganisationConfig, registry: RoleRegistry) -> Result<Self> {
-        let event_store = Arc::new(
-            EventStore::open(&config.event_store_path)
-                .map_err(|e| Error::Runtime(format!("failed to open event store: {e}")))?,
-        );
+        let event_store: Arc<EventStore> = if let Some(ref url) = config.database_url {
+            Arc::new(
+                EventStore::new(url)
+                    .map_err(|e| Error::Runtime(format!("failed to connect to Postgres: {e}")))?,
+            )
+        } else {
+            let path = config.event_store_path.as_ref().ok_or_else(|| {
+                Error::Runtime("event_store_path or database_url required".into())
+            })?;
+            Arc::new(
+                EventStore::open(path)
+                    .map_err(|e| Error::Runtime(format!("failed to open event store: {e}")))?,
+            )
+        };
         let bus = EventBus::new(config.event_bus_capacity).with_store(Arc::clone(&event_store));
-        let memory_store = Arc::new(
-            MemoryStore::open(&config.memory_store_path)
-                .map_err(|e| Error::Runtime(format!("failed to open memory store: {e}")))?,
-        );
+        let memory_store: Arc<MemoryStore> = if let Some(ref url) = config.database_url {
+            Arc::new(
+                MemoryStore::new(url)
+                    .map_err(|e| Error::Runtime(format!("failed to connect to Postgres: {e}")))?,
+            )
+        } else {
+            let path = config.memory_store_path.as_ref().ok_or_else(|| {
+                Error::Runtime("memory_store_path or database_url required".into())
+            })?;
+            Arc::new(
+                MemoryStore::open(path)
+                    .map_err(|e| Error::Runtime(format!("failed to open memory store: {e}")))?,
+            )
+        };
+
+        let artefact_store: Arc<ArtefactStore> = if let Some(ref url) = config.database_url {
+            Arc::new(
+                ArtefactStore::new_postgres(url)
+                    .map_err(|e| Error::Runtime(format!("failed to create artefact store: {e}")))?,
+            )
+        } else {
+            Arc::new(ArtefactStore::new())
+        };
 
         // Validate registry
         if registry.all_roles().is_empty() {
@@ -102,6 +138,7 @@ impl OrganisationRuntime {
             bus,
             event_store,
             memory_store,
+            artefact_store,
             registry: Arc::new(registry),
             scheduler,
             retrieval_planner: RetrievalPlanner::new(),
@@ -174,6 +211,7 @@ impl OrganisationRuntime {
                 bus: self.bus.clone(),
                 receiver,
                 memory_store: Arc::clone(&self.memory_store),
+                artefact_store: Some(Arc::clone(&self.artefact_store)),
                 coordinator: CoordinatorHandle::new(self.coordinator_tx.clone()),
                 tools: Box::new(()),
             };

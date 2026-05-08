@@ -12,9 +12,9 @@ use tokio::time::{Duration, interval};
 use crate::{
     embedding::{EmbeddingProvider, HashEmbeddingProvider},
     error::Result,
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
-    types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType},
+    types::*,
+    vector_backend::VectorMemoryBackend,
 };
 
 /// The librarian runs a gating pipeline on proposed memories and manages decay scans.
@@ -760,7 +760,7 @@ mod tests {
     use qdrant_client::qdrant::Value;
     use std::collections::HashMap;
 
-    use crate::qdrant::VectorMemoryBackend;
+    use crate::vector_backend::VectorMemoryBackend;
 
     #[derive(Default)]
     struct FakeVectorBackend {

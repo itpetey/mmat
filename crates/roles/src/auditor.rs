@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::artefacts::{
     AuditReport, ConfidenceAssessment, EvidenceChainStatus, EvidencePack, ProcessAdherenceCheck,
-    ValidationPolicy, store_artefact_blob,
+    ValidationPolicy,
 };
 
 /// Configuration for the Auditor's LLM-based semantic checks.
@@ -635,24 +635,19 @@ impl Auditor {
         std::env::current_dir().is_ok_and(|dir| visit(&dir, needle))
     }
 
-    fn read_artefact_payload(storage_uri: &str) -> Option<String> {
-        if let Some(path) = storage_uri.strip_prefix("file://") {
-            return std::fs::read_to_string(path).ok();
-        }
-
-        storage_uri
-            .split_once('|')
-            .map(|(_, payload)| payload.to_string())
-    }
-
-    fn update_validation_policy(&self, storage_uri: &str) {
-        let Some(payload) = Self::read_artefact_payload(storage_uri) else {
-            return;
+    async fn update_validation_policy(
+        &self,
+        ctx: &RoleContext,
+        storage_uri: &str,
+    ) -> Result<(), RoleError> {
+        let Ok(Some(payload)) = ctx.get_artefact_payload(storage_uri).await else {
+            return Ok(());
         };
         let Ok(policy) = serde_json::from_str::<ValidationPolicy>(&payload) else {
-            return;
+            return Ok(());
         };
         *self.active_validation_policy.lock() = Some(policy);
+        Ok(())
     }
 
     async fn check_evidence_pack_paths(
@@ -661,7 +656,11 @@ impl Auditor {
         event_id: EventId,
         storage_uri: &str,
     ) -> Result<(), RoleError> {
-        let payload = Self::read_artefact_payload(storage_uri).unwrap_or_default();
+        let payload = ctx
+            .get_artefact_payload(storage_uri)
+            .await
+            .unwrap_or_default()
+            .unwrap_or_default();
         if payload.is_empty() {
             return Ok(());
         }
@@ -921,8 +920,7 @@ impl Auditor {
         let report_json = serde_json::to_string(&report)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise audit report: {e}")))?;
 
-        let stored = store_artefact_blob("audit_report", &report_json)
-            .map_err(|e| RoleError::Internal(format!("Failed to store audit report: {e}")))?;
+        let stored = ctx.store_artefact("audit_report", &report_json).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id,
@@ -1031,7 +1029,7 @@ impl Auditor {
         } = event
         {
             if artefact_type == "validation_policy" {
-                self.update_validation_policy(storage_uri);
+                self.update_validation_policy(ctx, storage_uri).await?;
             }
             if artefact_type == "evidence_pack" {
                 self.check_evidence_pack_paths(ctx, *event_id, storage_uri)

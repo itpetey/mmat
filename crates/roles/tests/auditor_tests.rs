@@ -16,11 +16,12 @@ use mmat_llm::{
     message::{Choice, CompletionRequest, CompletionResponse, Message, Usage},
 };
 use mmat_memory::{
+    artefact_store::ArtefactStore,
     error::Result as MemoryResult,
     librarian::Librarian,
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType},
+    vector_backend::VectorMemoryBackend,
 };
 use mmat_roles::{
     Auditor, AuditorLlmConfig,
@@ -120,6 +121,7 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -190,6 +192,7 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -247,6 +250,7 @@ async fn test_auditor_detects_hallucinated_api_endpoint() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -308,6 +312,7 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
         receiver,
         memory_store: memory_store.clone(),
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -391,6 +396,7 @@ async fn test_auditor_detects_process_skipped_when_tests_not_run() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -445,6 +451,7 @@ async fn test_auditor_does_not_accept_uncited_stale_test_run() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -504,6 +511,7 @@ async fn test_auditor_does_not_flag_valid_claim() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -572,6 +580,7 @@ async fn test_auditor_flags_authority_violation() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -626,6 +635,7 @@ async fn test_auditor_flags_unjustified_confidence() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -684,6 +694,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
         receiver: bus.subscribe(&[EventType::OrganisationStarted]),
         memory_store: memory_store.clone(),
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -770,6 +781,7 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -831,6 +843,7 @@ async fn test_auditor_verifies_scholar_web_sources() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -888,6 +901,7 @@ async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -960,6 +974,7 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -1014,9 +1029,12 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
             } = event.as_ref()
             && artefact_type == "audit_report"
         {
-            let report_json =
-                std::fs::read_to_string(storage_uri.strip_prefix("file://").unwrap_or(storage_uri))
-                    .unwrap();
+            let store = ArtefactStore::new();
+            let report_json = store
+                .get_payload(storage_uri)
+                .await
+                .unwrap()
+                .expect("artefact should exist");
             let report: AuditReport = serde_json::from_str(&report_json).unwrap();
             saw_confidence_report = !report.confidence_assessments.is_empty();
             break;

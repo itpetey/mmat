@@ -5,6 +5,7 @@ members = [
   "crates/event-stream",
   "crates/llm",
   "crates/memory",
+  "crates/migration",
   "crates/process",
   "crates/project",
   "crates/roles"
@@ -19,23 +20,19 @@ license-file = "LICENCE"
 
 [workspace.dependencies]
 async-trait = { version = "0.1", default-features = false }
-# chrono = { version = "0.4", features = ["serde"] }
 chrono = { version = "0.4", default-features = false }
 futures-util = { version = "0.3", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
 qdrant-client = { version = "1.17", default-features = false }
-# reqwest = { version = "0.13", features = ["default-tls", "json", "stream"], default-features=false}
 reqwest = { version = "0.13", default-features = false }
-# rusqlite = { version = "0.39", features = ["bundled"], default-features=false}
-rusqlite = { version = "0.39", default-features = false }
-# serde = { version = "1", features = ["derive"], default-features=false}
+rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
+sqlx = { version = "0.8", default-features = false }
 tempfile = { version = "3.27", default-features = false }
 thiserror = { version = "2.0", default-features = false }
-# tokio = { version = "1", features = ["macros", "rt-multi-thread"], default-features=false}
 tokio = { version = "1.52", default-features = false }
 tracing = { version = "0.1", default-features = false }
-# uuid = { version = "1", features = ["serde", "v4"], default-features=false}
+tracing-subscriber = { version = "0.3", default-features = false }
 uuid = { version = "1.23", default-features = false }
 wiremock = { version = "0.6", default-features = false }

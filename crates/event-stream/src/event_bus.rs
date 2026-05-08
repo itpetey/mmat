@@ -66,9 +66,17 @@ impl EventBus {
         if let Some(store) = &self.store {
             store.insert(&event)?;
         }
+        self.broadcast_stored(event);
+        Ok(())
+    }
+
+    /// Broadcasts an event that has already been persisted.
+    ///
+    /// This is used by transactional writers that persist multiple rows before
+    /// notifying subscribers, avoiding a duplicate [`EventStore`] insert.
+    pub fn broadcast_stored(&self, event: SemanticEvent) {
         let arc = Arc::new(event);
         let _ = self.sender.send(arc);
-        Ok(())
     }
 
     /// Subscribes to the bus with an optional event-type filter.

@@ -20,10 +20,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    artefacts::{
-        EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestions, ResearchBrief,
-        store_artefact_blob,
-    },
+    artefacts::{EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestions, ResearchBrief},
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
 
@@ -221,9 +218,7 @@ impl Scholar {
         let serialised = serde_json::to_string(brief)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise research brief: {e}")))?;
 
-        let stored = store_artefact_blob("research_brief", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store research brief artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("research_brief", &serialised).await?;
 
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
@@ -263,9 +258,7 @@ impl Scholar {
         let serialised = serde_json::to_string(pack)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise evidence pack: {e}")))?;
 
-        let stored = store_artefact_blob("evidence_pack", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store evidence pack artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("evidence_pack", &serialised).await?;
 
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
@@ -305,9 +298,7 @@ impl Scholar {
         let serialised = serde_json::to_string(questions)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise open questions: {e}")))?;
 
-        let stored = store_artefact_blob("open_questions", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store open questions artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("open_questions", &serialised).await?;
 
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),

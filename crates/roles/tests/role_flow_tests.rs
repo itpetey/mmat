@@ -8,9 +8,9 @@ use mmat_event_stream::{
 use mmat_memory::{
     error::Result as MemoryResult,
     librarian::Librarian,
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{MemoryId, MemoryType},
+    vector_backend::VectorMemoryBackend,
 };
 use mmat_roles::{
     Architect, IntentLead, OpsManager, ProjectManager, Reviewer, Scholar, Worker,
@@ -114,6 +114,7 @@ async fn architect_receives_task_and_produces_adr() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -158,6 +159,7 @@ async fn intent_lead_turns_initial_prompt_into_brief_and_dispatches_roles() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -285,6 +287,7 @@ async fn ops_manager_creates_sop_on_task() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -321,6 +324,7 @@ async fn ops_manager_sop_memory_is_accepted_by_librarian() {
         receiver,
         memory_store: memory_store.clone(),
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
     let role_handle = tokio::spawn(ops_manager.run(ctx));
@@ -404,6 +408,7 @@ async fn project_manager_deduplicates_adrs() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -473,6 +478,7 @@ async fn project_manager_marks_failed_task_in_delivery_graph() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -553,6 +559,7 @@ async fn reviewer_extracts_implementation_from_task_completed() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -603,6 +610,7 @@ async fn scholar_budget_exhaustion_requests_escalation() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -666,6 +674,7 @@ async fn scholar_receives_task_and_completes_research_outputs() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -715,6 +724,7 @@ async fn worker_does_not_fallback_by_default() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 
@@ -808,6 +818,7 @@ async fn worker_receives_task_and_completes() {
         receiver,
         memory_store,
         coordinator,
+        artefact_store: None,
         tools: Box::new(()),
     };
 

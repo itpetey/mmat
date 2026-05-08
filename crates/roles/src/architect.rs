@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    artefacts::{Adr, DependencyRules, InterfaceSpec, store_artefact_blob},
+    artefacts::{Adr, DependencyRules, InterfaceSpec},
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
 
@@ -195,8 +195,7 @@ Base your decision on the provided intent brief and research context.";
             RoleError::Internal(format!("Failed to publish decision recorded event: {e:?}"))
         })?;
 
-        let stored = store_artefact_blob("adr", &serialised)
-            .map_err(|e| RoleError::Internal(format!("Failed to store ADR artefact: {e}")))?;
+        let stored = ctx.store_artefact("adr", &serialised).await?;
         let artefact_event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id.clone(),
@@ -222,9 +221,7 @@ Base your decision on the provided intent brief and research context.";
         let serialised = serde_json::to_string(spec)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise interface spec: {e}")))?;
 
-        let stored = store_artefact_blob("interface_spec", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store interface spec artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("interface_spec", &serialised).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id.clone(),
@@ -251,9 +248,7 @@ Base your decision on the provided intent brief and research context.";
             RoleError::Internal(format!("Failed to serialise dependency rules: {e}"))
         })?;
 
-        let stored = store_artefact_blob("dependency_rules", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store dependency rules artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("dependency_rules", &serialised).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id.clone(),

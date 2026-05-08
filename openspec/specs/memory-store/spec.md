@@ -1,7 +1,12 @@
-## ADDED Requirements
+# memory-store Specification
 
-### Requirement: Memory store persists typed memories to SQLite
-The system SHALL provide a `MemoryStore` with a SQLite backend that stores all structured fields of a `Memory`. The store MUST create the schema on first open and support insert, query-by-id, query-by-type, query-by-scope, query-by-authority-range, and query-by-decay-status operations.
+## Purpose
+Define durable Postgres-backed typed memory storage, supersession, and vector search behaviour.
+
+## Requirements
+
+### Requirement: Memory store persists typed memories to Postgres
+The system SHALL provide a `MemoryStore` with a Postgres backend that stores all structured fields of a `Memory` plus an optional `embedding vector(64)` column (when pgvector extension is available). The store MUST create the schema on first connection and support all existing query operations plus vector similarity search via pgvector or the configured `VectorMemoryBackend`. The store SHALL use `sqlx::PgPool` for connection pooling.
 
 #### Scenario: Memory is inserted and retrievable by ID
 - **WHEN** a `Memory` is inserted via `store.insert(memory)`
@@ -21,22 +26,26 @@ The system SHALL provide a `MemoryStore` with a SQLite backend that stores all s
   
 #### Scenario: Decayed memories are queryable for cleanup
 - **WHEN** the librarian's decay scan queries for memories past their decay date
-- **THEN** the store MUST support `query_decayed()` returning memories where `decay_policy = StaleAfterDays(d) AND created_at + d days < now()`
+- **THEN** the store MUST support `query_decayed()` returning memories where `decay_policy = StaleAfterDays(d) AND created_at + d days < CURRENT_TIMESTAMP`
 
-### Requirement: Memory store indexes vector embeddings in Qdrant
-The system SHALL integrate with Qdrant for vector similarity search. Each memory's `content` embedding MUST be upserted to a Qdrant collection keyed by `MemoryId`. The collection configuration (dimensions, distance metric) MUST be defined at store initialisation.
+### Requirement: Memory store indexes vector embeddings in Postgres or Qdrant
+The system SHALL support vector similarity search via either pgvector or Qdrant. When pgvector is available, the `memories.embedding` column SHALL store the vector and cosine-distance search SHALL use `ORDER BY embedding <=> $1 LIMIT $2`. The existing `QdrantMemoryBackend` SHALL remain supported via a trait. The store SHALL be configurable at construction with either backend.
 
-#### Scenario: Memory embedding is searchable
-- **WHEN** a memory is inserted with an embedding
-- **THEN** `store.search_similar(query_embedding, limit: 10)` MUST return the most similar memories ranked by cosine distance
+#### Scenario: Memory embedding is searchable via pgvector
+- **WHEN** pgvector extension is enabled and a memory is inserted with an embedding
+- **THEN** `store.search_similar(query_embedding, limit: 10)` MUST return the most similar memories ranked by cosine distance using pgvector
 
-#### Scenario: Embedding is upserted on memory update
+#### Scenario: Memory embedding is searchable via Qdrant
+- **WHEN** the store is configured with `QdrantMemoryBackend` and a memory is inserted with an embedding
+- **THEN** `store.search_similar(query_embedding, limit: 10)` MUST return the most similar memories using Qdrant
+
+#### Scenario: Embedding is updated on memory supersession
 - **WHEN** a memory's content is updated via supersession
-- **THEN** the old embedding MUST be replaced in Qdrant with the new content's embedding
+- **THEN** the old embedding MUST be replaced with the new content's embedding (via either pgvector UPDATE or Qdrant upsert)
 
-#### Scenario: Qdrant failure rolls back SQLite insert
-- **WHEN** a memory is being inserted and the Qdrant upsert fails
-- **THEN** the SQLite insert MUST be rolled back
+#### Scenario: Backend failure rolls back Postgres insert
+- **WHEN** a memory is being inserted and the vector backend upsert fails
+- **THEN** the Postgres insert MUST be rolled back
 - **AND** an error MUST be returned to the caller
 
 ### Requirement: Store supports supersession chains

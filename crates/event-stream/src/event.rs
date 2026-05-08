@@ -86,6 +86,17 @@ pub struct ArtefactRef {
     pub reference: String,
 }
 
+/// Reference to an artefact blob stored outside the event stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredArtefactRef {
+    /// Stable artefact identity used in events and task outputs.
+    pub artefact_id: String,
+    /// Hash of the stored content.
+    pub content_hash: String,
+    /// URI pointing to the stored blob.
+    pub storage_uri: String,
+}
+
 impl Default for EventContext {
     fn default() -> Self {
         Self {

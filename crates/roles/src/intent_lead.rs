@@ -13,10 +13,7 @@ use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::{
-    artefacts::{IntentBrief, store_artefact_blob},
-    tooling::RoleToolRegistry,
-};
+use crate::{artefacts::IntentBrief, tooling::RoleToolRegistry};
 
 /// The IntentLead role elicits goals, constraints, and preferences from the human stakeholder.
 pub struct IntentLead {
@@ -172,9 +169,7 @@ impl IntentLead {
         let serialised = serde_json::to_string(brief)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise intent brief: {e}")))?;
 
-        let stored = store_artefact_blob("intent_brief", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store intent brief artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("intent_brief", &serialised).await?;
 
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),

@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     artefacts::{
         DeliveryStandards, EscalationRule, EscalationRules, ReviewDimension, ReviewRubric,
-        ValidationPolicy, ValidationStep, store_artefact_blob,
+        ValidationPolicy, ValidationStep,
     },
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
@@ -92,8 +92,7 @@ impl OpsManager {
         artefact_type: &str,
         payload: &str,
     ) -> Result<(), RoleError> {
-        let stored = store_artefact_blob(artefact_type, payload)
-            .map_err(|e| RoleError::Internal(format!("Failed to store artefact blob: {e}")))?;
+        let stored = ctx.store_artefact(artefact_type, payload).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id,
@@ -705,6 +704,7 @@ impl Role for OpsManager {
             receiver: ctx.bus.subscribe(&[EventType::TaskAssigned]),
             memory_store: ctx.memory_store.clone(),
             coordinator: ctx.coordinator.clone(),
+            artefact_store: ctx.artefact_store.clone(),
             tools: Box::new(()),
         };
         tokio::spawn(async move {

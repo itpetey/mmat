@@ -1,41 +1,8 @@
 //! Structured artefact types exchanged between roles during the software engineering process.
 
-use std::path::PathBuf;
-
-use mmat_event_stream::event::stable_content_hash;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-/// Reference to an artefact blob stored outside the event stream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredArtefactRef {
-    /// Stable artefact identity used in events and task outputs.
-    pub artefact_id: String,
-    /// Hash of the stored content.
-    pub content_hash: String,
-    /// URI pointing to the stored blob.
-    pub storage_uri: String,
-}
-
-/// Stores an artefact payload as a local blob and returns its event-safe reference.
-pub fn store_artefact_blob(
-    artefact_type: &str,
-    payload: &str,
-) -> std::io::Result<StoredArtefactRef> {
-    let artefact_id = format!("{}-{}", artefact_type, Uuid::new_v4());
-    let content_hash = stable_content_hash(payload);
-    let directory = PathBuf::from(".mmat").join("artefacts");
-    std::fs::create_dir_all(&directory)?;
-
-    let path = directory.join(format!("{artefact_id}.json"));
-    std::fs::write(&path, payload)?;
-
-    Ok(StoredArtefactRef {
-        artefact_id,
-        content_hash,
-        storage_uri: format!("file://{}", path.display()),
-    })
-}
+pub use mmat_event_stream::event::StoredArtefactRef;
 
 /// Captures the goals, non-goals, constraints, and success metrics for a project.
 #[derive(Debug, Clone, Serialize, Deserialize)]

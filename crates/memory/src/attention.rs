@@ -16,9 +16,9 @@ use tokio::time::{Duration, interval};
 use crate::{
     embedding::{EmbeddingProvider, HashEmbeddingProvider},
     error::{Error, Result},
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
-    types::{Authority, MemoryId, MemoryScope, MemoryType},
+    types::*,
+    vector_backend::VectorMemoryBackend,
 };
 
 /// Configuration for the attention engine.

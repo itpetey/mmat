@@ -7,9 +7,9 @@ use mmat_coordinator::{
 use mmat_event_stream::event::{ArtefactRef, EventType, RoleId, SemanticEvent, TaskContract};
 use mmat_memory::{
     error::Result as MemoryResult,
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType},
+    vector_backend::VectorMemoryBackend,
 };
 use qdrant_client::qdrant::Value;
 
@@ -330,8 +330,9 @@ fn test_config() -> (tempfile::TempDir, OrganisationConfig) {
         event_bus_capacity: 128,
         heartbeat_interval: Duration::from_secs(30),
         shutdown_grace_period: Duration::from_secs(2),
-        event_store_path: tmp.path().join("events.db"),
-        memory_store_path: tmp.path().join("memory.db"),
+        event_store_path: Some(tmp.path().join("events.db")),
+        memory_store_path: Some(tmp.path().join("memory.db")),
+        database_url: None,
     };
     (tmp, config)
 }

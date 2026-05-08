@@ -11,16 +11,18 @@ use mmat_event_stream::{
     event_store::EventStore,
 };
 use mmat_memory::{
+    artefact_store::ArtefactStore,
     attention::{AttentionConfig, AttentionEngine},
     error::{Error, Result},
     librarian::Librarian,
     provenance::ProvenanceEngine,
-    qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType},
+    vector_backend::VectorMemoryBackend,
 };
 use parking_lot::Mutex;
 use qdrant_client::qdrant::Value;
+use sqlx::postgres::PgPoolOptions;
 
 #[derive(Default)]
 struct FakeVectorBackend {
@@ -416,4 +418,128 @@ fn make_test_memory() -> Memory {
         .source_agent(RoleId::new("user"))
         .build()
         .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_memory_store_crud_queries_and_supersession() {
+    let Some((database_url, admin_pool, schema)) = postgres_test_database("memory_store").await
+    else {
+        return;
+    };
+
+    let store = MemoryStore::new(&database_url).unwrap();
+
+    let old = Memory::builder()
+        .memory_type(MemoryType::Fact)
+        .content("The API returns 200 for health checks")
+        .scope(MemoryScope::Project)
+        .authority(Authority::UserInstruction)
+        .confidence(Confidence::new(0.9).unwrap())
+        .decay_policy(DecayPolicy::StaleAfterDays(0))
+        .source_agent(RoleId::new("user"))
+        .build()
+        .unwrap();
+    let new = Memory::builder()
+        .memory_type(MemoryType::Fact)
+        .content("The API returns 204 for health checks")
+        .scope(MemoryScope::Project)
+        .authority(Authority::AcceptedADR)
+        .confidence(Confidence::new(0.95).unwrap())
+        .supersedes(old.id)
+        .source_agent(RoleId::new("architect"))
+        .build()
+        .unwrap();
+
+    store.insert(&old).unwrap();
+    store.insert(&new).unwrap();
+    store.supersede(old.id, new.id).unwrap();
+
+    assert_eq!(
+        store.get_by_id(old.id).unwrap().unwrap().superseded_by,
+        Some(new.id)
+    );
+    assert_eq!(store.query_by_type(MemoryType::Fact).unwrap().len(), 1);
+    assert_eq!(store.query_by_scope(MemoryScope::Project).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .query_by_authority(Authority::CompilerOutput, Authority::SpeculativeReasoning)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store.query_decayed().unwrap().is_empty());
+
+    let chain = store.get_supersession_chain(old.id).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[0].id, old.id);
+    assert_eq!(chain[1].id, new.id);
+
+    drop_postgres_schema(&admin_pool, &schema).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_artefact_store_round_trip_and_transactional_event() {
+    let Some((database_url, admin_pool, schema)) = postgres_test_database("artefact_store").await
+    else {
+        return;
+    };
+
+    let event_store = EventStore::new(&database_url).unwrap();
+    let store = ArtefactStore::new_postgres(&database_url).unwrap();
+    let bus = EventBus::new(16);
+    let mut artefact_rx = bus.subscribe(&[EventType::ArtefactProduced]);
+    let payload = r#"{"summary":"ok"}"#;
+
+    let stored = store.store("audit_report", payload).await.unwrap();
+    assert!(stored.storage_uri.starts_with("db://artefacts/"));
+    assert_eq!(
+        store.get_payload(&stored.storage_uri).await.unwrap(),
+        Some(payload.to_string())
+    );
+
+    let event_ref = store
+        .store_and_publish_event("audit_report", payload, "auditor", "auditor", &bus)
+        .await
+        .unwrap();
+    assert!(event_ref.storage_uri.starts_with("db://artefacts/"));
+    let events = event_store.replay(0, None).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].variant_name(), "ArtefactProduced");
+    assert_eq!(
+        artefact_rx.recv().await.unwrap().variant_name(),
+        "ArtefactProduced"
+    );
+
+    drop_postgres_schema(&admin_pool, &schema).await;
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, String)> {
+    let base_url = std::env::var("DATABASE_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&base_url)
+        .await
+        .ok()?;
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin_pool)
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    Some((database_url, admin_pool, schema))
+}
+
+async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }

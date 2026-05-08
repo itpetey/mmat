@@ -53,6 +53,10 @@ pub enum Error {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    /// An error occurred in the Postgres database layer.
+    #[error("Postgres error: {0}")]
+    Postgres(#[from] sqlx::Error),
+
     /// An error occurred during JSON serialisation or deserialisation.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
@@ -60,4 +64,8 @@ pub enum Error {
     /// An error occurred in the event store.
     #[error("Event store error: {0}")]
     EventStore(#[from] EventStoreError),
+
+    /// The code is not running inside a Tokio runtime.
+    #[error("Not in a Tokio runtime: {0}")]
+    Runtime(String),
 }

@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy, store_artefact_blob},
+    artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy},
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
 
@@ -405,8 +405,7 @@ dependencies (if any), acceptance criteria, and validation policy.",
             .map_err(|e| RoleError::Internal(format!("Failed to serialise milestone: {e}")))?;
 
         let payload = format!("{milestone_name}|{serialised}");
-        let stored = store_artefact_blob("milestone", &payload)
-            .map_err(|e| RoleError::Internal(format!("Failed to store milestone artefact: {e}")))?;
+        let stored = ctx.store_artefact("milestone", &payload).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id,
@@ -425,13 +424,14 @@ dependencies (if any), acceptance criteria, and validation policy.",
     }
 
     async fn publish_delivery_graph(&self, ctx: &RoleContext) -> Result<(), RoleError> {
-        let graph = self.delivery_graph.read();
-        let serialised = serde_json::to_string(&*graph)
-            .map_err(|e| RoleError::Internal(format!("Failed to serialise delivery graph: {e}")))?;
+        let serialised = {
+            let graph = self.delivery_graph.read();
+            serde_json::to_string(&*graph).map_err(|e| {
+                RoleError::Internal(format!("Failed to serialise delivery graph: {e}"))
+            })?
+        };
 
-        let stored = store_artefact_blob("delivery_graph", &serialised).map_err(|e| {
-            RoleError::Internal(format!("Failed to store delivery graph artefact: {e}"))
-        })?;
+        let stored = ctx.store_artefact("delivery_graph", &serialised).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id.clone(),
@@ -460,16 +460,6 @@ dependencies (if any), acceptance criteria, and validation policy.",
             }
         }
         Ok(())
-    }
-
-    fn read_artefact_payload(storage_uri: &str) -> Option<String> {
-        if let Some(path) = storage_uri.strip_prefix("file://") {
-            return std::fs::read_to_string(path).ok();
-        }
-
-        storage_uri
-            .split_once('|')
-            .map(|(_, serialised)| serialised.to_string())
     }
 }
 
@@ -581,7 +571,7 @@ impl Role for ProjectManager {
                     ..
                 } if artefact_type == "adr" => {
                     info!("PM received ADR artefact from {}", source_agent.0);
-                    if let Some(serialised) = Self::read_artefact_payload(storage_uri)
+                    if let Ok(Some(serialised)) = ctx.get_artefact_payload(storage_uri).await
                         && let Ok(adr) = serde_json::from_str::<Adr>(&serialised)
                     {
                         if self.processed_decisions.read().contains(&adr.decision) {

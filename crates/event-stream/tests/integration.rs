@@ -5,6 +5,7 @@ use mmat_event_stream::{
     event_bus::EventBus,
     event_store::EventStore,
 };
+use sqlx::postgres::PgPoolOptions;
 
 #[tokio::test]
 async fn multiple_subscribers_with_filters() {
@@ -77,4 +78,104 @@ async fn subscriber_replays_after_lag() {
             assert!(other.is_ok());
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_event_store_round_trip_and_concurrent_writes() {
+    let Some((database_url, admin_pool, schema)) = postgres_test_database("event_stream").await
+    else {
+        return;
+    };
+
+    let store = Arc::new(EventStore::new(&database_url).unwrap());
+    assert!(store.replay(0, None).unwrap().is_empty());
+
+    let tool =
+        SemanticEvent::new_tool_executed(RoleId::new("worker"), "cargo test", "{}", 0, "ok", "", 0);
+    let assigned = SemanticEvent::new_task_assigned(
+        RoleId::new("coordinator"),
+        "task-1",
+        RoleId::new("worker"),
+        mmat_event_stream::event::TaskContract {
+            contract_id: "contract-1".into(),
+            description: "run tests".into(),
+        },
+        vec![],
+    );
+
+    store.insert(&tool).unwrap();
+    store.insert(&assigned).unwrap();
+
+    assert_eq!(store.latest_row().unwrap(), Some(2));
+    assert_eq!(
+        store
+            .get_by_event_id(tool.event_id())
+            .unwrap()
+            .unwrap()
+            .variant_name(),
+        "ToolExecuted"
+    );
+    assert_eq!(
+        store
+            .query_by_variant("ToolExecuted", None, None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(store.replay(0, None).unwrap().len(), 2);
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            let event = SemanticEvent::new_tool_executed(
+                RoleId::new("worker"),
+                format!("cmd-{i}"),
+                "{}",
+                0,
+                "",
+                "",
+                0,
+            );
+            store.insert(&event).unwrap();
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    assert_eq!(store.replay(0, None).unwrap().len(), 10);
+    drop(store);
+    drop_postgres_schema(&admin_pool, &schema).await;
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, String)> {
+    let base_url = std::env::var("DATABASE_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&base_url)
+        .await
+        .ok()?;
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin_pool)
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    Some((database_url, admin_pool, schema))
+}
+
+async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }

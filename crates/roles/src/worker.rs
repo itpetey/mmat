@@ -21,10 +21,7 @@ use mmat_llm::{
 use mmat_project::worktree::WorktreeHandle;
 use tracing::{info, warn};
 
-use crate::{
-    artefacts::store_artefact_blob,
-    tooling::{RoleToolRegistry, RoleToolRuntime},
-};
+use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
 /// The Worker role implements task cards by creating worktrees, running implementation, and validating results.
 pub struct Worker {
@@ -409,8 +406,7 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
         ctx: &RoleContext,
         patch: &str,
     ) -> Result<ArtefactRef, RoleError> {
-        let stored = store_artefact_blob("implementation_patch", patch)
-            .map_err(|e| RoleError::Internal(format!("Failed to store patch artefact: {e}")))?;
+        let stored = ctx.store_artefact("implementation_patch", patch).await?;
         let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
             stored.artefact_id.clone(),
