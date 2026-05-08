@@ -432,3 +432,34 @@ impl Default for Architect {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_event_stream::event::EventType;
+
+    use super::*;
+
+    #[test]
+    fn creates_with_default_id() {
+        let architect = Architect::new();
+        assert_eq!(architect.id().0, "architect-001");
+    }
+
+    #[test]
+    fn spec_matches_architecture_authority_and_contracts() {
+        let architect = Architect::new();
+        let spec = architect.spec();
+        assert_eq!(spec.role_type, RoleType::Architect);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Architecture));
+        assert!(spec.output_contract.contains(&EventType::DecisionRecorded));
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+    }
+
+    #[test]
+    fn subscribes_to_assigned_tasks() {
+        let architect = Architect::new();
+        let subscriptions = architect.subscriptions();
+        assert!(subscriptions.contains(&EventType::TaskAssigned));
+    }
+}

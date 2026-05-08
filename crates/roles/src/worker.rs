@@ -590,3 +590,67 @@ impl Default for Worker {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_event_stream::event::EventType;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn creates_with_default_id() {
+        let worker = Worker::new();
+        assert_eq!(worker.id().0, "worker-001");
+    }
+
+    #[test]
+    fn spec_matches_implementation_authority_and_contracts() {
+        let worker = Worker::new();
+        let spec = worker.spec();
+        assert_eq!(spec.role_type, RoleType::Worker);
+        assert!(matches!(
+            spec.authority_scope,
+            AuthorityScope::Implementation
+        ));
+        assert!(spec.output_contract.contains(&EventType::ToolExecuted));
+        assert!(spec.output_contract.contains(&EventType::TaskCompleted));
+    }
+
+    #[test]
+    fn subscribes_to_assigned_tasks() {
+        let worker = Worker::new();
+        let subscriptions = worker.subscriptions();
+        assert!(subscriptions.contains(&EventType::TaskAssigned));
+    }
+
+    #[tokio::test]
+    async fn parse_and_write_files_blocks_path_traversal() {
+        let temp = tempdir().unwrap();
+        let worktree_path = temp.path();
+
+        let content = "FILE: ../../etc/passwd\nroot:x:0:0\n";
+        let result = Worker::parse_and_write_files(content, worktree_path).await;
+        assert!(
+            result.is_err(),
+            "Path traversal should be rejected: {:?}",
+            result
+        );
+
+        let content = "FILE: /etc/passwd\nroot:x:0:0\n";
+        let result = Worker::parse_and_write_files(content, worktree_path).await;
+        assert!(
+            result.is_err(),
+            "Absolute paths should be rejected: {:?}",
+            result
+        );
+
+        let safe_content = "FILE: src/lib.rs\npub fn safe() {}\n";
+        let written = Worker::parse_and_write_files(safe_content, worktree_path)
+            .await
+            .unwrap();
+        assert_eq!(written, vec!["src/lib.rs".to_string()]);
+        assert!(worktree_path.join("src/lib.rs").exists());
+    }
+}

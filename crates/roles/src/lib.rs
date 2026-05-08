@@ -18,6 +18,3 @@ pub mod reviewer;
 pub mod scholar;
 pub mod tooling;
 pub mod worker;
-
-#[cfg(test)]
-mod tests;

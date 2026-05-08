@@ -517,3 +517,62 @@ impl Default for Scholar {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_event_stream::event::EventType;
+
+    use super::*;
+
+    #[test]
+    fn creates_with_default_id() {
+        let scholar = Scholar::new();
+        assert_eq!(scholar.id().0, "scholar-001");
+    }
+
+    #[test]
+    fn subscribes_to_assigned_tasks_and_human_feedback() {
+        let scholar = Scholar::new();
+        let subscriptions = scholar.subscriptions();
+        assert!(subscriptions.contains(&EventType::TaskAssigned));
+        assert!(subscriptions.contains(&EventType::HumanFeedbackReceived));
+    }
+
+    #[test]
+    fn spec_matches_research_authority_and_contracts() {
+        let scholar = Scholar::new();
+        let spec = scholar.spec();
+        assert_eq!(spec.role_type, RoleType::Scholar);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Architecture));
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+        assert!(spec.output_contract.contains(&EventType::ClaimMade));
+        assert!(spec.output_contract.contains(&EventType::MemoryProposed));
+        assert!(!spec.output_contract.contains(&EventType::DecisionRecorded));
+    }
+
+    #[test]
+    fn budget_configuration_preserves_role_default_spec_budget() {
+        let scholar = Scholar::new().with_budget(5, 3, 10);
+        let spec = scholar.spec();
+        assert_eq!(spec.default_budget.max_retries, 2);
+        assert!(spec.default_budget.time_limit_seconds > 0);
+    }
+
+    #[test]
+    fn filters_architectural_recommendations() {
+        let input = "You should use microservices architecture for this system";
+        let filtered = Scholar::filter_architectural_recommendendations(input);
+        assert!(
+            !filtered.contains("should use"),
+            "Architectural recommendations should be filtered"
+        );
+
+        let safe_input = "The codebase uses a modular structure with clear boundaries";
+        let filtered_safe = Scholar::filter_architectural_recommendendations(safe_input);
+        assert_eq!(
+            filtered_safe, safe_input,
+            "Safe content should pass through unchanged"
+        );
+    }
+}

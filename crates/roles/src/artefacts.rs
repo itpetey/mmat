@@ -361,3 +361,115 @@ impl FailureClass {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_artefact_types_serialise() {
+        let brief = IntentBrief {
+            goals: vec!["Goal 1".to_string()],
+            non_goals: vec![],
+            constraints: vec![],
+            success_metrics: vec![],
+            stakeholder_preferences: vec![],
+            open_questions: vec![],
+            confidence: 0.8,
+        };
+        let json = serde_json::to_string(&brief).unwrap();
+        assert!(json.contains("Goal 1"));
+
+        let pack = EvidencePack { findings: vec![] };
+        let json = serde_json::to_string(&pack).unwrap();
+        assert!(json.contains("findings"));
+
+        let questions = OpenQuestions { questions: vec![] };
+        let json = serde_json::to_string(&questions).unwrap();
+        assert!(json.contains("questions"));
+
+        let rubric = ReviewRubric { dimensions: vec![] };
+        let json = serde_json::to_string(&rubric).unwrap();
+        assert!(json.contains("dimensions"));
+
+        let policy = ValidationPolicy {
+            project_type: "cli".to_string(),
+            steps: vec![],
+        };
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(json.contains("cli"));
+
+        let rules = EscalationRules { rules: vec![] };
+        let json = serde_json::to_string(&rules).unwrap();
+        assert!(json.contains("rules"));
+
+        let standards = DeliveryStandards {
+            branch_naming_convention: "feature/<desc>".to_string(),
+            commit_message_format: "type: msg".to_string(),
+            pr_size_limit: "400 lines".to_string(),
+            review_requirements: vec![],
+        };
+        let json = serde_json::to_string(&standards).unwrap();
+        assert!(json.contains("feature/<desc>"));
+    }
+
+    #[test]
+    fn adr_serialises_round_trip() {
+        let adr = Adr {
+            id: "adr-001".to_string(),
+            title: "Use SQLite for storage".to_string(),
+            status: "accepted".to_string(),
+            context: "Need lightweight storage".to_string(),
+            decision: "Use SQLite".to_string(),
+            alternatives: vec!["PostgreSQL".to_string(), "MongoDB".to_string()],
+            tradeoffs: "Simplicity vs scalability".to_string(),
+            consequences: "Limited concurrent writes".to_string(),
+            references: vec!["intent-brief".to_string()],
+        };
+
+        let json = serde_json::to_string(&adr).unwrap();
+        assert!(json.contains("Use SQLite"));
+        assert!(json.contains("PostgreSQL"));
+
+        let back: Adr = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, adr.id);
+        assert_eq!(back.alternatives.len(), 2);
+    }
+
+    #[test]
+    fn task_card_serialises_round_trip() {
+        let card = TaskCard {
+            id: "task-001".to_string(),
+            description: "Implement storage layer".to_string(),
+            contract: "Create storage module".to_string(),
+            dependencies: vec!["task-000".to_string()],
+            adr_references: vec!["adr-001".to_string()],
+            validation_policy: None,
+            acceptance_criteria: vec!["Tests pass".to_string()],
+        };
+
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("Implement storage layer"));
+
+        let back: TaskCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn failure_class_serialises_round_trip() {
+        let classes = vec![
+            FailureClass::ImplementationDefect,
+            FailureClass::ArchitecturalConflict,
+            FailureClass::MissingKnowledge,
+            FailureClass::AmbiguousIntent,
+            FailureClass::BrokenProcess,
+        ];
+
+        for class in classes {
+            let json = serde_json::to_string(&class).unwrap();
+            let back: FailureClass = serde_json::from_str(&json).unwrap();
+            assert_eq!(class, back);
+            assert!(!class.as_str().is_empty());
+        }
+    }
+}

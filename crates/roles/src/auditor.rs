@@ -1089,3 +1089,17 @@ impl Default for Auditor {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{Role, RoleRegistry};
+
+    use super::*;
+
+    #[test]
+    fn spec_registers() {
+        let auditor = Auditor::new();
+        let mut registry = RoleRegistry::new();
+        registry.register(auditor.spec()).unwrap();
+    }
+}

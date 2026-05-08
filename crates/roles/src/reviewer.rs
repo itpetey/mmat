@@ -493,3 +493,124 @@ impl Default for Reviewer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_event_stream::event::{EventType, ReviewFinding};
+
+    use super::*;
+
+    #[test]
+    fn creates_with_default_id() {
+        let reviewer = Reviewer::new();
+        assert_eq!(reviewer.id().0, "reviewer-001");
+    }
+
+    #[test]
+    fn spec_matches_review_authority_and_contracts() {
+        let reviewer = Reviewer::new();
+        let spec = reviewer.spec();
+        assert_eq!(spec.role_type, RoleType::Reviewer);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Review));
+        assert!(spec.output_contract.contains(&EventType::ReviewCompleted));
+        assert!(
+            spec.output_contract
+                .contains(&EventType::EscalationRequested)
+        );
+    }
+
+    #[test]
+    fn subscribes_to_review_and_completion_events() {
+        let reviewer = Reviewer::new();
+        let subscriptions = reviewer.subscriptions();
+        assert!(subscriptions.contains(&EventType::ReviewRequested));
+        assert!(subscriptions.contains(&EventType::TaskCompleted));
+    }
+
+    #[test]
+    fn classifies_failures_from_finding_text() {
+        let reviewer = Reviewer::new();
+
+        let defect = ReviewFinding {
+            finding: "Missing error handling".to_string(),
+            severity: "high".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&defect, &[]),
+            FailureClass::ImplementationDefect
+        ));
+
+        let arch_conflict = ReviewFinding {
+            finding: "Architectural dependency violation".to_string(),
+            severity: "high".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&arch_conflict, &[]),
+            FailureClass::ArchitecturalConflict
+        ));
+
+        let missing_knowledge = ReviewFinding {
+            finding: "Missing domain knowledge about X".to_string(),
+            severity: "medium".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&missing_knowledge, &[]),
+            FailureClass::MissingKnowledge
+        ));
+
+        let ambiguous = ReviewFinding {
+            finding: "Ambiguous intent in task description".to_string(),
+            severity: "high".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&ambiguous, &[]),
+            FailureClass::AmbiguousIntent
+        ));
+
+        let broken_process = ReviewFinding {
+            finding: "Broken process detected".to_string(),
+            severity: "medium".to_string(),
+        };
+        assert!(matches!(
+            reviewer.classify_failure(&broken_process, &[]),
+            FailureClass::BrokenProcess
+        ));
+    }
+
+    #[test]
+    fn maps_failure_classes_to_escalation_targets() {
+        let reviewer = Reviewer::new();
+
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::ArchitecturalConflict)
+                .0,
+            "architect-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::MissingKnowledge)
+                .0,
+            "scholar-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::AmbiguousIntent)
+                .0,
+            "intent-lead-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::BrokenProcess)
+                .0,
+            "ops-manager-001"
+        );
+        assert_eq!(
+            reviewer
+                .escalation_target_for(&FailureClass::ImplementationDefect)
+                .0,
+            "worker-001"
+        );
+    }
+}

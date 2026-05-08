@@ -636,3 +636,118 @@ impl Default for ProjectManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_event_stream::event::EventType;
+
+    use super::*;
+
+    fn task_card(id: &str, dependencies: Vec<String>) -> ArtefactTaskCard {
+        ArtefactTaskCard {
+            id: id.to_string(),
+            description: format!("Task {id}"),
+            contract: format!("contract-{id}"),
+            dependencies,
+            adr_references: vec![],
+            validation_policy: None,
+            acceptance_criteria: vec![],
+        }
+    }
+
+    #[test]
+    fn creates_with_default_id() {
+        let project_manager = ProjectManager::new();
+        assert_eq!(project_manager.id().0, "pm-001");
+    }
+
+    #[test]
+    fn spec_matches_planning_authority_and_contracts() {
+        let project_manager = ProjectManager::new();
+        let spec = project_manager.spec();
+        assert_eq!(spec.role_type, RoleType::ProjectManager);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Planning));
+        assert!(spec.output_contract.contains(&EventType::TaskAssigned));
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+    }
+
+    #[test]
+    fn subscribes_to_delivery_events() {
+        let project_manager = ProjectManager::new();
+        let subscriptions = project_manager.subscriptions();
+        assert!(subscriptions.contains(&EventType::TaskAssigned));
+        assert!(subscriptions.contains(&EventType::TaskCompleted));
+        assert!(subscriptions.contains(&EventType::TaskFailed));
+    }
+
+    #[test]
+    fn delivery_graph_topological_sort_orders_dependencies_first() {
+        let mut graph = DeliveryGraph::new();
+
+        graph.add_node(task_card("task-a", vec![]), vec![]);
+        graph.add_node(
+            task_card("task-b", vec!["task-a".to_string()]),
+            vec!["task-a".to_string()],
+        );
+        graph.add_node(
+            task_card("task-c", vec!["task-a".to_string(), "task-b".to_string()]),
+            vec!["task-a".to_string(), "task-b".to_string()],
+        );
+
+        let sorted = graph.topological_sort().unwrap();
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0], "task-a");
+        let task_b_position = sorted.iter().position(|id| id == "task-b").unwrap();
+        let task_c_position = sorted.iter().position(|id| id == "task-c").unwrap();
+        assert!(task_b_position < task_c_position);
+    }
+
+    #[test]
+    fn delivery_graph_ready_tasks_excludes_incomplete_dependencies() {
+        let mut graph = DeliveryGraph::new();
+
+        graph.add_node(task_card("task-a", vec![]), vec![]);
+        graph.add_node(
+            task_card("task-b", vec!["task-a".to_string()]),
+            vec!["task-a".to_string()],
+        );
+
+        let ready = graph.ready_tasks();
+        assert_eq!(ready, vec!["task-a"]);
+
+        graph.update_status("task-a", TaskStatus::Completed);
+        let ready = graph.ready_tasks();
+        assert_eq!(ready, vec!["task-b"]);
+    }
+
+    #[test]
+    fn delivery_graph_detects_cycles() {
+        let mut graph = DeliveryGraph::new();
+
+        graph.add_node(
+            task_card("task-a", vec!["task-b".to_string()]),
+            vec!["task-b".to_string()],
+        );
+        graph.add_node(
+            task_card("task-b", vec!["task-a".to_string()]),
+            vec!["task-a".to_string()],
+        );
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delivery_graph_status_updates_affect_readiness() {
+        let mut graph = DeliveryGraph::new();
+        graph.add_node(task_card("task-status-001", vec![]), vec![]);
+        assert_eq!(graph.nodes["task-status-001"].status, TaskStatus::Pending);
+
+        graph.update_status("task-status-001", TaskStatus::Assigned);
+        assert_eq!(graph.nodes["task-status-001"].status, TaskStatus::Assigned);
+
+        let ready = graph.ready_tasks();
+        assert!(ready.is_empty(), "Assigned task should not be ready");
+    }
+}

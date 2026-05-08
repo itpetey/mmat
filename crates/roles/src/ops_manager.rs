@@ -775,3 +775,36 @@ impl Default for OpsManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_event_stream::event::EventType;
+
+    use super::*;
+
+    #[test]
+    fn creates_with_default_id() {
+        let ops_manager = OpsManager::new();
+        assert_eq!(ops_manager.id().0, "ops-manager-001");
+    }
+
+    #[test]
+    fn subscribes_to_assigned_tasks_and_review_completion() {
+        let ops_manager = OpsManager::new();
+        let subscriptions = ops_manager.subscriptions();
+        assert!(subscriptions.contains(&EventType::TaskAssigned));
+        assert!(subscriptions.contains(&EventType::ReviewCompleted));
+    }
+
+    #[test]
+    fn spec_matches_architecture_authority_and_contracts() {
+        let ops_manager = OpsManager::new();
+        let spec = ops_manager.spec();
+        assert_eq!(spec.role_type, RoleType::OpsManager);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Architecture));
+        assert!(spec.output_contract.contains(&EventType::DecisionRecorded));
+        assert!(spec.output_contract.contains(&EventType::MemoryProposed));
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+    }
+}

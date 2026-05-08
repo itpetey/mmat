@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use mmat_coordinator::{CoordinatorHandle, Role, RoleContext, RoleRegistry};
+use mmat_coordinator::{CoordinatorHandle, Role, RoleContext};
 use mmat_event_stream::{
     event::{ArtefactRef, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent},
     event_bus::EventBus,
@@ -159,13 +159,11 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), output_rx.recv()).await
+            && let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref()
+            && violation_type == "contradiction"
         {
-            if let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref() {
-                if violation_type == "contradiction" {
-                    detected = true;
-                    break;
-                }
-            }
+            detected = true;
+            break;
         }
     }
 
@@ -220,11 +218,10 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), output_rx.recv()).await
+            && let SemanticEvent::EvidenceChainBroken { .. } = event.as_ref()
         {
-            if let SemanticEvent::EvidenceChainBroken { .. } = event.as_ref() {
-                detected = true;
-                break;
-            }
+            detected = true;
+            break;
         }
     }
 
@@ -359,13 +356,11 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), output_rx.recv()).await
+            && let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref()
+            && violation_type == "memory_contamination"
         {
-            if let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref() {
-                if violation_type == "memory_contamination" {
-                    detected = true;
-                    break;
-                }
-            }
+            detected = true;
+            break;
         }
     }
 
@@ -419,13 +414,11 @@ async fn test_auditor_detects_process_skipped_when_tests_not_run() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), output_rx.recv()).await
+            && let SemanticEvent::ProcessSkipped { step, .. } = event.as_ref()
+            && step == "cargo test"
         {
-            if let SemanticEvent::ProcessSkipped { step, .. } = event.as_ref() {
-                if step == "cargo test" {
-                    detected = true;
-                    break;
-                }
-            }
+            detected = true;
+            break;
         }
     }
 
@@ -601,13 +594,11 @@ async fn test_auditor_flags_authority_violation() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), output_rx.recv()).await
+            && let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref()
+            && violation_type == "authority_boundary_exceeded"
         {
-            if let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref() {
-                if violation_type == "authority_boundary_exceeded" {
-                    detected = true;
-                    break;
-                }
-            }
+            detected = true;
+            break;
         }
     }
 
@@ -658,13 +649,11 @@ async fn test_auditor_flags_unjustified_confidence() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), output_rx.recv()).await
+            && let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref()
+            && violation_type == "unjustified_confidence"
         {
-            if let SemanticEvent::PolicyViolationDetected { violation_type, .. } = event.as_ref() {
-                if violation_type == "unjustified_confidence" {
-                    detected = true;
-                    break;
-                }
-            }
+            detected = true;
+            break;
         }
     }
 
@@ -816,13 +805,6 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
         detected,
         "Claim evidence must reference ToolExecuted events"
     );
-}
-
-#[test]
-fn test_auditor_spec_registers() {
-    let auditor = Auditor::new();
-    let mut registry = RoleRegistry::new();
-    registry.register(auditor.spec()).unwrap();
 }
 
 #[tokio::test]
@@ -1023,18 +1005,16 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(event)) =
             tokio::time::timeout(tokio::time::Duration::from_millis(200), reports.recv()).await
-        {
-            if let SemanticEvent::ArtefactProduced {
+            && let SemanticEvent::ArtefactProduced {
                 artefact_type,
                 reference,
                 ..
             } = event.as_ref()
-                && artefact_type == "audit_report"
-            {
-                let report: AuditReport = serde_json::from_str(reference).unwrap();
-                saw_confidence_report = !report.confidence_assessments.is_empty();
-                break;
-            }
+            && artefact_type == "audit_report"
+        {
+            let report: AuditReport = serde_json::from_str(reference).unwrap();
+            saw_confidence_report = !report.confidence_assessments.is_empty();
+            break;
         }
     }
 

@@ -504,3 +504,72 @@ impl Default for IntentLead {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mmat_coordinator::{AuthorityScope, Role, RoleRegistry, RoleType};
+    use mmat_event_stream::event::EventType;
+
+    use super::*;
+
+    #[test]
+    fn creates_with_default_id() {
+        let intent_lead = IntentLead::new();
+        assert_eq!(intent_lead.id().0, "intent-lead-001");
+    }
+
+    #[test]
+    fn subscribes_to_human_feedback_and_task_completion() {
+        let intent_lead = IntentLead::new();
+        let subscriptions = intent_lead.subscriptions();
+        assert!(subscriptions.contains(&EventType::HumanFeedbackReceived));
+        assert!(subscriptions.contains(&EventType::TaskCompleted));
+    }
+
+    #[test]
+    fn spec_matches_intent_authority_and_contracts() {
+        let intent_lead = IntentLead::new();
+        let spec = intent_lead.spec();
+        assert_eq!(spec.role_type, RoleType::IntentLead);
+        assert!(matches!(spec.authority_scope, AuthorityScope::IntentOnly));
+        assert_eq!(spec.input_contract, EventType::HumanFeedbackReceived);
+        assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
+        assert!(spec.output_contract.contains(&EventType::TaskAssigned));
+        assert!(
+            spec.output_contract
+                .contains(&EventType::HumanFeedbackRequested)
+        );
+        assert!(spec.output_contract.contains(&EventType::MemoryProposed));
+
+        assert!(
+            spec.authority_scope
+                .can_publish(&EventType::HumanFeedbackRequested)
+        );
+        assert!(spec.authority_scope.can_publish(&EventType::TaskAssigned));
+        assert!(
+            spec.authority_scope
+                .can_publish(&EventType::ArtefactProduced)
+        );
+        assert!(spec.authority_scope.can_publish(&EventType::MemoryProposed));
+
+        let mut registry = RoleRegistry::new();
+        registry.register(spec).unwrap();
+    }
+
+    #[test]
+    fn filters_implementation_suggestions() {
+        let input = "Use React for the frontend and Node.js for the backend";
+        let filtered = IntentLead::filter_implementation_suggestions(input);
+        assert!(
+            !filtered.contains("Use React"),
+            "Implementation suggestions should be filtered"
+        );
+
+        let safe_input = "I want a fast and responsive user interface";
+        let filtered_safe = IntentLead::filter_implementation_suggestions(safe_input);
+        assert_eq!(
+            filtered_safe, safe_input,
+            "Safe content should pass through unchanged"
+        );
+    }
+}
