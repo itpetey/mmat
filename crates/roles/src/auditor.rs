@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::artefacts::{
     AuditReport, ConfidenceAssessment, EvidenceChainStatus, EvidencePack, ProcessAdherenceCheck,
+    ValidationPolicy, store_artefact_blob,
 };
 
 /// Configuration for the Auditor's LLM-based semantic checks.
@@ -46,6 +47,7 @@ pub struct Auditor {
     evidence_chain_statuses: parking_lot::Mutex<Vec<EvidenceChainStatus>>,
     process_checks: parking_lot::Mutex<Vec<ProcessAdherenceCheck>>,
     confidence_assessments: parking_lot::Mutex<Vec<ConfidenceAssessment>>,
+    active_validation_policy: parking_lot::Mutex<Option<ValidationPolicy>>,
     report_interval_seconds: u64,
     last_report_time: parking_lot::Mutex<std::time::Instant>,
 }
@@ -111,6 +113,7 @@ impl Auditor {
             evidence_chain_statuses: parking_lot::Mutex::new(Vec::new()),
             process_checks: parking_lot::Mutex::new(Vec::new()),
             confidence_assessments: parking_lot::Mutex::new(Vec::new()),
+            active_validation_policy: parking_lot::Mutex::new(None),
             report_interval_seconds: 3600,
             last_report_time: parking_lot::Mutex::new(std::time::Instant::now()),
         }
@@ -438,17 +441,7 @@ impl Auditor {
 
         let claim_lower = claim_text.to_lowercase();
 
-        let required_tools: Vec<&str> = if claim_lower.contains("tests passed") {
-            vec!["cargo test"]
-        } else if claim_lower.contains("build succeeded")
-            || claim_lower.contains("compilation succeeded")
-        {
-            vec!["cargo build"]
-        } else if claim_lower.contains("fmt passed") || claim_lower.contains("formatting passed") {
-            vec!["cargo fmt"]
-        } else {
-            vec![]
-        };
+        let required_tools = self.required_validation_steps(&claim_lower);
 
         if required_tools.is_empty() {
             return Ok(());
@@ -527,6 +520,45 @@ impl Auditor {
         Ok(())
     }
 
+    fn required_validation_steps(&self, claim_lower: &str) -> Vec<String> {
+        let claim_kind = if claim_lower.contains("tests passed")
+            || claim_lower.contains("all tests passed")
+        {
+            Some("test")
+        } else if claim_lower.contains("build succeeded")
+            || claim_lower.contains("compilation succeeded")
+        {
+            Some("build")
+        } else if claim_lower.contains("fmt passed") || claim_lower.contains("formatting passed") {
+            Some("fmt")
+        } else {
+            None
+        };
+
+        let Some(claim_kind) = claim_kind else {
+            return Vec::new();
+        };
+
+        if let Some(policy) = self.active_validation_policy.lock().clone() {
+            let steps: Vec<String> = policy
+                .steps
+                .into_iter()
+                .map(|step| step.command)
+                .filter(|command| command.contains(claim_kind))
+                .collect();
+            if !steps.is_empty() {
+                return steps;
+            }
+        }
+
+        match claim_kind {
+            "test" => vec!["cargo test".to_string()],
+            "build" => vec!["cargo build".to_string()],
+            "fmt" => vec!["cargo fmt".to_string()],
+            _ => Vec::new(),
+        }
+    }
+
     async fn verify_web_source(
         &self,
         ctx: &RoleContext,
@@ -603,16 +635,38 @@ impl Auditor {
         std::env::current_dir().is_ok_and(|dir| visit(&dir, needle))
     }
 
+    fn read_artefact_payload(storage_uri: &str) -> Option<String> {
+        if let Some(path) = storage_uri.strip_prefix("file://") {
+            return std::fs::read_to_string(path).ok();
+        }
+
+        storage_uri
+            .split_once('|')
+            .map(|(_, payload)| payload.to_string())
+    }
+
+    fn update_validation_policy(&self, storage_uri: &str) {
+        let Some(payload) = Self::read_artefact_payload(storage_uri) else {
+            return;
+        };
+        let Ok(policy) = serde_json::from_str::<ValidationPolicy>(&payload) else {
+            return;
+        };
+        *self.active_validation_policy.lock() = Some(policy);
+    }
+
     async fn check_evidence_pack_paths(
         &self,
         ctx: &RoleContext,
         event_id: EventId,
-        reference: &str,
+        storage_uri: &str,
     ) -> Result<(), RoleError> {
-        let Some((_, payload)) = reference.split_once('|') else {
+        let payload = Self::read_artefact_payload(storage_uri).unwrap_or_default();
+        if payload.is_empty() {
             return Ok(());
-        };
-        let Ok(pack) = serde_json::from_str::<EvidencePack>(payload) else {
+        }
+
+        let Ok(pack) = serde_json::from_str::<EvidencePack>(&payload) else {
             return Ok(());
         };
 
@@ -864,14 +918,19 @@ impl Auditor {
             summary,
         };
 
-        let reference = serde_json::to_string(&report)
+        let report_json = serde_json::to_string(&report)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise audit report: {e}")))?;
 
-        let event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob("audit_report", &report_json)
+            .map_err(|e| RoleError::Internal(format!("Failed to store audit report: {e}")))?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id,
             "audit_report",
-            reference,
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus
             .publish(event)
@@ -960,19 +1019,24 @@ impl Auditor {
         }
 
         if let SemanticEvent::MemoryAccepted { memory_id, .. } = event {
-            self.check_memory_contamination(ctx, *memory_id).await?;
+            self.check_memory_contamination(ctx, EventId(memory_id.0))
+                .await?;
         }
 
         if let SemanticEvent::ArtefactProduced {
             event_id,
             artefact_type,
-            reference,
+            storage_uri,
             ..
         } = event
-            && artefact_type == "evidence_pack"
         {
-            self.check_evidence_pack_paths(ctx, *event_id, reference)
-                .await?;
+            if artefact_type == "validation_policy" {
+                self.update_validation_policy(storage_uri);
+            }
+            if artefact_type == "evidence_pack" {
+                self.check_evidence_pack_paths(ctx, *event_id, storage_uri)
+                    .await?;
+            }
         }
 
         if let SemanticEvent::TaskCompleted { .. } = event {

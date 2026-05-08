@@ -14,6 +14,29 @@ pub struct EventId(pub Uuid);
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleId(pub String);
 
+/// A unique identifier for a memory, kept distinct from [`EventId`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MemoryId(pub Uuid);
+
+/// Scope and causal metadata attached to every semantic event.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EventContext {
+    /// Organisation boundary used to prevent cross-organisation memory pollution.
+    pub organisation_id: String,
+    /// Workspace, department, or discipline boundary within the organisation.
+    pub workspace_id: String,
+    /// Project boundary for durable project memory.
+    pub project_id: String,
+    /// Execution run boundary for operational memory.
+    pub run_id: String,
+    /// Optional task boundary for events emitted during a task.
+    pub task_id: Option<String>,
+    /// Immediate causal event, if known.
+    pub causation_id: Option<EventId>,
+    /// Correlation identifier that groups related events across roles.
+    pub correlation_id: Option<EventId>,
+}
+
 /// A reference to an event used as supporting evidence for a claim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceRef {
@@ -63,6 +86,57 @@ pub struct ArtefactRef {
     pub reference: String,
 }
 
+impl Default for EventContext {
+    fn default() -> Self {
+        Self {
+            organisation_id: "default-organisation".to_string(),
+            workspace_id: "default-workspace".to_string(),
+            project_id: "default-project".to_string(),
+            run_id: "default-run".to_string(),
+            task_id: None,
+            causation_id: None,
+            correlation_id: None,
+        }
+    }
+}
+
+impl EventContext {
+    /// Creates a context for a concrete organisation/workspace/project/run boundary.
+    pub fn new(
+        organisation_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        project_id: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            organisation_id: organisation_id.into(),
+            workspace_id: workspace_id.into(),
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            task_id: None,
+            causation_id: None,
+            correlation_id: None,
+        }
+    }
+
+    /// Attaches a task boundary to the context.
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = Some(task_id.into());
+        self
+    }
+
+    /// Attaches causal and correlation identifiers to the context.
+    pub fn with_causality(
+        mut self,
+        causation_id: Option<EventId>,
+        correlation_id: Option<EventId>,
+    ) -> Self {
+        self.causation_id = causation_id;
+        self.correlation_id = correlation_id;
+        self
+    }
+}
+
 /// A semantic event representing a meaningful occurrence within the system.
 ///
 /// Every variant carries a unique [`EventId`], the [`RoleId`] of the source agent
@@ -75,6 +149,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         tool_name: String,
         arguments: String,
         exit_code: i32,
@@ -86,6 +162,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         claim_text: String,
         evidence_refs: Vec<EvidenceRef>,
         confidence_score: f32,
@@ -94,6 +172,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         decision_text: String,
         rationale_refs: Vec<EvidenceRef>,
     },
@@ -101,6 +181,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         memory_type: String,
         content: String,
         scope: String,
@@ -112,13 +194,18 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
-        memory_id: EventId,
+        #[serde(default)]
+        context: EventContext,
+        memory_id: MemoryId,
+        proposal_event_id: EventId,
         accepted_authority: RoleId,
     },
     MemoryRejected {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         proposed_memory_type: String,
         proposed_content: String,
         rejection_gate: String,
@@ -128,14 +215,18 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
-        old_memory_id: EventId,
-        new_memory_id: EventId,
+        #[serde(default)]
+        context: EventContext,
+        old_memory_id: MemoryId,
+        new_memory_id: MemoryId,
         reason: String,
     },
     EvidenceChainBroken {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         claim_id: EventId,
         broken_ref: EventId,
         claim_text: String,
@@ -144,6 +235,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         step: String,
         claim_id: EventId,
     },
@@ -151,6 +244,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         violation_type: String,
         description: String,
         related_event_id: Option<EventId>,
@@ -159,6 +254,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         task_id: String,
         worker_id: RoleId,
         contract_ref: TaskContract,
@@ -168,6 +265,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         task_id: String,
         worker_id: RoleId,
     },
@@ -175,6 +274,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         task_id: String,
         contract_id: String,
         output_artefact: ArtefactRef,
@@ -183,6 +284,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         task_id: String,
         error_description: String,
     },
@@ -190,6 +293,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         task_id: String,
         reviewer_id: RoleId,
     },
@@ -197,6 +302,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         task_id: String,
         findings: Vec<ReviewFinding>,
         accepted: bool,
@@ -205,6 +312,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         from_role: RoleId,
         to_role: RoleId,
         reason: String,
@@ -214,27 +323,38 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         question: String,
-        context: String,
+        request_context: String,
     },
     HumanFeedbackReceived {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         answer: String,
     },
     ArtefactProduced {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        artefact_id: String,
         artefact_type: String,
-        reference: String,
+        content_hash: String,
+        storage_uri: String,
         producer_role: RoleId,
+        evidence_refs: Vec<EvidenceRef>,
     },
     BudgetWarning {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         contract_id: String,
         message: String,
         usage_percent: u8,
@@ -243,6 +363,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         escalation_event_id: EventId,
         target_role: RoleId,
         chain_depth: u32,
@@ -251,6 +373,8 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         role_id: RoleId,
         old_state: String,
         new_state: String,
@@ -259,17 +383,23 @@ pub enum SemanticEvent {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
     },
     OrganisationStopped {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         reason: String,
     },
     Heartbeat {
         event_id: EventId,
         source_agent: RoleId,
         timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
         active_roles: u32,
         completed_roles: u32,
         failed_roles: u32,
@@ -361,6 +491,31 @@ impl From<Uuid> for EventId {
     }
 }
 
+impl MemoryId {
+    /// Creates a new random [`MemoryId`] based on a UUID v4.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for MemoryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for MemoryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<Uuid> for MemoryId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
 impl RoleId {
     /// Creates a new [`RoleId`] from any type that can be converted into a [`String`].
     pub fn new(id: impl Into<String>) -> Self {
@@ -406,6 +561,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             tool_name: tool_name.into(),
             arguments: arguments.into(),
             exit_code,
@@ -426,6 +582,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             claim_text: claim_text.into(),
             evidence_refs,
             confidence_score,
@@ -442,6 +599,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             decision_text: decision_text.into(),
             rationale_refs,
         }
@@ -461,6 +619,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             memory_type: memory_type.into(),
             content: content.into(),
             scope: scope.into(),
@@ -473,14 +632,17 @@ impl SemanticEvent {
     /// Constructs a new [`MemoryAccepted`](SemanticEvent::MemoryAccepted) event.
     pub fn new_memory_accepted(
         source_agent: RoleId,
-        memory_id: EventId,
+        memory_id: MemoryId,
+        proposal_event_id: EventId,
         accepted_authority: RoleId,
     ) -> Self {
         Self::MemoryAccepted {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             memory_id,
+            proposal_event_id,
             accepted_authority,
         }
     }
@@ -497,6 +659,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             proposed_memory_type: proposed_memory_type.into(),
             proposed_content: proposed_content.into(),
             rejection_gate: rejection_gate.into(),
@@ -507,14 +670,15 @@ impl SemanticEvent {
     /// Constructs a new [`MemorySuperseded`](SemanticEvent::MemorySuperseded) event.
     pub fn new_memory_superseded(
         source_agent: RoleId,
-        old_memory_id: EventId,
-        new_memory_id: EventId,
+        old_memory_id: MemoryId,
+        new_memory_id: MemoryId,
         reason: impl Into<String>,
     ) -> Self {
         Self::MemorySuperseded {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             old_memory_id,
             new_memory_id,
             reason: reason.into(),
@@ -532,6 +696,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             claim_id,
             broken_ref,
             claim_text: claim_text.into(),
@@ -548,6 +713,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             step: step.into(),
             claim_id,
         }
@@ -564,6 +730,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             violation_type: violation_type.into(),
             description: description.into(),
             related_event_id,
@@ -582,6 +749,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             task_id: task_id.into(),
             worker_id,
             contract_ref,
@@ -599,6 +767,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             task_id: task_id.into(),
             worker_id,
         }
@@ -615,6 +784,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             task_id: task_id.into(),
             contract_id: contract_id.into(),
             output_artefact,
@@ -631,6 +801,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             task_id: task_id.into(),
             error_description: error_description.into(),
         }
@@ -646,6 +817,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             task_id: task_id.into(),
             reviewer_id,
         }
@@ -662,6 +834,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             task_id: task_id.into(),
             findings,
             accepted,
@@ -680,6 +853,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             from_role,
             to_role,
             reason: reason.into(),
@@ -691,14 +865,15 @@ impl SemanticEvent {
     pub fn new_human_feedback_requested(
         source_agent: RoleId,
         question: impl Into<String>,
-        context: impl Into<String>,
+        request_context: impl Into<String>,
     ) -> Self {
         Self::HumanFeedbackRequested {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             question: question.into(),
-            context: context.into(),
+            request_context: request_context.into(),
         }
     }
 
@@ -708,6 +883,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             answer: answer.into(),
         }
     }
@@ -716,16 +892,46 @@ impl SemanticEvent {
     pub fn new_artefact_produced(
         source_agent: RoleId,
         artefact_type: impl Into<String>,
-        reference: impl Into<String>,
+        storage_uri: impl Into<String>,
         producer_role: RoleId,
+    ) -> Self {
+        let storage_uri = storage_uri.into();
+        Self::ArtefactProduced {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            artefact_id: format!("artefact-{}", Uuid::new_v4()),
+            artefact_type: artefact_type.into(),
+            content_hash: stable_content_hash(&storage_uri),
+            storage_uri,
+            producer_role,
+            evidence_refs: Vec::new(),
+        }
+    }
+
+    /// Constructs an [`ArtefactProduced`](SemanticEvent::ArtefactProduced) event
+    /// with explicit blob identity, hash, storage URI, and evidence references.
+    pub fn new_artefact_produced_ref(
+        source_agent: RoleId,
+        artefact_id: impl Into<String>,
+        artefact_type: impl Into<String>,
+        content_hash: impl Into<String>,
+        storage_uri: impl Into<String>,
+        producer_role: RoleId,
+        evidence_refs: Vec<EvidenceRef>,
     ) -> Self {
         Self::ArtefactProduced {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            artefact_id: artefact_id.into(),
             artefact_type: artefact_type.into(),
-            reference: reference.into(),
+            content_hash: content_hash.into(),
+            storage_uri: storage_uri.into(),
             producer_role,
+            evidence_refs,
         }
     }
 
@@ -740,6 +946,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             contract_id: contract_id.into(),
             message: message.into(),
             usage_percent,
@@ -757,6 +964,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             escalation_event_id,
             target_role,
             chain_depth,
@@ -774,6 +982,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             role_id,
             old_state: old_state.into(),
             new_state: new_state.into(),
@@ -786,6 +995,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
         }
     }
 
@@ -795,6 +1005,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             reason: reason.into(),
         }
     }
@@ -810,6 +1021,7 @@ impl SemanticEvent {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
+            context: EventContext::default(),
             active_roles,
             completed_roles,
             failed_roles,
@@ -911,6 +1123,38 @@ impl SemanticEvent {
             Self::Heartbeat { .. } => EventType::Heartbeat,
         }
     }
+
+    /// Returns the scoped context attached to this event.
+    pub fn context(&self) -> &EventContext {
+        match self {
+            Self::ToolExecuted { context, .. }
+            | Self::ClaimMade { context, .. }
+            | Self::DecisionRecorded { context, .. }
+            | Self::MemoryProposed { context, .. }
+            | Self::MemoryAccepted { context, .. }
+            | Self::MemoryRejected { context, .. }
+            | Self::MemorySuperseded { context, .. }
+            | Self::EvidenceChainBroken { context, .. }
+            | Self::ProcessSkipped { context, .. }
+            | Self::PolicyViolationDetected { context, .. }
+            | Self::TaskAssigned { context, .. }
+            | Self::TaskStarted { context, .. }
+            | Self::TaskCompleted { context, .. }
+            | Self::TaskFailed { context, .. }
+            | Self::ReviewRequested { context, .. }
+            | Self::ReviewCompleted { context, .. }
+            | Self::EscalationRequested { context, .. }
+            | Self::HumanFeedbackRequested { context, .. }
+            | Self::HumanFeedbackReceived { context, .. }
+            | Self::ArtefactProduced { context, .. }
+            | Self::BudgetWarning { context, .. }
+            | Self::EscalationAccepted { context, .. }
+            | Self::RoleStateChanged { context, .. }
+            | Self::OrganisationStarted { context, .. }
+            | Self::OrganisationStopped { context, .. }
+            | Self::Heartbeat { context, .. } => context,
+        }
+    }
 }
 
 impl EventType {
@@ -953,6 +1197,16 @@ pub fn now_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+/// Returns a stable non-cryptographic hash string for lightweight content identity.
+pub fn stable_content_hash(content: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in content.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{hash:016x}")
 }
 
 #[cfg(test)]

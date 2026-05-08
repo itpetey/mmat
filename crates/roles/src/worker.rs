@@ -20,9 +20,11 @@ use mmat_llm::{
 };
 use mmat_project::worktree::WorktreeHandle;
 use tracing::{info, warn};
-use uuid::Uuid;
 
-use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
+use crate::{
+    artefacts::store_artefact_blob,
+    tooling::{RoleToolRegistry, RoleToolRuntime},
+};
 
 /// The Worker role implements task cards by creating worktrees, running implementation, and validating results.
 pub struct Worker {
@@ -407,12 +409,16 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
         ctx: &RoleContext,
         patch: &str,
     ) -> Result<ArtefactRef, RoleError> {
-        let reference = format!("patch-{}|{}", Uuid::new_v4(), patch);
-        let event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob("implementation_patch", patch)
+            .map_err(|e| RoleError::Internal(format!("Failed to store patch artefact: {e}")))?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "implementation_patch",
-            reference.clone(),
+            stored.content_hash.clone(),
+            stored.storage_uri.clone(),
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
@@ -420,7 +426,7 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
 
         Ok(ArtefactRef {
             artefact_type: "implementation_patch".to_string(),
-            reference,
+            reference: stored.storage_uri,
         })
     }
 

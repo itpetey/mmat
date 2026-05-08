@@ -20,7 +20,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    artefacts::{EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestions, ResearchBrief},
+    artefacts::{
+        EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestions, ResearchBrief,
+        store_artefact_blob,
+    },
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
 
@@ -218,13 +221,18 @@ impl Scholar {
         let serialised = serde_json::to_string(brief)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise research brief: {e}")))?;
 
-        let reference = format!("research-brief-{}", Uuid::new_v4());
+        let stored = store_artefact_blob("research_brief", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store research brief artefact: {e}"))
+        })?;
 
-        let event = SemanticEvent::new_artefact_produced(
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "research_brief",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Self::evidence_refs("scholar research brief"),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
@@ -243,7 +251,7 @@ impl Scholar {
             RoleError::Internal(format!("Failed to publish memory proposed event: {e:?}"))
         })?;
 
-        info!("Published research brief: {}", reference);
+        info!("Published research brief: {}", stored.artefact_id);
         Ok(())
     }
 
@@ -255,13 +263,18 @@ impl Scholar {
         let serialised = serde_json::to_string(pack)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise evidence pack: {e}")))?;
 
-        let reference = format!("evidence-pack-{}", Uuid::new_v4());
+        let stored = store_artefact_blob("evidence_pack", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store evidence pack artefact: {e}"))
+        })?;
 
-        let event = SemanticEvent::new_artefact_produced(
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "evidence_pack",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Self::evidence_refs("scholar evidence pack"),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
@@ -280,7 +293,7 @@ impl Scholar {
             RoleError::Internal(format!("Failed to publish memory proposed event: {e:?}"))
         })?;
 
-        info!("Published evidence pack: {}", reference);
+        info!("Published evidence pack: {}", stored.artefact_id);
         Ok(())
     }
 
@@ -292,13 +305,18 @@ impl Scholar {
         let serialised = serde_json::to_string(questions)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise open questions: {e}")))?;
 
-        let reference = format!("open-questions-{}", Uuid::new_v4());
+        let stored = store_artefact_blob("open_questions", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store open questions artefact: {e}"))
+        })?;
 
-        let event = SemanticEvent::new_artefact_produced(
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "open_questions",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Self::evidence_refs("scholar open questions"),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
@@ -317,7 +335,7 @@ impl Scholar {
             RoleError::Internal(format!("Failed to publish memory proposed event: {e:?}"))
         })?;
 
-        info!("Published open questions: {}", reference);
+        info!("Published open questions: {}", stored.artefact_id);
         Ok(())
     }
 

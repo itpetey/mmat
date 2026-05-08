@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    artefacts::{Adr, DependencyRules, InterfaceSpec},
+    artefacts::{Adr, DependencyRules, InterfaceSpec, store_artefact_blob},
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
 
@@ -195,18 +195,22 @@ Base your decision on the provided intent brief and research context.";
             RoleError::Internal(format!("Failed to publish decision recorded event: {e:?}"))
         })?;
 
-        let reference = format!("adr-{}", adr.id);
-        let artefact_event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob("adr", &serialised)
+            .map_err(|e| RoleError::Internal(format!("Failed to store ADR artefact: {e}")))?;
+        let artefact_event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "adr",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Self::evidence_refs(&adr.title),
         );
         ctx.bus.publish(artefact_event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
         })?;
 
-        info!("Published ADR: {}", reference);
+        info!("Published ADR: {}", stored.artefact_id);
         Ok(())
     }
 
@@ -218,18 +222,23 @@ Base your decision on the provided intent brief and research context.";
         let serialised = serde_json::to_string(spec)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise interface spec: {e}")))?;
 
-        let reference = format!("iface-{}", spec.id);
-        let event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob("interface_spec", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store interface spec artefact: {e}"))
+        })?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "interface_spec",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
         })?;
 
-        info!("Published interface spec: {}", reference);
+        info!("Published interface spec: {}", stored.artefact_id);
         Ok(())
     }
 
@@ -242,18 +251,23 @@ Base your decision on the provided intent brief and research context.";
             RoleError::Internal(format!("Failed to serialise dependency rules: {e}"))
         })?;
 
-        let reference = format!("dep-rules-{}", rules.id);
-        let event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob("dependency_rules", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store dependency rules artefact: {e}"))
+        })?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "dependency_rules",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
         })?;
 
-        info!("Published dependency rules: {}", reference);
+        info!("Published dependency rules: {}", stored.artefact_id);
         Ok(())
     }
 

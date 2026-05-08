@@ -1,0 +1,60 @@
+## MODIFIED Requirements
+
+### Requirement: Memory store persists typed memories to Postgres
+**FROM**: The system SHALL provide a `MemoryStore` with a SQLite backend that stores all structured fields of a `Memory`. The store MUST create the schema on first open and support insert, query-by-id, query-by-type, query-by-scope, query-by-authority-range, and query-by-decay-status operations.
+
+**TO**: The system SHALL provide a `MemoryStore` with a Postgres backend that stores all structured fields of a `Memory` plus an optional `embedding vector(64)` column (when pgvector extension is available). The store MUST create the schema on first connection and support all existing query operations plus vector similarity search via pgvector or the configured `VectorMemoryBackend`. The store SHALL use `sqlx::PgPool` for connection pooling.
+
+#### Scenario: Memory is inserted and retrievable by ID
+- **WHEN** a `Memory` is inserted via `store.insert(memory)`
+- **THEN** `store.get_by_id(memory.id)` MUST return the same memory with all fields intact
+
+#### Scenario: Memories are queryable by type
+- **WHEN** multiple `Decision` and `Fact` memories exist
+- **THEN** `store.query_by_type(MemoryType::Decision)` MUST return only `Decision` memories
+
+#### Scenario: Memories are queryable by scope
+- **WHEN** multiple memories with `Project` and `Ephemeral` scopes exist
+- **THEN** `store.query_by_scope(MemoryScope::Project)` MUST return only `Project`-scoped memories
+
+#### Scenario: Memories are queryable by authority range
+- **WHEN** memories with varying authorities exist
+- **THEN** `store.query_by_authority(min: ReviewFindings, max: CompilerOutput)` MUST return only memories within that authority range
+
+#### Scenario: Decayed memories are queryable for cleanup
+- **WHEN** the librarian's decay scan queries for memories past their decay date
+- **THEN** the store MUST support `query_decayed()` returning memories where `decay_policy = StaleAfterDays(d) AND created_at + d days < CURRENT_TIMESTAMP`
+
+### Requirement: Memory store indexes vector embeddings in Postgres or Qdrant
+**FROM**: The system SHALL integrate with Qdrant for vector similarity search. Each memory's `content` embedding MUST be upserted to a Qdrant collection keyed by `MemoryId`. The collection configuration (dimensions, distance metric) MUST be defined at store initialisation.
+
+**TO**: The system SHALL support vector similarity search via either pgvector or Qdrant. When pgvector is available, the `memories.embedding` column SHALL store the vector and cosine-distance search SHALL use `ORDER BY embedding <=> $1 LIMIT $2`. The existing `QdrantMemoryBackend` SHALL remain supported via a trait. The store SHALL be configurable at construction with either backend.
+
+#### Scenario: Memory embedding is searchable via pgvector
+- **WHEN** pgvector extension is enabled and a memory is inserted with an embedding
+- **THEN** `store.search_similar(query_embedding, limit: 10)` MUST return the most similar memories ranked by cosine distance using pgvector
+
+#### Scenario: Memory embedding is searchable via Qdrant
+- **WHEN** the store is configured with `QdrantMemoryBackend` and a memory is inserted with an embedding
+- **THEN** `store.search_similar(query_embedding, limit: 10)` MUST return the most similar memories using Qdrant
+
+#### Scenario: Embedding is updated on memory supersession
+- **WHEN** a memory's content is updated via supersession
+- **THEN** the old embedding MUST be replaced with the new content's embedding (via either pgvector UPDATE or Qdrant upsert)
+
+#### Scenario: Backend failure rolls back Postgres insert
+- **WHEN** a memory is being inserted and the vector backend upsert fails
+- **THEN** the Postgres insert MUST be rolled back
+- **AND** an error MUST be returned to the caller
+
+### Requirement: Store supports supersession chains
+The system SHALL maintain bidirectional supersession links: when memory B supersedes memory A, A's `superseded_by` MUST point to B's ID and B's `supersedes` MUST point to A's ID. The store MUST provide `get_supersession_chain(memory_id)` returning the full chain from original to current.
+
+#### Scenario: Supersession chain is queryable
+- **WHEN** memory A is superseded by B, and B is superseded by C
+- **THEN** `store.get_supersession_chain(A)` MUST return `[A, B, C]`
+- **AND** `store.get_supersession_chain(C)` MUST return `[A, B, C]`
+
+#### Scenario: Retrieval returns only current (non-superseded) memories
+- **WHEN** memory A has `superseded_by = Some(B_id)`
+- **THEN** `store.query_by_type(MemoryType::Decision)` MUST NOT include A (only B and any non-superseded memories)

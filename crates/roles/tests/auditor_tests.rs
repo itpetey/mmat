@@ -346,7 +346,8 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
 
     let accepted = SemanticEvent::new_memory_accepted(
         EventRoleId("librarian-001".to_string()),
-        EventId::from(memory.id.0),
+        mmat_event_stream::event::MemoryId(memory.id.0),
+        EventId::new(),
         EventRoleId("librarian-001".to_string()),
     );
     bus.publish(accepted).unwrap();
@@ -725,7 +726,8 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
     memory_store.insert(&memory).unwrap();
     bus.publish(SemanticEvent::new_memory_accepted(
         EventRoleId("librarian-001".to_string()),
-        EventId::from(memory.id.0),
+        mmat_event_stream::event::MemoryId(memory.id.0),
+        EventId::new(),
         EventRoleId("librarian-001".to_string()),
     ))
     .unwrap();
@@ -739,7 +741,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
 
     assert!(matches!(
         event.as_ref(),
-        SemanticEvent::MemorySuperseded { old_memory_id, .. } if *old_memory_id == memory.id.0.into()
+        SemanticEvent::MemorySuperseded { old_memory_id, .. } if old_memory_id.0 == memory.id.0
     ));
     assert!(
         memory_store
@@ -1007,12 +1009,15 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
             tokio::time::timeout(tokio::time::Duration::from_millis(200), reports.recv()).await
             && let SemanticEvent::ArtefactProduced {
                 artefact_type,
-                reference,
+                storage_uri,
                 ..
             } = event.as_ref()
             && artefact_type == "audit_report"
         {
-            let report: AuditReport = serde_json::from_str(reference).unwrap();
+            let report_json =
+                std::fs::read_to_string(storage_uri.strip_prefix("file://").unwrap_or(storage_uri))
+                    .unwrap();
+            let report: AuditReport = serde_json::from_str(&report_json).unwrap();
             saw_confidence_report = !report.confidence_assessments.is_empty();
             break;
         }

@@ -272,6 +272,7 @@ impl ProvenanceEngine {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: event::now_ns(),
+            context: event.context().clone(),
             violation_type: "broken_evidence".to_string(),
             description,
             related_event_id: Some(event.event_id()),

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, interval};
 
 use crate::{
+    embedding::{EmbeddingProvider, HashEmbeddingProvider},
     error::{Error, Result},
     qdrant::VectorMemoryBackend,
     store::MemoryStore,
@@ -39,6 +40,7 @@ pub struct AttentionConfig {
 pub struct AttentionEngine {
     config: AttentionConfig,
     salience_llm: Option<Arc<dyn LlmClient>>,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
 }
 
 /// Returns sensible defaults: salience threshold of `0.5`, similarity threshold of `0.95`,
@@ -61,6 +63,7 @@ impl AttentionEngine {
         Self {
             config,
             salience_llm: None,
+            embedding_provider: Arc::new(HashEmbeddingProvider::default()),
         }
     }
 
@@ -69,7 +72,17 @@ impl AttentionEngine {
         Self {
             config,
             salience_llm: Some(salience_llm),
+            embedding_provider: Arc::new(HashEmbeddingProvider::default()),
         }
+    }
+
+    /// Overrides the embedding provider used for duplicate detection.
+    pub fn with_embedding_provider(
+        mut self,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
+    ) -> Self {
+        self.embedding_provider = embedding_provider;
+        self
     }
 
     /// Runs the attention loop, subscribing to relevant events and processing them in batches.
@@ -148,6 +161,7 @@ impl AttentionEngine {
                 event_id: mmat_event_stream::event::EventId::new(),
                 source_agent: Self::extract_source_agent(event),
                 timestamp_ns: Self::extract_timestamp(event),
+                context: event.context().clone(),
                 memory_type: memory_type.discriminant_str().to_string(),
                 content: content.clone(),
                 scope: scope.discriminant_str().to_string(),
@@ -280,9 +294,9 @@ impl AttentionEngine {
             SemanticEvent::HumanFeedbackReceived { answer, .. } => answer.clone(),
             SemanticEvent::ArtefactProduced {
                 artefact_type,
-                reference,
+                storage_uri,
                 ..
-            } => format!("Artefact produced: {} ({})", artefact_type, reference),
+            } => format!("Artefact produced: {} ({})", artefact_type, storage_uri),
             _ => String::new(),
         }
     }
@@ -416,31 +430,13 @@ impl AttentionEngine {
         store: &MemoryStore,
         qdrant: &dyn VectorMemoryBackend,
     ) -> Result<Option<MemoryId>> {
-        let embedding = Self::compute_simple_embedding(content);
+        let embedding = self.embedding_provider.embed(content).await?;
         let similar = store.search_similar(embedding, 1, qdrant).await?;
 
         Ok(similar
             .into_iter()
             .find(|(_, score)| *score >= self.config.similarity_threshold as f32)
             .map(|(id, _)| id))
-    }
-
-    /// Computes a simple hash-based embedding vector of dimension 64 from content text.
-    pub fn compute_simple_embedding(content: &str) -> Vec<f32> {
-        Self::compute_simple_embedding_with_dim(content, 64)
-    }
-
-    /// Computes a simple hash-based embedding vector of the given dimension from content text.
-    pub fn compute_simple_embedding_with_dim(content: &str, dim: usize) -> Vec<f32> {
-        let words: Vec<&str> = content.split_whitespace().collect();
-        let mut embedding = vec![0.0f32; dim];
-        for (i, word) in words.iter().take(dim).enumerate() {
-            let hash: u32 = word.bytes().enumerate().fold(0u32, |acc, (j, b)| {
-                acc.wrapping_add((b as u32) << ((j % 4) * 8))
-            });
-            embedding[i] = (hash as f64 / u32::MAX as f64) as f32;
-        }
-        embedding
     }
 
     /// Updates the `last_accessed_at` timestamp of a memory, marking it as recently rehearsed.
@@ -457,7 +453,10 @@ mod tests {
     use qdrant_client::qdrant::Value;
     use std::collections::HashMap;
 
-    use crate::types::{Confidence, Memory};
+    use crate::{
+        embedding::{EmbeddingProvider, HashEmbeddingProvider},
+        types::{Confidence, Memory},
+    };
 
     #[derive(Default)]
     struct FakeVectorBackend {
@@ -546,9 +545,12 @@ mod tests {
         assert!(matches!(mem_type, MemoryType::Incident));
     }
 
-    #[test]
-    fn compute_simple_embedding_produces_vector() {
-        let embedding = AttentionEngine::compute_simple_embedding("hello world test");
+    #[tokio::test]
+    async fn hash_embedding_provider_produces_vector() {
+        let embedding = HashEmbeddingProvider::default()
+            .embed("hello world test")
+            .await
+            .unwrap();
         assert_eq!(embedding.len(), 64);
     }
 

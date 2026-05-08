@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use mmat_event_stream::{
-    event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent},
+    event::{EventId, EventType, EvidenceRef, MemoryId as EventMemoryId, RoleId, SemanticEvent},
     event_bus::EventBus,
 };
 use tokio::time::{Duration, interval};
 
 use crate::{
-    attention::AttentionEngine,
+    embedding::{EmbeddingProvider, HashEmbeddingProvider},
     error::Result,
     qdrant::VectorMemoryBackend,
     store::MemoryStore,
@@ -21,6 +21,7 @@ use crate::{
 pub struct Librarian {
     store: Arc<MemoryStore>,
     qdrant: Arc<dyn VectorMemoryBackend>,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
     decay_scan_interval: Duration,
 }
 
@@ -42,8 +43,18 @@ impl Librarian {
         Self {
             store,
             qdrant,
+            embedding_provider: Arc::new(HashEmbeddingProvider::default()),
             decay_scan_interval,
         }
+    }
+
+    /// Overrides the embedding provider used for memory insertion and duplicate checks.
+    pub fn with_embedding_provider(
+        mut self,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
+    ) -> Self {
+        self.embedding_provider = embedding_provider;
+        self
     }
 
     /// Runs the librarian loop, subscribing to memory proposals, supersessions, and
@@ -87,6 +98,7 @@ impl Librarian {
                 timestamp_ns,
                 evidence_refs,
                 confidence,
+                ..
             } => {
                 self.process_proposal(
                     bus,
@@ -107,7 +119,7 @@ impl Librarian {
                 new_memory_id,
                 ..
             } => {
-                self.process_superseded(bus, *old_memory_id, *new_memory_id)
+                self.process_superseded(bus, MemoryId(old_memory_id.0), MemoryId(new_memory_id.0))
                     .await?;
             }
             SemanticEvent::PolicyViolationDetected {
@@ -283,7 +295,7 @@ impl Librarian {
 
         let memory = builder.build()?;
 
-        let embedding = AttentionEngine::compute_simple_embedding(&memory.content);
+        let embedding = self.embedding_provider.embed(&memory.content).await?;
         let mut memory_with_embedding = memory.clone();
         memory_with_embedding.embedding = Some(embedding.clone());
 
@@ -306,7 +318,9 @@ impl Librarian {
             event_id: EventId::new(),
             source_agent: source_agent.clone(),
             timestamp_ns: Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
-            memory_id: memory.id.0.into(),
+            context: Default::default(),
+            memory_id: EventMemoryId(memory.id.0),
+            proposal_event_id: event_id,
             accepted_authority: Self::authority_to_role(&authority),
         };
         if let Err(e) = bus.publish(accepted) {
@@ -426,7 +440,7 @@ impl Librarian {
     }
 
     async fn duplicate_gate(&self, content: &str) -> Result<std::result::Result<(), String>> {
-        let embedding = AttentionEngine::compute_simple_embedding(content);
+        let embedding = self.embedding_provider.embed(content).await?;
         let similar = self
             .store
             .search_similar(embedding, 1, self.qdrant.as_ref())
@@ -486,11 +500,9 @@ impl Librarian {
     async fn process_superseded(
         &self,
         _bus: &EventBus,
-        old_memory_id: EventId,
-        new_memory_id: EventId,
+        old_id: MemoryId,
+        new_id: MemoryId,
     ) -> Result<()> {
-        let old_id = MemoryId(old_memory_id.0);
-        let new_id = MemoryId(new_memory_id.0);
         if self
             .store
             .get_by_id(old_id)?
@@ -558,8 +570,8 @@ impl Librarian {
 
         let superseded = SemanticEvent::new_memory_superseded(
             RoleId::new("librarian-001"),
-            memory.id.0.into(),
-            marker.id.0.into(),
+            EventMemoryId(memory.id.0),
+            EventMemoryId(marker.id.0),
             format!("audit violation: {violation_type}"),
         );
         if let Err(e) = bus.publish(superseded) {
@@ -596,8 +608,9 @@ impl Librarian {
                 event_id: EventId::new(),
                 source_agent: RoleId::new("librarian"),
                 timestamp_ns: Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
-                old_memory_id: memory.id.0.into(),
-                new_memory_id: marker.id.0.into(),
+                context: Default::default(),
+                old_memory_id: EventMemoryId(memory.id.0),
+                new_memory_id: EventMemoryId(marker.id.0),
                 reason: "decayed".to_string(),
             };
 
@@ -622,6 +635,7 @@ impl Librarian {
             event_id: EventId::new(),
             source_agent: source_agent.clone(),
             timestamp_ns: Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
+            context: Default::default(),
             proposed_memory_type: memory_type.to_string(),
             proposed_content: content.to_string(),
             rejection_gate: gate.to_string(),
@@ -644,6 +658,7 @@ impl Librarian {
             event_id: EventId::new(),
             source_agent: source_agent.clone(),
             timestamp_ns: Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
+            context: Default::default(),
             violation_type: violation_type.to_string(),
             description: description.to_string(),
             related_event_id,
@@ -692,13 +707,6 @@ fn contents_contradict(new_content: &str, existing_content: &str) -> bool {
         return true;
     }
 
-    let new_embedding = AttentionEngine::compute_simple_embedding(new_content);
-    let existing_embedding = AttentionEngine::compute_simple_embedding(existing_content);
-    let similarity = cosine_similarity(&new_embedding, &existing_embedding);
-    if similarity < 0.55 {
-        return false;
-    }
-
     let opposing_pairs = [
         ("enabled", "disabled"),
         ("true", "false"),
@@ -719,6 +727,7 @@ fn contents_contradict(new_content: &str, existing_content: &str) -> bool {
     })
 }
 
+#[cfg(test)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();

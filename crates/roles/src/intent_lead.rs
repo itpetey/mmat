@@ -13,7 +13,10 @@ use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::{artefacts::IntentBrief, tooling::RoleToolRegistry};
+use crate::{
+    artefacts::{IntentBrief, store_artefact_blob},
+    tooling::RoleToolRegistry,
+};
 
 /// The IntentLead role elicits goals, constraints, and preferences from the human stakeholder.
 pub struct IntentLead {
@@ -169,13 +172,18 @@ impl IntentLead {
         let serialised = serde_json::to_string(brief)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise intent brief: {e}")))?;
 
-        let reference = format!("intent-brief-{}", Uuid::new_v4());
+        let stored = store_artefact_blob("intent_brief", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store intent brief artefact: {e}"))
+        })?;
 
-        let event = SemanticEvent::new_artefact_produced(
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "intent_brief",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
@@ -194,7 +202,10 @@ impl IntentLead {
             RoleError::Internal(format!("Failed to publish memory proposed event: {e:?}"))
         })?;
 
-        info!("Published intent brief with reference: {}", reference);
+        info!(
+            "Published intent brief with reference: {}",
+            stored.artefact_id
+        );
         Ok(())
     }
 

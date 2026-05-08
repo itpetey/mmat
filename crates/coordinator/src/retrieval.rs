@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use mmat_memory::{
-    attention::AttentionEngine,
+    embedding::{EmbeddingProvider, HashEmbeddingProvider},
     qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{Authority, Memory, MemoryScope, MemoryType},
@@ -144,10 +144,11 @@ impl RetrievalPlanner {
             && !task_context.trim().is_empty()
         {
             let mut results = Vec::new();
-            let embedding = AttentionEngine::compute_simple_embedding(task_context);
-            if let Ok(similar_ids) = memory_store
-                .search_similar(embedding, profile.result_limit as u64, backend)
-                .await
+            let embedding_provider = HashEmbeddingProvider::default();
+            if let Ok(embedding) = embedding_provider.embed(task_context).await
+                && let Ok(similar_ids) = memory_store
+                    .search_similar(embedding, profile.result_limit as u64, backend)
+                    .await
             {
                 for (id, _score) in similar_ids {
                     if let Ok(Some(memory)) = memory_store.get_by_id(id)

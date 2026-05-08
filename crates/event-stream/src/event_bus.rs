@@ -88,6 +88,39 @@ impl EventBus {
     pub fn store(&self) -> Option<Arc<EventStore>> {
         self.store.clone()
     }
+
+    /// Replays persisted events after `after_row`, filtered by event type.
+    ///
+    /// Consumers should call this after receiving [`RecvError::Lagged`], process
+    /// the returned events in order, persist the latest replay cursor, and then
+    /// create a fresh subscription.
+    pub fn replay_from(
+        &self,
+        after_row: i64,
+        filter: &[EventType],
+    ) -> std::result::Result<Vec<SemanticEvent>, EventStoreError> {
+        let Some(store) = &self.store else {
+            return Ok(Vec::new());
+        };
+
+        let filter_set: HashSet<EventType> = filter.iter().cloned().collect();
+        let events = store.replay(after_row, None)?;
+        Ok(events
+            .into_iter()
+            .filter(|event| filter_set.is_empty() || filter_set.contains(&event.event_type()))
+            .collect())
+    }
+
+    /// Returns the persisted row for an event so consumers can maintain cursors.
+    pub fn row_for_event_id(
+        &self,
+        event_id: crate::event::EventId,
+    ) -> std::result::Result<Option<i64>, EventStoreError> {
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        store.row_for_event_id(event_id)
+    }
 }
 
 impl EventReceiver {
@@ -186,5 +219,21 @@ mod tests {
         handle.await.unwrap();
         assert_eq!(received, 10);
         assert_eq!(store.latest_row().unwrap(), Some(10));
+    }
+
+    #[test]
+    fn replay_from_filters_persisted_events() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let store = Arc::new(EventStore::open(tmp.path()).unwrap());
+        let bus = EventBus::new(16).with_store(store);
+
+        let tool = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "", 0);
+        let task = SemanticEvent::new_task_started(RoleId::new("pm"), "task-1", RoleId::new("w"));
+        bus.publish(tool).unwrap();
+        bus.publish(task).unwrap();
+
+        let replayed = bus.replay_from(0, &[EventType::TaskStarted]).unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].variant_name(), "TaskStarted");
     }
 }

@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     artefacts::{
         DeliveryStandards, EscalationRule, EscalationRules, ReviewDimension, ReviewRubric,
-        ValidationPolicy, ValidationStep,
+        ValidationPolicy, ValidationStep, store_artefact_blob,
     },
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
@@ -92,12 +92,16 @@ impl OpsManager {
         artefact_type: &str,
         payload: &str,
     ) -> Result<(), RoleError> {
-        let reference = format!("{artefact_type}-{}", Uuid::new_v4());
-        let event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob(artefact_type, payload)
+            .map_err(|e| RoleError::Internal(format!("Failed to store artefact blob: {e}")))?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id,
             artefact_type,
-            format!("{reference}|{payload}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))

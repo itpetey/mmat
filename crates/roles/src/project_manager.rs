@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy},
+    artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy, store_artefact_blob},
     tooling::{RoleToolRegistry, RoleToolRuntime},
 };
 
@@ -404,12 +404,17 @@ dependencies (if any), acceptance criteria, and validation policy.",
         let serialised = serde_json::to_string(&completed_tasks)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise milestone: {e}")))?;
 
-        let reference = format!("milestone-{}", Uuid::new_v4());
-        let event = SemanticEvent::new_artefact_produced(
+        let payload = format!("{milestone_name}|{serialised}");
+        let stored = store_artefact_blob("milestone", &payload)
+            .map_err(|e| RoleError::Internal(format!("Failed to store milestone artefact: {e}")))?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id,
             "milestone",
-            format!("{reference}|{milestone_name}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish milestone event: {e:?}"))
@@ -424,18 +429,23 @@ dependencies (if any), acceptance criteria, and validation policy.",
         let serialised = serde_json::to_string(&*graph)
             .map_err(|e| RoleError::Internal(format!("Failed to serialise delivery graph: {e}")))?;
 
-        let reference = format!("delivery-graph-{}", graph.id);
-        let event = SemanticEvent::new_artefact_produced(
+        let stored = store_artefact_blob("delivery_graph", &serialised).map_err(|e| {
+            RoleError::Internal(format!("Failed to store delivery graph artefact: {e}"))
+        })?;
+        let event = SemanticEvent::new_artefact_produced_ref(
             EventRoleId(self.id.0.clone()),
+            stored.artefact_id.clone(),
             "delivery_graph",
-            format!("{reference}|{serialised}"),
+            stored.content_hash,
+            stored.storage_uri,
             EventRoleId(self.id.0.clone()),
+            Vec::new(),
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish delivery graph event: {e:?}"))
         })?;
 
-        info!("Published delivery graph: {}", reference);
+        info!("Published delivery graph: {}", stored.artefact_id);
         Ok(())
     }
 
@@ -450,6 +460,16 @@ dependencies (if any), acceptance criteria, and validation policy.",
             }
         }
         Ok(())
+    }
+
+    fn read_artefact_payload(storage_uri: &str) -> Option<String> {
+        if let Some(path) = storage_uri.strip_prefix("file://") {
+            return std::fs::read_to_string(path).ok();
+        }
+
+        storage_uri
+            .split_once('|')
+            .map(|(_, serialised)| serialised.to_string())
     }
 }
 
@@ -556,13 +576,13 @@ impl Role for ProjectManager {
                 }
                 SemanticEvent::ArtefactProduced {
                     artefact_type,
-                    reference,
+                    storage_uri,
                     source_agent,
                     ..
                 } if artefact_type == "adr" => {
                     info!("PM received ADR artefact from {}", source_agent.0);
-                    if let Some((_, serialised)) = reference.split_once('|')
-                        && let Ok(adr) = serde_json::from_str::<Adr>(serialised)
+                    if let Some(serialised) = Self::read_artefact_payload(storage_uri)
+                        && let Ok(adr) = serde_json::from_str::<Adr>(&serialised)
                     {
                         if self.processed_decisions.read().contains(&adr.decision) {
                             info!("PM already processed this decision artefact, skipping");
