@@ -13,7 +13,6 @@ mmat-coordinator = { path = "../coordinator" }
 mmat-event-stream = { path = "../event-stream" }
 mmat-llm = { path = "../llm" }
 mmat-memory = { path = "../memory" }
-mmat-process = { path = "../process" }
 mmat-project = { path = "../project" }
 parking_lot.workspace = true
 reqwest.workspace = true
