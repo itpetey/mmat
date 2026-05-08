@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use mmat_event_stream::event::{EventType, RoleId, SemanticEvent};
-use mmat_event_stream::event_bus::EventBus;
-use mmat_event_stream::event_store::EventStore;
+use mmat_event_stream::{
+    event::{EventType, RoleId, SemanticEvent},
+    event_bus::EventBus,
+    event_store::EventStore,
+};
 
 #[tokio::test]
 async fn multiple_subscribers_with_filters() {

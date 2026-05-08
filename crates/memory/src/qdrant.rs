@@ -2,15 +2,19 @@
 
 use std::collections::HashMap;
 
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, PointId, PointStruct,
-    SearchPointsBuilder, Value, VectorParams, VectorsConfig,
+use qdrant_client::{
+    Qdrant,
+    qdrant::{
+        CreateCollectionBuilder, DeletePointsBuilder, Distance, PointId, PointStruct,
+        SearchPointsBuilder, Value, VectorParams, VectorsConfig,
+    },
 };
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
-use crate::types::MemoryId;
+use crate::{
+    error::{Error, Result},
+    types::MemoryId,
+};
 
 /// A trait for vector-memory backends that store embeddings and support
 /// nearest-neighbour search.

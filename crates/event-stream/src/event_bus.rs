@@ -4,13 +4,14 @@
 //! to subscribers. Subscribers can filter by [`EventType`] and receive events
 //! through an asynchronous [`EventReceiver`].
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use tokio::sync::broadcast::{self, Receiver, Sender};
 
-use crate::event::{EventType, SemanticEvent};
-use crate::event_store::{EventStore, EventStoreError};
+use crate::{
+    event::{EventType, SemanticEvent},
+    event_store::{EventStore, EventStoreError},
+};
 
 /// A broadcast bus for publishing semantic events to multiple subscribers.
 ///

@@ -3,9 +3,11 @@
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::client::LlmClient;
-use crate::message::{CompletionRequest, Message};
-use crate::tool::ToolRegistry;
+use crate::{
+    client::LlmClient,
+    message::{CompletionRequest, Message},
+    tool::ToolRegistry,
+};
 
 /// Alias for [`Result`](std::result::Result) with the executor's [`ExecutorError`].
 pub type Result<T, E> = std::result::Result<T, ExecutorError<E>>;

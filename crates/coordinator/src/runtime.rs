@@ -1,25 +1,27 @@
 //! Organisation runtime managing role execution, event processing, and shutdown.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use mmat_event_stream::event::{EventType, RoleId, SemanticEvent};
-use mmat_event_stream::event_bus::EventBus;
-use mmat_event_stream::event_store::EventStore;
+use mmat_event_stream::{
+    event::{EventType, RoleId, SemanticEvent},
+    event_bus::EventBus,
+    event_store::EventStore,
+};
 use mmat_memory::store::MemoryStore;
-use tokio::signal;
-use tokio::sync::{broadcast, mpsc};
-use tokio::time::{interval, timeout};
+use tokio::{
+    signal,
+    sync::{broadcast, mpsc},
+    time::{interval, timeout},
+};
 use tracing::{info, warn};
 
-use crate::error::{Error, Result};
-use crate::registry::RoleRegistry;
-use crate::retrieval::RetrievalPlanner;
-use crate::role::{
-    CoordinatorHandle, CoordinatorMessage, RoleContext, RoleLifecycleState, SpawnableRole,
+use crate::{
+    error::{Error, Result},
+    registry::RoleRegistry,
+    retrieval::RetrievalPlanner,
+    role::{CoordinatorHandle, CoordinatorMessage, RoleContext, RoleLifecycleState, SpawnableRole},
+    scheduler::Scheduler,
 };
-use crate::scheduler::Scheduler;
 
 /// Configuration for the organisation runtime.
 #[derive(Clone, Debug)]

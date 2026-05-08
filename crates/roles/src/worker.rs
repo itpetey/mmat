@@ -1,8 +1,10 @@
 //! The Worker role receives task cards, creates git worktrees, runs an implementation loop
 //! (using an LLM if configured), executes validation commands, and publishes results.
 
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use mmat_coordinator::{
@@ -11,9 +13,11 @@ use mmat_coordinator::{
 use mmat_event_stream::event::{
     ArtefactRef, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
 };
-use mmat_llm::client::LlmClient;
-use mmat_llm::executor::{Executor, ExecutorConfig};
-use mmat_llm::message::{CompletionRequest, Message};
+use mmat_llm::{
+    client::LlmClient,
+    executor::{Executor, ExecutorConfig},
+    message::{CompletionRequest, Message},
+};
 use mmat_project::worktree::WorktreeHandle;
 use tracing::{info, warn};
 use uuid::Uuid;

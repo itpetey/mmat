@@ -1,18 +1,20 @@
-use std::sync::Arc;
-use std::time::Duration;
 use std::{
     collections::HashMap,
+    sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
-use mmat_event_stream::event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent};
-use mmat_event_stream::event_bus::EventBus;
-use mmat_event_stream::event_store::EventStore;
-use mmat_memory::attention::{AttentionConfig, AttentionEngine};
-use mmat_memory::error::{Error, Result};
-use mmat_memory::librarian::Librarian;
-use mmat_memory::provenance::ProvenanceEngine;
+use mmat_event_stream::{
+    event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent},
+    event_bus::EventBus,
+    event_store::EventStore,
+};
 use mmat_memory::{
+    attention::{AttentionConfig, AttentionEngine},
+    error::{Error, Result},
+    librarian::Librarian,
+    provenance::ProvenanceEngine,
     qdrant::VectorMemoryBackend,
     store::MemoryStore,
     types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType},

@@ -1,25 +1,28 @@
 //! The ProjectManager role decomposes architectural decisions into task cards, manages a delivery graph,
 //! assigns tasks to workers, and tracks progress through to completion.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
-use mmat_llm::client::LlmClient;
-use mmat_llm::executor::{Executor, ExecutorConfig};
-use mmat_llm::message::{CompletionRequest, Message};
+use mmat_llm::{
+    client::LlmClient,
+    executor::{Executor, ExecutorConfig},
+    message::{CompletionRequest, Message},
+};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy};
-use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
+use crate::{
+    artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy},
+    tooling::{RoleToolRegistry, RoleToolRuntime},
+};
 
 /// The lifecycle status of a task within the delivery graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

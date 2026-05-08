@@ -6,8 +6,10 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use tokio::sync::mpsc;
 
-use crate::error::{LlmError, Result};
-use crate::message::{CompletionRequest, CompletionResponse, CompletionStreamChunk};
+use crate::{
+    error::{LlmError, Result},
+    message::{CompletionRequest, CompletionResponse, CompletionStreamChunk},
+};
 
 /// A client capable of sending chat completions to an LLM provider.
 #[async_trait::async_trait]

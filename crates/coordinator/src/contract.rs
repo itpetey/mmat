@@ -6,9 +6,11 @@ use mmat_event_stream::event::{EventId, SemanticEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::{Error, Result};
-use crate::retrieval::RetrievalProfile;
-use crate::role::AuthorityScope;
+use crate::{
+    error::{Error, Result},
+    retrieval::RetrievalProfile,
+    role::AuthorityScope,
+};
 
 /// Unique identifier for a contract, backed by a UUID v4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

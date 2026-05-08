@@ -1,8 +1,7 @@
 //! The OpsManager role defines and enforces standard operating procedures (SOPs),
 //! validation policies, escalation rules, delivery standards, and review rubrics.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -12,19 +11,20 @@ use mmat_coordinator::{
 use mmat_event_stream::event::{
     EventId, EventType, EvidenceRef, ReviewFinding, RoleId as EventRoleId, SemanticEvent,
 };
-use mmat_llm::client::LlmClient;
-use mmat_llm::executor::Executor;
+use mmat_llm::{client::LlmClient, executor::Executor};
 use mmat_memory::types::MemoryType;
 use serde_json;
 use tokio::time::{Duration, interval};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::artefacts::{
-    DeliveryStandards, EscalationRule, EscalationRules, ReviewDimension, ReviewRubric,
-    ValidationPolicy, ValidationStep,
+use crate::{
+    artefacts::{
+        DeliveryStandards, EscalationRule, EscalationRules, ReviewDimension, ReviewRubric,
+        ValidationPolicy, ValidationStep,
+    },
+    tooling::{RoleToolRegistry, RoleToolRuntime},
 };
-use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
 const DEFAULT_REVIEW_INTERVAL_SECONDS: u64 = 604800;
 

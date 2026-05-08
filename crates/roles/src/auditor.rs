@@ -1,9 +1,7 @@
 //! The Auditor role continuously monitors events for policy violations, evidence chain integrity,
 //! process adherence, confidence justification, and authority scope enforcement.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use mmat_coordinator::{
@@ -12,15 +10,27 @@ use mmat_coordinator::{
 use mmat_event_stream::event::{
     EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
 };
-use mmat_llm::client::LlmClient;
-use mmat_llm::message::{CompletionRequest, Message};
-use mmat_memory::provenance::ProvenanceEngine;
-use mmat_memory::types::MemoryId;
+use mmat_llm::{
+    client::LlmClient,
+    message::{CompletionRequest, Message},
+};
+use mmat_memory::{provenance::ProvenanceEngine, types::MemoryId};
 use tracing::{info, warn};
 
 use crate::artefacts::{
     AuditReport, ConfidenceAssessment, EvidenceChainStatus, EvidencePack, ProcessAdherenceCheck,
 };
+
+/// Configuration for the Auditor's LLM-based semantic checks.
+#[derive(Clone, Debug)]
+pub struct AuditorLlmConfig {
+    /// Whether LLM-based checks are enabled.
+    pub enabled: bool,
+    /// The model identifier to use for checks.
+    pub model: String,
+    /// Maximum number of LLM checks per audit cycle.
+    pub max_checks_per_cycle: u32,
+}
 
 /// The Auditor role monitors the organisation for policy violations and evidence integrity.
 pub struct Auditor {
@@ -38,17 +48,6 @@ pub struct Auditor {
     confidence_assessments: parking_lot::Mutex<Vec<ConfidenceAssessment>>,
     report_interval_seconds: u64,
     last_report_time: parking_lot::Mutex<std::time::Instant>,
-}
-
-/// Configuration for the Auditor's LLM-based semantic checks.
-#[derive(Clone, Debug)]
-pub struct AuditorLlmConfig {
-    /// Whether LLM-based checks are enabled.
-    pub enabled: bool,
-    /// The model identifier to use for checks.
-    pub model: String,
-    /// Maximum number of LLM checks per audit cycle.
-    pub max_checks_per_cycle: u32,
 }
 
 impl Default for AuditorLlmConfig {

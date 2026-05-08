@@ -2,17 +2,23 @@
 
 use std::sync::Arc;
 
-use mmat_event_stream::event::{EventType, EvidenceRef, RoleId, SemanticEvent};
-use mmat_event_stream::event_bus::EventBus;
-use mmat_llm::client::LlmClient;
-use mmat_llm::message::{CompletionRequest, Message};
+use mmat_event_stream::{
+    event::{EventType, EvidenceRef, RoleId, SemanticEvent},
+    event_bus::EventBus,
+};
+use mmat_llm::{
+    client::LlmClient,
+    message::{CompletionRequest, Message},
+};
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, interval};
 
-use crate::error::{Error, Result};
-use crate::qdrant::VectorMemoryBackend;
-use crate::store::MemoryStore;
-use crate::types::{Authority, MemoryId, MemoryScope, MemoryType};
+use crate::{
+    error::{Error, Result},
+    qdrant::VectorMemoryBackend,
+    store::MemoryStore,
+    types::{Authority, MemoryId, MemoryScope, MemoryType},
+};
 
 /// Configuration for the attention engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]

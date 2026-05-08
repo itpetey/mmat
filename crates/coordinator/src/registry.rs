@@ -4,8 +4,10 @@ use std::collections::HashMap;
 
 use mmat_event_stream::event::{EventType, RoleId};
 
-use crate::error::{Error, Result};
-use crate::role::{RoleSpec, Severity};
+use crate::{
+    error::{Error, Result},
+    role::{RoleSpec, Severity},
+};
 
 /// Registry that holds all role specifications and indexes them for event dispatch.
 #[derive(Clone)]

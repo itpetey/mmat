@@ -1,15 +1,16 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use mmat_coordinator::{
     AuthorityScope, Budget, OrganisationConfig, OrganisationRuntime, RetrievalPlanner, Role,
     RoleContext, RoleError, RoleLifecycleState, RoleRegistry, RoleSpec, RoleType, Severity,
 };
 use mmat_event_stream::event::{ArtefactRef, EventType, RoleId, SemanticEvent, TaskContract};
-use mmat_memory::error::Result as MemoryResult;
-use mmat_memory::qdrant::VectorMemoryBackend;
-use mmat_memory::store::MemoryStore;
-use mmat_memory::types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType};
+use mmat_memory::{
+    error::Result as MemoryResult,
+    qdrant::VectorMemoryBackend,
+    store::MemoryStore,
+    types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType},
+};
 use qdrant_client::qdrant::Value;
 
 const CONTRACT_1: &str = "00000000-0000-0000-0000-000000000001";

@@ -1,19 +1,23 @@
 //! Task scheduling, budget tracking, and role lifecycle management.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use mmat_event_stream::event::{
-    EscalationSeverity, EventId, EventType, RoleId, SemanticEvent, TaskContract,
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::{Duration, Instant},
 };
-use mmat_event_stream::event_bus::EventBus;
+
+use mmat_event_stream::{
+    event::{EscalationSeverity, EventId, EventType, RoleId, SemanticEvent, TaskContract},
+    event_bus::EventBus,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::contract::{ContractId, TaskContext};
-use crate::registry::RoleRegistry;
-use crate::role::{Budget, CoordinatorMessage, RoleLifecycleState, Severity};
+use crate::{
+    contract::{ContractId, TaskContext},
+    registry::RoleRegistry,
+    role::{Budget, CoordinatorMessage, RoleLifecycleState, Severity},
+};
 
 /// Tracks the resource budget usage for a single contract.
 #[derive(Clone, Debug)]

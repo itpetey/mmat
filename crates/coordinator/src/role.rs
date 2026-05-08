@@ -1,13 +1,12 @@
 //! Core role types, lifecycle states, coordination primitives, and error types.
 
-use std::any::Any;
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
+use std::{any::Any, collections::HashMap, fmt, sync::Arc};
 
 use async_trait::async_trait;
-use mmat_event_stream::event::{EscalationSeverity, EventType, RoleId};
-use mmat_event_stream::event_bus::{EventBus, EventReceiver};
+use mmat_event_stream::{
+    event::{EscalationSeverity, EventType, RoleId},
+    event_bus::{EventBus, EventReceiver},
+};
 use mmat_memory::store::MemoryStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;

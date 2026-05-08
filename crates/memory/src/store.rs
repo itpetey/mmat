@@ -8,9 +8,11 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::error::Result;
-use crate::qdrant::VectorMemoryBackend;
-use crate::types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType};
+use crate::{
+    error::Result,
+    qdrant::VectorMemoryBackend,
+    types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType},
+};
 
 /// Persistent store for memories backed by SQLite.
 ///

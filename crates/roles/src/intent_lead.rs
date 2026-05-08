@@ -8,14 +8,12 @@ use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
-use mmat_llm::client::LlmClient;
-use mmat_llm::executor::Executor;
+use mmat_llm::{client::LlmClient, executor::Executor};
 use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::artefacts::IntentBrief;
-use crate::tooling::RoleToolRegistry;
+use crate::{artefacts::IntentBrief, tooling::RoleToolRegistry};
 
 /// The IntentLead role elicits goals, constraints, and preferences from the human stakeholder.
 pub struct IntentLead {

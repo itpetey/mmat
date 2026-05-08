@@ -10,13 +10,17 @@ use mmat_coordinator::{
 use mmat_event_stream::event::{
     EscalationSeverity, EventType, ReviewFinding, RoleId as EventRoleId, SemanticEvent,
 };
-use mmat_llm::client::LlmClient;
-use mmat_llm::executor::{Executor, ExecutorConfig};
-use mmat_llm::message::{CompletionRequest, Message};
+use mmat_llm::{
+    client::LlmClient,
+    executor::{Executor, ExecutorConfig},
+    message::{CompletionRequest, Message},
+};
 use tracing::{info, warn};
 
-use crate::artefacts::{Adr, FailureClass, InterfaceSpec};
-use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
+use crate::{
+    artefacts::{Adr, FailureClass, InterfaceSpec},
+    tooling::{RoleToolRegistry, RoleToolRuntime},
+};
 
 /// The Reviewer role evaluates implementation quality and architectural compliance.
 pub struct Reviewer {

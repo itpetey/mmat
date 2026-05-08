@@ -2,10 +2,12 @@
 
 use std::time::Duration;
 
-use mmat_memory::attention::AttentionEngine;
-use mmat_memory::qdrant::VectorMemoryBackend;
-use mmat_memory::store::MemoryStore;
-use mmat_memory::types::{Authority, Memory, MemoryScope, MemoryType};
+use mmat_memory::{
+    attention::AttentionEngine,
+    qdrant::VectorMemoryBackend,
+    store::MemoryStore,
+    types::{Authority, Memory, MemoryScope, MemoryType},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::role::RoleType;

@@ -1,15 +1,15 @@
 //! Provenance tracking engine that traces evidence chains for memories.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use mmat_event_stream::event::{self, EventId, EventType, RoleId, SemanticEvent};
-use mmat_event_stream::event_bus::EventBus;
-use mmat_event_stream::event_store::EventStore;
+use mmat_event_stream::{
+    event::{self, EventId, EventType, RoleId, SemanticEvent},
+    event_bus::EventBus,
+    event_store::EventStore,
+};
 use parking_lot::RwLock;
 
-use crate::error::Result;
-use crate::types::Memory;
+use crate::{error::Result, types::Memory};
 
 /// Tracks evidence chains from events, rebuilds from the event store, and detects broken references.
 pub struct ProvenanceEngine {

@@ -10,15 +10,19 @@ use mmat_coordinator::{
 use mmat_event_stream::event::{
     EscalationSeverity, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
 };
-use mmat_llm::client::LlmClient;
-use mmat_llm::executor::{Executor, ExecutorConfig};
-use mmat_llm::message::{CompletionRequest, Message};
+use mmat_llm::{
+    client::LlmClient,
+    executor::{Executor, ExecutorConfig},
+    message::{CompletionRequest, Message},
+};
 use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::artefacts::{EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestions, ResearchBrief};
-use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
+use crate::{
+    artefacts::{EvidenceFinding, EvidencePack, OpenQuestion, OpenQuestions, ResearchBrief},
+    tooling::{RoleToolRegistry, RoleToolRuntime},
+};
 
 const DEFAULT_MAX_LLM_CALLS: usize = 20;
 const DEFAULT_MAX_TOOL_INVOCATIONS: usize = 50;

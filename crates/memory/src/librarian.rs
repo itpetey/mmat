@@ -3,15 +3,19 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use mmat_event_stream::event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent};
-use mmat_event_stream::event_bus::EventBus;
+use mmat_event_stream::{
+    event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent},
+    event_bus::EventBus,
+};
 use tokio::time::{Duration, interval};
 
-use crate::attention::AttentionEngine;
-use crate::error::Result;
-use crate::qdrant::VectorMemoryBackend;
-use crate::store::MemoryStore;
-use crate::types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType};
+use crate::{
+    attention::AttentionEngine,
+    error::Result,
+    qdrant::VectorMemoryBackend,
+    store::MemoryStore,
+    types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType},
+};
 
 /// The librarian runs a gating pipeline on proposed memories and manages decay scans.
 pub struct Librarian {
