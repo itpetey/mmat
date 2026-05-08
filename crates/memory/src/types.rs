@@ -3,7 +3,7 @@
 use std::fmt;
 
 use chrono::{DateTime, Utc};
-use event_stream::event::{EventId, RoleId};
+use mmat_event_stream::event::{EventId, RoleId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

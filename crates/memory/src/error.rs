@@ -1,6 +1,6 @@
 //! Error types for the memory crate.
 
-use event_stream::event_store::EventStoreError;
+use mmat_event_stream::event_store::EventStoreError;
 use thiserror::Error;
 
 /// Convenience type alias for results with the crate's [`enum@Error`] type.

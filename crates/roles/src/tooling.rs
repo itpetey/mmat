@@ -1,10 +1,11 @@
 //! Tool registry and runtime types shared across roles.
 
+use mmat_llm::tool::ToolRegistry;
 use serde_json::Value;
 use thiserror::Error;
 
 /// Alias for a tool registry parameterised for role-level tools.
-pub type RoleToolRegistry = llm::tool::ToolRegistry<RoleToolRuntime, RoleToolError>;
+pub type RoleToolRegistry = ToolRegistry<RoleToolRuntime, RoleToolError>;
 
 /// Unit struct representing the runtime context for role tools.
 #[derive(Debug, Default)]

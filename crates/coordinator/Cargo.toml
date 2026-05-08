@@ -1,20 +1,29 @@
 [package]
-name = "coordinator"
+name = "mmat-coordinator"
 version.workspace = true
 edition.workspace = true
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
 
 [dependencies]
-event-stream = { path = "../event-stream" }
-memory = { path = "../memory" }
-async-trait = { workspace = true }
-parking_lot = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
-tracing = { workspace = true }
-uuid = { workspace = true }
+async-trait.workspace = true
+mmat-event-stream = { path = "../event-stream" }
+mmat-memory = { path = "../memory" }
+parking_lot.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time"
+] }
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-qdrant-client = { workspace = true }
-tempfile = { workspace = true }
+qdrant-client.workspace = true
+tempfile.workspace = true

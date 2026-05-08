@@ -4,15 +4,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coordinator::{
+use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
-use event_stream::event::{
+use mmat_event_stream::event::{
     EscalationSeverity, EventType, ReviewFinding, RoleId as EventRoleId, SemanticEvent,
 };
-use llm::client::LlmClient;
-use llm::executor::{Executor, ExecutorConfig};
-use llm::message::{CompletionRequest, Message};
+use mmat_llm::client::LlmClient;
+use mmat_llm::executor::{Executor, ExecutorConfig};
+use mmat_llm::message::{CompletionRequest, Message};
 use tracing::{info, warn};
 
 use crate::artefacts::{Adr, FailureClass, InterfaceSpec};

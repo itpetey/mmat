@@ -1,27 +1,35 @@
 [package]
-name = "roles"
+name = "mmat-roles"
 version.workspace = true
 edition.workspace = true
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
 
 [dependencies]
-coordinator = { path = "../coordinator" }
-event-stream = { path = "../event-stream" }
-llm = { path = "../llm" }
-memory = { path = "../memory" }
-process = { path = "../process" }
-project = { path = "../project" }
-async-trait = { workspace = true }
-chrono = { workspace = true }
-parking_lot = { workspace = true }
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
-tracing = { workspace = true }
-uuid = { workspace = true }
+async-trait.workspace = true
+chrono.workspace = true
+mmat-coordinator = { path = "../coordinator" }
+mmat-event-stream = { path = "../event-stream" }
+mmat-llm = { path = "../llm" }
+mmat-memory = { path = "../memory" }
+mmat-process = { path = "../process" }
+mmat-project = { path = "../project" }
+parking_lot.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "sync",
+  "time"
+] }
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-qdrant-client = { workspace = true }
-tempfile = { workspace = true }
-wiremock = { workspace = true }
+qdrant-client.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true

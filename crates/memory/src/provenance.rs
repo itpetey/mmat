@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use event_stream::event::{EventId, EventType, SemanticEvent};
-use event_stream::event_bus::EventBus;
-use event_stream::event_store::EventStore;
+use mmat_event_stream::event::{self, EventId, EventType, RoleId, SemanticEvent};
+use mmat_event_stream::event_bus::EventBus;
+use mmat_event_stream::event_store::EventStore;
 use parking_lot::RwLock;
 
 use crate::error::Result;
@@ -259,7 +259,7 @@ impl ProvenanceEngine {
         let source_agent = match event {
             SemanticEvent::ClaimMade { source_agent, .. }
             | SemanticEvent::DecisionRecorded { source_agent, .. } => source_agent.clone(),
-            _ => event_stream::event::RoleId::new("unknown"),
+            _ => RoleId::new("unknown"),
         };
 
         let description = format!(
@@ -271,7 +271,7 @@ impl ProvenanceEngine {
         let violation = SemanticEvent::PolicyViolationDetected {
             event_id: EventId::new(),
             source_agent,
-            timestamp_ns: event_stream::event::now_ns(),
+            timestamp_ns: event::now_ns(),
             violation_type: "broken_evidence".to_string(),
             description,
             related_event_id: Some(event.event_id()),
@@ -300,7 +300,7 @@ impl Default for ProvenanceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use event_stream::event::{EvidenceRef, RoleId};
+    use mmat_event_stream::event::{EvidenceRef, RoleId};
 
     #[test]
     fn provenance_engine_new() {

@@ -5,16 +5,17 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use event_stream::event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent};
-use event_stream::event_bus::EventBus;
-use event_stream::event_store::EventStore;
-use memory::attention::{AttentionConfig, AttentionEngine};
-use memory::librarian::Librarian;
-use memory::provenance::ProvenanceEngine;
-use memory::qdrant::VectorMemoryBackend;
-use memory::store::MemoryStore;
-use memory::types::{
-    Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType,
+use mmat_event_stream::event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent};
+use mmat_event_stream::event_bus::EventBus;
+use mmat_event_stream::event_store::EventStore;
+use mmat_memory::attention::{AttentionConfig, AttentionEngine};
+use mmat_memory::error::{Error, Result};
+use mmat_memory::librarian::Librarian;
+use mmat_memory::provenance::ProvenanceEngine;
+use mmat_memory::{
+    qdrant::VectorMemoryBackend,
+    store::MemoryStore,
+    types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType},
 };
 use parking_lot::Mutex;
 use qdrant_client::qdrant::Value;
@@ -34,7 +35,7 @@ impl VectorMemoryBackend for FakeVectorBackend {
         id: MemoryId,
         _embedding: Vec<f32>,
         _payload: HashMap<String, Value>,
-    ) -> memory::error::Result<()> {
+    ) -> Result<()> {
         self.upserts.lock().push(id);
         Ok(())
     }
@@ -43,9 +44,9 @@ impl VectorMemoryBackend for FakeVectorBackend {
         &self,
         _query_embedding: Vec<f32>,
         _limit: u64,
-    ) -> memory::error::Result<Vec<(MemoryId, f32)>> {
+    ) -> Result<Vec<(MemoryId, f32)>> {
         if self.fail_search.load(Ordering::SeqCst) {
-            return Err(memory::error::Error::Qdrant("search failed".to_string()));
+            return Err(Error::Qdrant("search failed".to_string()));
         }
 
         let configured = self.results.lock().clone();
@@ -56,7 +57,7 @@ impl VectorMemoryBackend for FakeVectorBackend {
         Ok(self.upserts.lock().iter().map(|id| (*id, 1.0)).collect())
     }
 
-    async fn delete(&self, id: MemoryId) -> memory::error::Result<()> {
+    async fn delete(&self, id: MemoryId) -> Result<()> {
         self.deleted.lock().push(id);
         self.upserts.lock().retain(|existing| *existing != id);
         Ok(())

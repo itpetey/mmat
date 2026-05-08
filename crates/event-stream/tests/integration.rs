@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use event_stream::event::{EventType, RoleId, SemanticEvent};
-use event_stream::event_bus::EventBus;
-use event_stream::event_store::EventStore;
+use mmat_event_stream::event::{EventType, RoleId, SemanticEvent};
+use mmat_event_stream::event_bus::EventBus;
+use mmat_event_stream::event_store::EventStore;
 
 #[tokio::test]
 async fn multiple_subscribers_with_filters() {
@@ -17,7 +17,7 @@ async fn multiple_subscribers_with_filters() {
         RoleId::new("coordinator"),
         "task-1",
         RoleId::new("worker"),
-        event_stream::event::TaskContract {
+        mmat_event_stream::event::TaskContract {
             contract_id: "c1".into(),
             description: "do thing".into(),
         },
@@ -67,7 +67,7 @@ async fn subscriber_replays_after_lag() {
     // rx should lag since capacity is 2
     let result = rx.recv().await;
     match result {
-        Err(event_stream::event_bus::RecvError::Lagged(n)) => {
+        Err(mmat_event_stream::event_bus::RecvError::Lagged(n)) => {
             assert!(n >= 1);
         }
         other => {

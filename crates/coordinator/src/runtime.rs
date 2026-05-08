@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use event_stream::event::{RoleId, SemanticEvent};
-use event_stream::event_bus::EventBus;
-use event_stream::event_store::EventStore;
-use memory::store::MemoryStore;
+use mmat_event_stream::event::{EventType, RoleId, SemanticEvent};
+use mmat_event_stream::event_bus::EventBus;
+use mmat_event_stream::event_store::EventStore;
+use mmat_memory::store::MemoryStore;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, timeout};
@@ -194,12 +194,12 @@ impl OrganisationRuntime {
         let scheduler_clone = Arc::clone(&self.scheduler);
         let scheduler_handle = tokio::spawn(async move {
             let mut rx = bus_clone.subscribe(&[
-                event_stream::event::EventType::TaskAssigned,
-                event_stream::event::EventType::TaskStarted,
-                event_stream::event::EventType::TaskCompleted,
-                event_stream::event::EventType::TaskFailed,
-                event_stream::event::EventType::EscalationRequested,
-                event_stream::event::EventType::ToolExecuted,
+                EventType::TaskAssigned,
+                EventType::TaskStarted,
+                EventType::TaskCompleted,
+                EventType::TaskFailed,
+                EventType::EscalationRequested,
+                EventType::ToolExecuted,
             ]);
             while let Ok(event) = rx.recv().await {
                 let mut scheduler = scheduler_clone.lock().await;

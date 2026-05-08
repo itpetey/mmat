@@ -2,23 +2,28 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use coordinator::{Role, RoleContext};
-use event_stream::event::{EventId, EventType, RoleId as EventRoleId, SemanticEvent};
-use event_stream::event_bus::EventBus;
-use llm::client::LlmClient;
-use llm::message::{Choice, CompletionRequest, CompletionResponse, Message, Usage};
-use memory::librarian::Librarian;
-use memory::qdrant::VectorMemoryBackend;
-use memory::store::MemoryStore;
-use memory::types::MemoryId;
+use mmat_coordinator::{CoordinatorHandle, Role, RoleContext, RoleRegistry};
+use mmat_event_stream::event::{
+    ArtefactRef, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
+};
+use mmat_event_stream::event_bus::EventBus;
+use mmat_event_stream::event_store::EventStore;
+use mmat_llm::client::LlmClient;
+use mmat_llm::error::Result as LlmResult;
+use mmat_llm::message::{Choice, CompletionRequest, CompletionResponse, Message, Usage};
+use mmat_memory::error::Result as MemoryResult;
+use mmat_memory::librarian::Librarian;
+use mmat_memory::qdrant::VectorMemoryBackend;
+use mmat_memory::store::MemoryStore;
+use mmat_memory::types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType};
 use qdrant_client::qdrant::Value;
 use tempfile::tempdir;
 use tokio::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::artefacts::{AuditReport, EvidenceFinding, EvidencePack};
-use crate::{Auditor, AuditorLlmConfig};
+use mmat_roles::artefacts::{AuditReport, EvidenceFinding, EvidencePack};
+use mmat_roles::{Auditor, AuditorLlmConfig};
 
 #[derive(Default)]
 struct MockLlmClient {
@@ -27,10 +32,7 @@ struct MockLlmClient {
 
 #[async_trait::async_trait]
 impl LlmClient for MockLlmClient {
-    async fn complete(
-        &self,
-        _request: CompletionRequest,
-    ) -> llm::error::Result<CompletionResponse> {
+    async fn complete(&self, _request: CompletionRequest) -> LlmResult<CompletionResponse> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(CompletionResponse {
             id: "mock".to_string(),
@@ -67,7 +69,7 @@ impl VectorMemoryBackend for FakeVectorBackend {
         _id: MemoryId,
         _embedding: Vec<f32>,
         _payload: HashMap<String, Value>,
-    ) -> memory::error::Result<()> {
+    ) -> MemoryResult<()> {
         Ok(())
     }
 
@@ -75,25 +77,19 @@ impl VectorMemoryBackend for FakeVectorBackend {
         &self,
         _query_embedding: Vec<f32>,
         _limit: u64,
-    ) -> memory::error::Result<Vec<(MemoryId, f32)>> {
+    ) -> MemoryResult<Vec<(MemoryId, f32)>> {
         Ok(Vec::new())
     }
 
-    async fn delete(&self, id: MemoryId) -> memory::error::Result<()> {
+    async fn delete(&self, id: MemoryId) -> MemoryResult<()> {
         self.deleted.lock().push(id);
         Ok(())
     }
 }
 
-fn setup_auditor_test_env() -> (
-    EventBus,
-    Arc<event_stream::event_store::EventStore>,
-    Arc<MemoryStore>,
-) {
+fn setup_auditor_test_env() -> (EventBus, Arc<EventStore>, Arc<MemoryStore>) {
     let dir = tempdir().unwrap();
-    let event_store = Arc::new(
-        event_stream::event_store::EventStore::open(dir.path().join("events.db")).unwrap(),
-    );
+    let event_store = Arc::new(EventStore::open(dir.path().join("events.db")).unwrap());
     let bus = EventBus::new(100).with_store(event_store.clone());
     let memory_store = Arc::new(MemoryStore::open(dir.path().join("memory.db")).unwrap());
     (bus, event_store, memory_store)
@@ -105,7 +101,7 @@ async fn test_auditor_detects_process_skipped_when_tests_not_run() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::ProcessSkipped]);
@@ -162,7 +158,7 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::PolicyViolationDetected]);
@@ -198,7 +194,7 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
     let claim = SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         "tests passed",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: tool_id,
             description: "test results".to_string(),
         }],
@@ -234,7 +230,7 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::EvidenceChainBroken]);
 
@@ -264,7 +260,7 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
     let claim = SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         "SQLite is used",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: decision_id,
             description: "decision reference".to_string(),
         }],
@@ -288,7 +284,7 @@ async fn test_auditor_does_not_accept_uncited_stale_test_run() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::ProcessSkipped]);
 
@@ -342,7 +338,7 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::EvidenceChainBroken]);
@@ -363,11 +359,11 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
     )))
     .unwrap();
 
-    let fake_id = event_stream::event::EventId::new();
+    let fake_id = EventId::new();
     let claim = SemanticEvent::new_claim_made(
         EventRoleId("scholar-001".to_string()),
         "Reference to /nonexistent/file.rs",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: fake_id,
             description: "file path".to_string(),
         }],
@@ -401,7 +397,7 @@ async fn test_auditor_flags_unjustified_confidence() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::PolicyViolationDetected]);
@@ -458,7 +454,7 @@ async fn test_auditor_flags_authority_violation() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::PolicyViolationDetected]);
@@ -514,7 +510,7 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[EventType::PolicyViolationDetected]);
@@ -535,11 +531,11 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
     )))
     .unwrap();
 
-    let fake_evidence_id = event_stream::event::EventId::new();
+    let fake_evidence_id = EventId::new();
     let claim = SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         "broken claim",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: fake_evidence_id,
             description: "nonexistent".to_string(),
         }],
@@ -548,12 +544,12 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
     let claim_id = claim.event_id();
     bus.publish(claim).unwrap();
 
-    let memory = memory::types::Memory::builder()
-        .memory_type(memory::types::MemoryType::Fact)
+    let memory = Memory::builder()
+        .memory_type(MemoryType::Fact)
         .content("derived from broken claim")
-        .scope(memory::types::MemoryScope::Project)
-        .authority(memory::types::Authority::LLMInference)
-        .confidence(memory::types::Confidence::new(0.7).unwrap())
+        .scope(MemoryScope::Project)
+        .authority(Authority::LLMInference)
+        .confidence(Confidence::new(0.7).unwrap())
         .evidence_refs(vec![claim_id])
         .source_agent(EventRoleId("worker-001".to_string()))
         .build()
@@ -598,7 +594,7 @@ async fn test_auditor_does_not_flag_valid_claim() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
 
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut output_rx = bus.subscribe(&[
@@ -638,7 +634,7 @@ async fn test_auditor_does_not_flag_valid_claim() {
     let claim = SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         "tests passed",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: tool_id,
             description: "test results".to_string(),
         }],
@@ -670,7 +666,7 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut reports = bus.subscribe(&[EventType::ArtefactProduced]);
     let mut violations = bus.subscribe(&[EventType::PolicyViolationDetected]);
@@ -704,7 +700,7 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
     bus.publish(SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         "tests passed",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: tool_id,
             description: "test results".to_string(),
         }],
@@ -715,7 +711,7 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
         EventRoleId("worker-001".to_string()),
         "task-low-confidence",
         "contract-low-confidence",
-        event_stream::event::ArtefactRef {
+        ArtefactRef {
             artefact_type: "implementation_patch".to_string(),
             reference: "patch".to_string(),
         },
@@ -771,7 +767,7 @@ async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
     ));
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut violations = bus.subscribe(&[EventType::PolicyViolationDetected]);
 
@@ -809,7 +805,7 @@ async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
         bus.publish(SemanticEvent::new_claim_made(
             EventRoleId("worker-001".to_string()),
             claim_text,
-            vec![event_stream::event::EvidenceRef {
+            vec![EvidenceRef {
                 event_id: tool_id,
                 description: "probe output".to_string(),
             }],
@@ -842,7 +838,7 @@ async fn test_auditor_detects_hallucinated_api_endpoint() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut violations = bus.subscribe(&[EventType::PolicyViolationDetected]);
 
@@ -876,7 +872,7 @@ async fn test_auditor_detects_hallucinated_api_endpoint() {
     bus.publish(SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         format!("The API supports endpoint {endpoint}"),
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: tool_id,
             description: "repository scan".to_string(),
         }],
@@ -909,7 +905,7 @@ async fn test_auditor_verifies_scholar_web_sources() {
     let auditor = Arc::new(Auditor::new().with_source_verification(true));
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let receiver = bus.subscribe(&[EventType::OrganisationStarted]);
     let mut broken = bus.subscribe(&[EventType::EvidenceChainBroken]);
 
@@ -966,7 +962,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
-    let coordinator = coordinator::CoordinatorHandle::new(tx);
+    let coordinator = CoordinatorHandle::new(tx);
     let auditor_ctx = RoleContext {
         bus: (*bus).clone(),
         receiver: bus.subscribe(&[EventType::OrganisationStarted]),
@@ -992,7 +988,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
     let claim = SemanticEvent::new_claim_made(
         EventRoleId("worker-001".to_string()),
         "broken claim",
-        vec![event_stream::event::EvidenceRef {
+        vec![EvidenceRef {
             event_id: fake_evidence_id,
             description: "nonexistent".to_string(),
         }],
@@ -1001,12 +997,12 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
     let claim_id = claim.event_id();
     bus.publish(claim).unwrap();
 
-    let memory = memory::types::Memory::builder()
-        .memory_type(memory::types::MemoryType::Fact)
+    let memory = Memory::builder()
+        .memory_type(MemoryType::Fact)
         .content("derived from broken claim")
-        .scope(memory::types::MemoryScope::Project)
-        .authority(memory::types::Authority::LLMInference)
-        .confidence(memory::types::Confidence::new(0.7).unwrap())
+        .scope(MemoryScope::Project)
+        .authority(Authority::LLMInference)
+        .confidence(Confidence::new(0.7).unwrap())
         .evidence_refs(vec![claim_id])
         .source_agent(EventRoleId("worker-001".to_string()))
         .build()
@@ -1045,6 +1041,6 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
 #[test]
 fn test_auditor_spec_registers() {
     let auditor = Auditor::new();
-    let mut registry = coordinator::RoleRegistry::new();
+    let mut registry = RoleRegistry::new();
     registry.register(auditor.spec()).unwrap();
 }

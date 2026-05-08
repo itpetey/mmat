@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use event_stream::event::{EventType, EvidenceRef, SemanticEvent};
-use event_stream::event_bus::EventBus;
-use llm::client::LlmClient;
-use llm::message::{CompletionRequest, Message};
+use mmat_event_stream::event::{EventType, EvidenceRef, RoleId, SemanticEvent};
+use mmat_event_stream::event_bus::EventBus;
+use mmat_llm::client::LlmClient;
+use mmat_llm::message::{CompletionRequest, Message};
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, interval};
 
@@ -139,7 +139,7 @@ impl AttentionEngine {
             let (memory_type, scope, authority) = Self::infer_metadata(event);
 
             let proposal = SemanticEvent::MemoryProposed {
-                event_id: event_stream::event::EventId::new(),
+                event_id: mmat_event_stream::event::EventId::new(),
                 source_agent: Self::extract_source_agent(event),
                 timestamp_ns: Self::extract_timestamp(event),
                 memory_type: memory_type.discriminant_str().to_string(),
@@ -281,14 +281,14 @@ impl AttentionEngine {
         }
     }
 
-    fn extract_source_agent(event: &SemanticEvent) -> event_stream::event::RoleId {
+    fn extract_source_agent(event: &SemanticEvent) -> RoleId {
         match event {
             SemanticEvent::ClaimMade { source_agent, .. }
             | SemanticEvent::DecisionRecorded { source_agent, .. }
             | SemanticEvent::ToolExecuted { source_agent, .. }
             | SemanticEvent::HumanFeedbackReceived { source_agent, .. }
             | SemanticEvent::ArtefactProduced { source_agent, .. } => source_agent.clone(),
-            _ => event_stream::event::RoleId::new("unknown"),
+            _ => RoleId::new("unknown"),
         }
     }
 
@@ -392,15 +392,15 @@ impl AttentionEngine {
         }
     }
 
-    fn authority_to_role(authority: &Authority) -> event_stream::event::RoleId {
+    fn authority_to_role(authority: &Authority) -> RoleId {
         match authority {
-            Authority::CompilerOutput => event_stream::event::RoleId::new("compiler"),
-            Authority::UserInstruction => event_stream::event::RoleId::new("user"),
-            Authority::RepositoryState => event_stream::event::RoleId::new("repository"),
-            Authority::AcceptedADR => event_stream::event::RoleId::new("architect"),
-            Authority::ReviewFindings => event_stream::event::RoleId::new("reviewer"),
-            Authority::LLMInference => event_stream::event::RoleId::new("llm"),
-            Authority::SpeculativeReasoning => event_stream::event::RoleId::new("llm"),
+            Authority::CompilerOutput => RoleId::new("compiler"),
+            Authority::UserInstruction => RoleId::new("user"),
+            Authority::RepositoryState => RoleId::new("repository"),
+            Authority::AcceptedADR => RoleId::new("architect"),
+            Authority::ReviewFindings => RoleId::new("reviewer"),
+            Authority::LLMInference => RoleId::new("llm"),
+            Authority::SpeculativeReasoning => RoleId::new("llm"),
         }
     }
 
@@ -446,6 +446,7 @@ impl AttentionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mmat_event_stream::event::EventId;
     use parking_lot::Mutex;
     use qdrant_client::qdrant::Value;
     use std::collections::HashMap;
@@ -491,32 +492,18 @@ mod tests {
 
     #[test]
     fn salience_scoring_by_event_type() {
-        let feedback = SemanticEvent::new_human_feedback_received(
-            event_stream::event::RoleId::new("user"),
-            "yes",
-        );
+        let feedback = SemanticEvent::new_human_feedback_received(RoleId::new("user"), "yes");
         assert!(AttentionEngine::score_salience(&feedback) >= 0.9);
 
-        let tool = SemanticEvent::new_tool_executed(
-            event_stream::event::RoleId::new("worker"),
-            "test",
-            "{}",
-            0,
-            "",
-            "",
-            0,
-        );
+        let tool =
+            SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "", "", 0);
         assert!(AttentionEngine::score_salience(&tool) >= 0.7);
     }
 
     #[test]
     fn extract_content_from_claim() {
-        let event = SemanticEvent::new_claim_made(
-            event_stream::event::RoleId::new("llm"),
-            "The API returns 404",
-            vec![],
-            0.8,
-        );
+        let event =
+            SemanticEvent::new_claim_made(RoleId::new("llm"), "The API returns 404", vec![], 0.8);
         let content = AttentionEngine::extract_content(&event);
         assert_eq!(content, "The API returns 404");
     }
@@ -524,7 +511,7 @@ mod tests {
     #[test]
     fn infer_metadata_from_tool_executed_success() {
         let event = SemanticEvent::new_tool_executed(
-            event_stream::event::RoleId::new("worker"),
+            RoleId::new("worker"),
             "cargo_build",
             "{}",
             0,
@@ -541,7 +528,7 @@ mod tests {
     #[test]
     fn infer_metadata_from_tool_executed_failure() {
         let event = SemanticEvent::new_tool_executed(
-            event_stream::event::RoleId::new("worker"),
+            RoleId::new("worker"),
             "cargo_build",
             "{}",
             1,
@@ -561,9 +548,9 @@ mod tests {
 
     #[test]
     fn extract_evidence_refs_includes_source_event() {
-        let tool_event_id = event_stream::event::EventId::new();
+        let tool_event_id = EventId::new();
         let claim = SemanticEvent::new_claim_made(
-            event_stream::event::RoleId::new("llm"),
+            RoleId::new("llm"),
             "The API returns 404 for missing resources",
             vec![EvidenceRef {
                 event_id: tool_event_id,
@@ -589,7 +576,7 @@ mod tests {
             .scope(MemoryScope::Project)
             .authority(Authority::UserInstruction)
             .confidence(Confidence::new(0.9).unwrap())
-            .source_agent(event_stream::event::RoleId::new("user"))
+            .source_agent(RoleId::new("user"))
             .build()
             .unwrap();
         store.insert(&memory).unwrap();
@@ -608,10 +595,10 @@ mod tests {
         });
 
         let mut batch = vec![Arc::new(SemanticEvent::new_claim_made(
-            event_stream::event::RoleId::new("llm"),
+            RoleId::new("llm"),
             "The database schema requires a migration because a column was added",
             vec![EvidenceRef {
-                event_id: event_stream::event::EventId::new(),
+                event_id: EventId::new(),
                 description: "tool output".to_string(),
             }],
             0.9,

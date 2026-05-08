@@ -3,13 +3,18 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use coordinator::{Role, RoleContext};
-    use event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
-    use event_stream::event_bus::EventBus;
-    use memory::librarian::Librarian;
-    use memory::qdrant::VectorMemoryBackend;
-    use memory::store::MemoryStore;
-    use memory::types::MemoryId;
+    use mmat_coordinator::{
+        AuthorityScope, CoordinatorHandle, Role, RoleContext, RoleRegistry, RoleType,
+    };
+    use mmat_event_stream::event::{
+        ArtefactRef, EventType, ReviewFinding, RoleId as EventRoleId, SemanticEvent, TaskContract,
+    };
+    use mmat_event_stream::event_bus::EventBus;
+    use mmat_memory::error::Result as MemoryResult;
+    use mmat_memory::librarian::Librarian;
+    use mmat_memory::qdrant::VectorMemoryBackend;
+    use mmat_memory::store::MemoryStore;
+    use mmat_memory::types::{MemoryId, MemoryType};
     use parking_lot::Mutex;
     use qdrant_client::qdrant::Value;
     use tempfile::tempdir;
@@ -31,7 +36,7 @@ mod tests {
             id: MemoryId,
             _embedding: Vec<f32>,
             _payload: HashMap<String, Value>,
-        ) -> memory::error::Result<()> {
+        ) -> MemoryResult<()> {
             self.upserts.lock().push(id);
             Ok(())
         }
@@ -40,11 +45,11 @@ mod tests {
             &self,
             _query_embedding: Vec<f32>,
             _limit: u64,
-        ) -> memory::error::Result<Vec<(MemoryId, f32)>> {
+        ) -> MemoryResult<Vec<(MemoryId, f32)>> {
             Ok(self.upserts.lock().iter().map(|id| (*id, 1.0)).collect())
         }
 
-        async fn delete(&self, id: MemoryId) -> memory::error::Result<()> {
+        async fn delete(&self, id: MemoryId) -> MemoryResult<()> {
             self.upserts.lock().retain(|existing| *existing != id);
             Ok(())
         }
@@ -75,11 +80,8 @@ mod tests {
     fn test_intent_lead_spec() {
         let intent_lead = IntentLead::new();
         let spec = intent_lead.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::IntentLead);
-        assert!(matches!(
-            spec.authority_scope,
-            coordinator::AuthorityScope::IntentOnly
-        ));
+        assert_eq!(spec.role_type, RoleType::IntentLead);
+        assert!(matches!(spec.authority_scope, AuthorityScope::IntentOnly));
         assert_eq!(spec.input_contract, EventType::HumanFeedbackReceived);
         assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
         assert!(spec.output_contract.contains(&EventType::TaskAssigned));
@@ -100,7 +102,7 @@ mod tests {
         );
         assert!(spec.authority_scope.can_publish(&EventType::MemoryProposed));
 
-        let mut registry = coordinator::RoleRegistry::new();
+        let mut registry = RoleRegistry::new();
         registry.register(spec).unwrap();
     }
 
@@ -122,11 +124,8 @@ mod tests {
     fn test_scholar_spec() {
         let scholar = Scholar::new();
         let spec = scholar.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::Scholar);
-        assert!(matches!(
-            spec.authority_scope,
-            coordinator::AuthorityScope::Architecture
-        ));
+        assert_eq!(spec.role_type, RoleType::Scholar);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Architecture));
         assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
         assert!(spec.output_contract.contains(&EventType::ClaimMade));
         assert!(spec.output_contract.contains(&EventType::MemoryProposed));
@@ -159,11 +158,8 @@ mod tests {
     fn test_ops_manager_spec() {
         let ops_manager = OpsManager::new();
         let spec = ops_manager.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::OpsManager);
-        assert!(matches!(
-            spec.authority_scope,
-            coordinator::AuthorityScope::Architecture
-        ));
+        assert_eq!(spec.role_type, RoleType::OpsManager);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Architecture));
         assert!(spec.output_contract.contains(&EventType::DecisionRecorded));
         assert!(spec.output_contract.contains(&EventType::MemoryProposed));
         assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
@@ -174,7 +170,7 @@ mod tests {
         let (bus, memory_store) = setup_test_env();
         let intent_lead = Arc::new(IntentLead::new());
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
         let receiver = bus.subscribe(&[EventType::HumanFeedbackReceived]);
         let mut output_rx = bus.subscribe(&[
             EventType::HumanFeedbackRequested,
@@ -283,7 +279,7 @@ mod tests {
         let scholar = Arc::new(Scholar::new());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
@@ -354,7 +350,7 @@ mod tests {
         let scholar = Arc::new(Scholar::new().with_budget(1, 0, 1));
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
@@ -415,7 +411,7 @@ mod tests {
         let ops_manager = Arc::new(OpsManager::new());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
@@ -489,7 +485,7 @@ mod tests {
 
         let ops_manager = Arc::new(OpsManager::new());
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
         let ctx = RoleContext {
@@ -517,9 +513,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         let mut accepted = false;
         while tokio::time::Instant::now() < deadline {
-            let sops = memory_store
-                .query_by_type(memory::types::MemoryType::SOP)
-                .unwrap();
+            let sops = memory_store.query_by_type(MemoryType::SOP).unwrap();
             if !sops.is_empty() {
                 accepted = true;
                 break;
@@ -628,11 +622,8 @@ mod tests {
     fn test_architect_spec() {
         let architect = Architect::new();
         let spec = architect.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::Architect);
-        assert!(matches!(
-            spec.authority_scope,
-            coordinator::AuthorityScope::Architecture
-        ));
+        assert_eq!(spec.role_type, RoleType::Architect);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Architecture));
         assert!(spec.output_contract.contains(&EventType::DecisionRecorded));
         assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
     }
@@ -654,11 +645,8 @@ mod tests {
     fn test_project_manager_spec() {
         let pm = ProjectManager::new();
         let spec = pm.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::ProjectManager);
-        assert!(matches!(
-            spec.authority_scope,
-            coordinator::AuthorityScope::Planning
-        ));
+        assert_eq!(spec.role_type, RoleType::ProjectManager);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Planning));
         assert!(spec.output_contract.contains(&EventType::TaskAssigned));
         assert!(spec.output_contract.contains(&EventType::ArtefactProduced));
     }
@@ -682,10 +670,10 @@ mod tests {
     fn test_worker_spec() {
         let worker = Worker::new();
         let spec = worker.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::Worker);
+        assert_eq!(spec.role_type, RoleType::Worker);
         assert!(matches!(
             spec.authority_scope,
-            coordinator::AuthorityScope::Implementation
+            AuthorityScope::Implementation
         ));
         assert!(spec.output_contract.contains(&EventType::ToolExecuted));
         assert!(spec.output_contract.contains(&EventType::TaskCompleted));
@@ -708,11 +696,8 @@ mod tests {
     fn test_reviewer_spec() {
         let reviewer = Reviewer::new();
         let spec = reviewer.spec();
-        assert_eq!(spec.role_type, coordinator::RoleType::Reviewer);
-        assert!(matches!(
-            spec.authority_scope,
-            coordinator::AuthorityScope::Review
-        ));
+        assert_eq!(spec.role_type, RoleType::Reviewer);
+        assert!(matches!(spec.authority_scope, AuthorityScope::Review));
         assert!(spec.output_contract.contains(&EventType::ReviewCompleted));
         assert!(
             spec.output_contract
@@ -843,7 +828,7 @@ mod tests {
         let architect = Arc::new(Architect::new());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
@@ -932,7 +917,7 @@ mod tests {
         );
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
@@ -1033,7 +1018,7 @@ mod tests {
         let worker = Arc::new(Worker::new().with_validation_commands(vec![]));
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
 
@@ -1078,7 +1063,7 @@ mod tests {
     fn test_reviewer_failure_classification() {
         let reviewer = Reviewer::new();
 
-        let defect = event_stream::event::ReviewFinding {
+        let defect = ReviewFinding {
             finding: "Missing error handling".to_string(),
             severity: "high".to_string(),
         };
@@ -1087,7 +1072,7 @@ mod tests {
             FailureClass::ImplementationDefect
         ));
 
-        let arch_conflict = event_stream::event::ReviewFinding {
+        let arch_conflict = ReviewFinding {
             finding: "Architectural dependency violation".to_string(),
             severity: "high".to_string(),
         };
@@ -1096,7 +1081,7 @@ mod tests {
             FailureClass::ArchitecturalConflict
         ));
 
-        let missing_knowledge = event_stream::event::ReviewFinding {
+        let missing_knowledge = ReviewFinding {
             finding: "Missing domain knowledge about X".to_string(),
             severity: "medium".to_string(),
         };
@@ -1105,7 +1090,7 @@ mod tests {
             FailureClass::MissingKnowledge
         ));
 
-        let ambiguous = event_stream::event::ReviewFinding {
+        let ambiguous = ReviewFinding {
             finding: "Ambiguous intent in task description".to_string(),
             severity: "high".to_string(),
         };
@@ -1114,7 +1099,7 @@ mod tests {
             FailureClass::AmbiguousIntent
         ));
 
-        let broken_process = event_stream::event::ReviewFinding {
+        let broken_process = ReviewFinding {
             finding: "Broken process detected".to_string(),
             severity: "medium".to_string(),
         };
@@ -1256,7 +1241,7 @@ mod tests {
         let reviewer = Arc::new(Reviewer::new());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskCompleted]);
 
@@ -1271,7 +1256,7 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             let patch_content =
                 "# Implementation Patch\n\n## File: src/lib.rs\n\n```rust\nfn main() {}\n```\n";
-            let artefact_ref = event_stream::event::ArtefactRef {
+            let artefact_ref = ArtefactRef {
                 artefact_type: "implementation_patch".to_string(),
                 reference: format!("patch-test-uuid|{}", patch_content),
             };
@@ -1337,7 +1322,7 @@ mod tests {
         let pm = Arc::new(ProjectManager::new());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::DecisionRecorded]);
 
@@ -1435,7 +1420,7 @@ mod tests {
         }
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        let coordinator = coordinator::CoordinatorHandle::new(tx);
+        let coordinator = CoordinatorHandle::new(tx);
 
         let receiver = bus.subscribe(&[EventType::TaskFailed]);
 
@@ -1493,6 +1478,4 @@ mod tests {
         let ready = graph.ready_tasks();
         assert!(ready.is_empty(), "Assigned task should not be ready");
     }
-
-    mod auditor_tests;
 }

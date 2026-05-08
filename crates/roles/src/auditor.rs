@@ -6,13 +6,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coordinator::{
+use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
-use event_stream::event::{EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent};
-use llm::client::LlmClient;
-use llm::message::{CompletionRequest, Message};
-use memory::provenance::ProvenanceEngine;
+use mmat_event_stream::event::{
+    EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
+};
+use mmat_llm::client::LlmClient;
+use mmat_llm::message::{CompletionRequest, Message};
+use mmat_memory::provenance::ProvenanceEngine;
+use mmat_memory::types::MemoryId;
 use tracing::{info, warn};
 
 use crate::artefacts::{
@@ -798,7 +801,7 @@ impl Auditor {
             return Ok(());
         };
 
-        let memory_id = memory::types::MemoryId(memory_event_id.0);
+        let memory_id = MemoryId(memory_event_id.0);
         let Some(memory) = ctx
             .memory_store
             .get_by_id(memory_id)

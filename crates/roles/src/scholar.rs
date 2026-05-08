@@ -4,15 +4,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coordinator::{
+use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
-use event_stream::event::{
+use mmat_event_stream::event::{
     EscalationSeverity, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
 };
-use llm::client::LlmClient;
-use llm::executor::{Executor, ExecutorConfig};
-use llm::message::{CompletionRequest, Message};
+use mmat_llm::client::LlmClient;
+use mmat_llm::executor::{Executor, ExecutorConfig};
+use mmat_llm::message::{CompletionRequest, Message};
 use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -176,8 +176,8 @@ impl Scholar {
             let event = SemanticEvent::new_claim_made(
                 EventRoleId(self.id.0.clone()),
                 &finding.claim,
-                vec![event_stream::event::EvidenceRef {
-                    event_id: event_stream::event::EventId(event_id),
+                vec![EvidenceRef {
+                    event_id: EventId(event_id),
                     description: "Research analysis".to_string(),
                 }],
                 0.7,

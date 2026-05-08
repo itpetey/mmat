@@ -4,10 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use event_stream::event::{
+use mmat_event_stream::event::{
     EscalationSeverity, EventId, EventType, RoleId, SemanticEvent, TaskContract,
 };
-use event_stream::event_bus::EventBus;
+use mmat_event_stream::event_bus::EventBus;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

@@ -1,16 +1,19 @@
 [package]
-name = "llm"
+name = "mmat-llm"
 version.workspace = true
 edition.workspace = true
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
 
 [dependencies]
-async-trait = { workspace = true }
-futures-util = { workspace = true }
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
+async-trait.workspace = true
+futures-util.workspace = true
+reqwest = { workspace = true, features = ["default-tls", "json", "stream"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-wiremock = { workspace = true }
+wiremock.workspace = true

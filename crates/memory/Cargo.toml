@@ -1,22 +1,25 @@
 [package]
-name = "memory"
+name = "mmat-memory"
 version.workspace = true
 edition.workspace = true
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
 
 [dependencies]
-event-stream = { path = "../event-stream" }
-llm = { path = "../llm" }
-async-trait = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+async-trait.workspace = true
+chrono = { workspace = true, features = ["now", "serde"] }
+mmat-event-stream = { path = "../event-stream" }
+mmat-llm = { path = "../llm" }
+parking_lot.workspace = true
+qdrant-client.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
-rusqlite = { workspace = true }
-qdrant-client = { workspace = true }
-uuid = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-parking_lot = { workspace = true }
-chrono = { workspace = true }
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-tempfile = { workspace = true }
+tempfile.workspace = true

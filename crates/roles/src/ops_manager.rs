@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use coordinator::{
+use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
-use event_stream::event::{
+use mmat_event_stream::event::{
     EventId, EventType, EvidenceRef, ReviewFinding, RoleId as EventRoleId, SemanticEvent,
 };
-use llm::client::LlmClient;
-use llm::executor::Executor;
-use memory::types::MemoryType;
+use mmat_llm::client::LlmClient;
+use mmat_llm::executor::Executor;
+use mmat_memory::types::MemoryType;
 use serde_json;
 use tokio::time::{Duration, interval};
 use tracing::{info, warn};

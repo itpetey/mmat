@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use event_stream::event::{EventId, SemanticEvent};
+use mmat_event_stream::event::{EventId, SemanticEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

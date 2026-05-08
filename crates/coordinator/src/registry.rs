@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use event_stream::event::{EventType, RoleId};
+use mmat_event_stream::event::{EventType, RoleId};
 
 use crate::error::{Error, Result};
 use crate::role::{RoleSpec, Severity};

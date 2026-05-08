@@ -4,12 +4,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coordinator::{
+use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
-use event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
-use llm::client::LlmClient;
-use llm::executor::Executor;
+use mmat_event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
+use mmat_llm::client::LlmClient;
+use mmat_llm::executor::Executor;
 use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;

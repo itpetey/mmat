@@ -6,9 +6,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use event_stream::event::{EventType, RoleId};
-use event_stream::event_bus::{EventBus, EventReceiver};
-use memory::store::MemoryStore;
+use mmat_event_stream::event::{EscalationSeverity, EventType, RoleId};
+use mmat_event_stream::event_bus::{EventBus, EventReceiver};
+use mmat_memory::store::MemoryStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -201,14 +201,14 @@ impl fmt::Display for Severity {
     }
 }
 
-/// Converts an [`EscalationSeverity`](event_stream::event::EscalationSeverity) into a [`Severity`].
-impl From<event_stream::event::EscalationSeverity> for Severity {
-    fn from(s: event_stream::event::EscalationSeverity) -> Self {
+/// Converts an [`EscalationSeverity`](EscalationSeverity) into a [`Severity`].
+impl From<EscalationSeverity> for Severity {
+    fn from(s: EscalationSeverity) -> Self {
         match s {
-            event_stream::event::EscalationSeverity::Low => Self::Low,
-            event_stream::event::EscalationSeverity::Medium => Self::Medium,
-            event_stream::event::EscalationSeverity::High => Self::High,
-            event_stream::event::EscalationSeverity::Critical => Self::Critical,
+            EscalationSeverity::Low => Self::Low,
+            EscalationSeverity::Medium => Self::Medium,
+            EscalationSeverity::High => Self::High,
+            EscalationSeverity::Critical => Self::Critical,
         }
     }
 }
@@ -430,7 +430,7 @@ impl<T: Role> SpawnableRole for RoleHandle<T> {
     }
 }
 
-impl From<Severity> for event_stream::event::EscalationSeverity {
+impl From<Severity> for EscalationSeverity {
     fn from(s: Severity) -> Self {
         match s {
             Severity::Low => Self::Low,

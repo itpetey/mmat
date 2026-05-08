@@ -1,13 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use coordinator::{
-    Budget, OrganisationConfig, OrganisationRuntime, RetrievalPlanner, Role, RoleContext,
-    RoleError, RoleLifecycleState, RoleRegistry, RoleSpec, RoleType, Severity,
+use mmat_coordinator::{
+    AuthorityScope, Budget, OrganisationConfig, OrganisationRuntime, RetrievalPlanner, Role,
+    RoleContext, RoleError, RoleLifecycleState, RoleRegistry, RoleSpec, RoleType, Severity,
 };
-use event_stream::event::{ArtefactRef, EventType, RoleId, SemanticEvent, TaskContract};
-use memory::qdrant::VectorMemoryBackend;
-use memory::types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType};
+use mmat_event_stream::event::{ArtefactRef, EventType, RoleId, SemanticEvent, TaskContract};
+use mmat_memory::error::Result as MemoryResult;
+use mmat_memory::qdrant::VectorMemoryBackend;
+use mmat_memory::store::MemoryStore;
+use mmat_memory::types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType};
 use qdrant_client::qdrant::Value;
 
 const CONTRACT_1: &str = "00000000-0000-0000-0000-000000000001";
@@ -304,7 +306,7 @@ impl VectorMemoryBackend for FakeVectorBackend {
         _id: MemoryId,
         _embedding: Vec<f32>,
         _payload: std::collections::HashMap<String, Value>,
-    ) -> memory::error::Result<()> {
+    ) -> MemoryResult<()> {
         Ok(())
     }
 
@@ -312,11 +314,11 @@ impl VectorMemoryBackend for FakeVectorBackend {
         &self,
         _query_embedding: Vec<f32>,
         limit: u64,
-    ) -> memory::error::Result<Vec<(MemoryId, f32)>> {
+    ) -> MemoryResult<Vec<(MemoryId, f32)>> {
         Ok(self.results.iter().copied().take(limit as usize).collect())
     }
 
-    async fn delete(&self, _id: MemoryId) -> memory::error::Result<()> {
+    async fn delete(&self, _id: MemoryId) -> MemoryResult<()> {
         Ok(())
     }
 }
@@ -347,7 +349,7 @@ async fn test_escalation_routing() {
     let reviewer_spec = RoleSpec {
         id: RoleId::new("reviewer"),
         role_type: RoleType::Reviewer,
-        authority_scope: coordinator::AuthorityScope::Review,
+        authority_scope: AuthorityScope::Review,
         default_budget: Budget::default(),
         escalation_paths: std::collections::HashMap::new(),
         input_contract: EventType::TaskAssigned,
@@ -493,7 +495,7 @@ async fn test_output_contract_violation_marks_role_failed() {
 #[tokio::test]
 async fn test_retrieval_planner_profiles() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = memory::store::MemoryStore::open(tmp.path().join("mem.db")).unwrap();
+    let store = MemoryStore::open(tmp.path().join("mem.db")).unwrap();
 
     // Insert memories of different scopes and types
     let project_fact = Memory::builder()
@@ -521,7 +523,7 @@ async fn test_retrieval_planner_profiles() {
 
     let planner = RetrievalPlanner::new();
 
-    let worker_profile = coordinator::default_profile_for_role_type(RoleType::Worker);
+    let worker_profile = mmat_coordinator::default_profile_for_role_type(RoleType::Worker);
     let worker_results = planner.retrieve(&store, &worker_profile, "");
     assert!(
         worker_results.iter().any(|m| m.content == "Project fact"),
@@ -534,7 +536,7 @@ async fn test_retrieval_planner_profiles() {
         "Worker should NOT see organisational lessons"
     );
 
-    let scholar_profile = coordinator::default_profile_for_role_type(RoleType::Scholar);
+    let scholar_profile = mmat_coordinator::default_profile_for_role_type(RoleType::Scholar);
     let scholar_results = planner.retrieve(&store, &scholar_profile, "");
     assert!(
         scholar_results.iter().any(|m| m.content == "Project fact"),
@@ -551,7 +553,7 @@ async fn test_retrieval_planner_profiles() {
 #[tokio::test]
 async fn test_retrieval_semantic_search() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = memory::store::MemoryStore::open(tmp.path().join("mem.db")).unwrap();
+    let store = MemoryStore::open(tmp.path().join("mem.db")).unwrap();
 
     let project_fact = Memory::builder()
         .memory_type(MemoryType::Fact)
@@ -577,7 +579,7 @@ async fn test_retrieval_semantic_search() {
     store.insert(&unrelated).unwrap();
 
     let planner = RetrievalPlanner::new();
-    let profile = coordinator::default_profile_for_role_type(RoleType::Worker);
+    let profile = mmat_coordinator::default_profile_for_role_type(RoleType::Worker);
     let qdrant = FakeVectorBackend {
         results: vec![(project_fact.id, 0.99), (unrelated.id, 0.10)],
     };
@@ -612,7 +614,7 @@ async fn test_retry_exhaustion_escalates() {
     let reviewer_spec = RoleSpec {
         id: RoleId::new("reviewer"),
         role_type: RoleType::Reviewer,
-        authority_scope: coordinator::AuthorityScope::Review,
+        authority_scope: AuthorityScope::Review,
         default_budget: Budget::default(),
         escalation_paths: std::collections::HashMap::new(),
         input_contract: EventType::TaskAssigned,
@@ -792,7 +794,7 @@ async fn test_token_budget_exhaustion_escalates() {
     let reviewer_spec = RoleSpec {
         id: RoleId::new("reviewer"),
         role_type: RoleType::Reviewer,
-        authority_scope: coordinator::AuthorityScope::Review,
+        authority_scope: AuthorityScope::Review,
         default_budget: Budget::default(),
         escalation_paths: std::collections::HashMap::new(),
         input_contract: EventType::TaskAssigned,
@@ -853,7 +855,7 @@ fn worker_spec() -> RoleSpec {
     RoleSpec {
         id: RoleId::new("worker"),
         role_type: RoleType::Worker,
-        authority_scope: coordinator::AuthorityScope::Implementation,
+        authority_scope: AuthorityScope::Implementation,
         default_budget: Budget {
             time_limit_seconds: 5,
             token_limit: 1000,
