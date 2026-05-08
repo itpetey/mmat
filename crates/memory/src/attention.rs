@@ -1,3 +1,5 @@
+//! The attention engine that observes events and proposes memories.
+
 use std::sync::Arc;
 
 use event_stream::event::{EventType, EvidenceRef, SemanticEvent};
@@ -12,20 +14,29 @@ use crate::qdrant::VectorMemoryBackend;
 use crate::store::MemoryStore;
 use crate::types::{Authority, MemoryId, MemoryScope, MemoryType};
 
+/// Configuration for the attention engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttentionConfig {
+    /// Minimum salience score for an event to be considered for memory creation.
     pub salience_threshold: f64,
+    /// Minimum cosine similarity before a memory is considered a duplicate.
     pub similarity_threshold: f64,
+    /// LLM model name to use for batched salience scoring.
     pub salience_model: String,
+    /// Maximum number of events to batch before scoring.
     pub salience_batch_size: usize,
+    /// Timeout in milliseconds for batch accumulation.
     pub salience_batch_timeout_ms: u64,
 }
 
+/// Observes the event bus, scores salience, and proposes new memories.
 pub struct AttentionEngine {
     config: AttentionConfig,
     salience_llm: Option<Arc<dyn LlmClient>>,
 }
 
+/// Returns sensible defaults: salience threshold of `0.5`, similarity threshold of `0.95`,
+/// the model `gpt-4o-mini`, batch size of 8, and a 1000ms batch timeout.
 impl Default for AttentionConfig {
     fn default() -> Self {
         Self {
@@ -39,6 +50,7 @@ impl Default for AttentionConfig {
 }
 
 impl AttentionEngine {
+    /// Creates a new attention engine without LLM-based salience scoring.
     pub fn new(config: AttentionConfig) -> Self {
         Self {
             config,
@@ -46,6 +58,7 @@ impl AttentionEngine {
         }
     }
 
+    /// Creates a new attention engine with an LLM client for batched salience scoring.
     pub fn new_with_llm(config: AttentionConfig, salience_llm: Arc<dyn LlmClient>) -> Self {
         Self {
             config,
@@ -53,6 +66,10 @@ impl AttentionEngine {
         }
     }
 
+    /// Runs the attention loop, subscribing to relevant events and processing them in batches.
+    ///
+    /// Each batch is scored for salience. Events above the threshold are checked for
+    /// duplicates and, if novel, proposed as new memories via the event bus.
     pub async fn run(
         &self,
         bus: Arc<EventBus>,
@@ -208,6 +225,8 @@ impl AttentionEngine {
             .collect())
     }
 
+    /// Scores a single event for salience using heuristics based on event type,
+    /// authority, evidence, and confidence. Returns a value between 0 and 1.
     pub fn score_salience(event: &SemanticEvent) -> f64 {
         let event_weight = match event.event_type() {
             EventType::HumanFeedbackReceived => 1.0,
@@ -232,6 +251,7 @@ impl AttentionEngine {
             + (confidence * 0.15)
     }
 
+    /// Extracts the human-readable content string from a semantic event.
     pub fn extract_content(event: &SemanticEvent) -> String {
         match event {
             SemanticEvent::ClaimMade { claim_text, .. } => claim_text.clone(),
@@ -283,6 +303,8 @@ impl AttentionEngine {
         }
     }
 
+    /// Extracts evidence references from an event, always including a self-reference
+    /// to the event itself.
     pub fn extract_evidence_refs(event: &SemanticEvent) -> Vec<EvidenceRef> {
         let mut refs = match event {
             SemanticEvent::ClaimMade { evidence_refs, .. } => evidence_refs.clone(),
@@ -302,6 +324,7 @@ impl AttentionEngine {
         refs
     }
 
+    /// Extracts a confidence value from an event, using heuristics based on event type.
     pub fn extract_confidence(event: &SemanticEvent) -> f64 {
         match event {
             SemanticEvent::ClaimMade {
@@ -321,6 +344,7 @@ impl AttentionEngine {
         }
     }
 
+    /// Infers the memory type, scope, and authority from a semantic event using heuristics.
     pub fn infer_metadata(event: &SemanticEvent) -> (MemoryType, MemoryScope, Authority) {
         match event {
             SemanticEvent::ToolExecuted {
@@ -395,10 +419,12 @@ impl AttentionEngine {
             .map(|(id, _)| id))
     }
 
+    /// Computes a simple hash-based embedding vector of dimension 64 from content text.
     pub fn compute_simple_embedding(content: &str) -> Vec<f32> {
         Self::compute_simple_embedding_with_dim(content, 64)
     }
 
+    /// Computes a simple hash-based embedding vector of the given dimension from content text.
     pub fn compute_simple_embedding_with_dim(content: &str, dim: usize) -> Vec<f32> {
         let words: Vec<&str> = content.split_whitespace().collect();
         let mut embedding = vec![0.0f32; dim];
@@ -411,6 +437,7 @@ impl AttentionEngine {
         embedding
     }
 
+    /// Updates the `last_accessed_at` timestamp of a memory, marking it as recently rehearsed.
     pub async fn rehearse(&self, memory_id: MemoryId, store: &MemoryStore) -> Result<()> {
         store.update_last_accessed(memory_id)
     }

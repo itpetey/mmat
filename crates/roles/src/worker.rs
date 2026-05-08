@@ -1,3 +1,6 @@
+//! The Worker role receives task cards, creates git worktrees, runs an implementation loop
+//! (using an LLM if configured), executes validation commands, and publishes results.
+
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,6 +20,7 @@ use uuid::Uuid;
 
 use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
+/// The Worker role implements task cards by creating worktrees, running implementation, and validating results.
 pub struct Worker {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -29,6 +33,7 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// Creates a new Worker with default validation commands and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("worker-001".to_string()),
@@ -44,26 +49,31 @@ impl Worker {
         }
     }
 
+    /// Configures the Worker with an LLM client for implementation.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the Worker with a custom tool registry.
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
     }
 
+    /// Sets the validation commands to run after implementation.
     pub fn with_validation_commands(mut self, commands: Vec<String>) -> Self {
         self.validation_commands = commands;
         self
     }
 
+    /// Whether to allow a fallback worktree if git worktree creation fails.
     pub fn with_fallback_worktree(mut self, allow: bool) -> Self {
         self.allow_fallback_worktree = allow;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }

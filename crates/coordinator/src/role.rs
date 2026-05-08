@@ -1,3 +1,5 @@
+//! Core role types, lifecycle states, coordination primitives, and error types.
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
@@ -10,12 +12,19 @@ use memory::store::MemoryStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+/// Trait implemented by all role types.
+///
+/// Defines identity, specification, event subscriptions, and the main run loop.
 #[async_trait]
 pub trait Role: Send + Sync + 'static {
+    /// Returns the unique ID of this role.
     fn id(&self) -> RoleId;
+    /// Returns the specification that defines this role's capabilities and constraints.
     fn spec(&self) -> RoleSpec;
+    /// Returns the set of event types this role subscribes to.
     fn subscriptions(&self) -> &'static [EventType];
 
+    /// Runs the role's main event loop with the given context.
     async fn run(self: Arc<Self>, ctx: RoleContext) -> std::result::Result<(), RoleError>;
 }
 
@@ -28,71 +37,115 @@ pub(crate) trait SpawnableRole: Send + Sync + 'static {
     async fn run(&self, ctx: RoleContext) -> std::result::Result<(), RoleError>;
 }
 
+/// The type of role within an organisation, determining its responsibilities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoleType {
+    /// Defines intent and prioritises work.
     IntentLead,
+    /// Researches and learns from external sources.
     Scholar,
+    /// Manages operational procedures and incident response.
     OpsManager,
+    /// Designs system architecture and makes cross-cutting decisions.
     Architect,
+    /// Plans work and assigns tasks.
     ProjectManager,
+    /// Executes implementation tasks.
     Worker,
+    /// Reviews completed work for quality and compliance.
     Reviewer,
+    /// Audits processes for policy adherence.
     Auditor,
+    /// Curates and organises shared knowledge.
     Librarian,
 }
 
+/// Severity level for events, escalations, and alerts.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Severity {
+    /// Minimal impact, routine matter.
     Low,
+    /// Moderate impact, requires attention.
     Medium,
+    /// Significant impact, needs prompt action.
     High,
+    /// Severe impact, requires immediate escalation.
     Critical,
 }
 
+/// Defines the scope of authority a role has to publish events.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorityScope {
+    /// Only may publish intent-related events.
     IntentOnly,
+    /// May publish architecture and design decisions.
     Architecture,
+    /// May publish planning and task assignment events.
     Planning,
+    /// May publish implementation and tool execution events.
     Implementation,
+    /// May publish review-related events.
     Review,
+    /// May publish audit and policy violation events.
     Audit,
+    /// May publish any event type.
     FullAccess,
 }
 
+/// Resource budget constraining a role's execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Budget {
+    /// Maximum wall-clock time in seconds.
     pub time_limit_seconds: u64,
+    /// Maximum number of tokens (e.g. LLM tokens) allowed.
     pub token_limit: u64,
+    /// Maximum number of retry attempts on failure.
     pub max_retries: u32,
 }
 
+/// Specification defining a role's identity, capabilities, constraints, and routing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleSpec {
+    /// Unique identifier for the role.
     pub id: RoleId,
+    /// The type of role.
     pub role_type: RoleType,
+    /// The authority scope granted to this role.
     pub authority_scope: AuthorityScope,
+    /// Default resource budget for this role.
     pub default_budget: Budget,
+    /// Mapping of severity levels to escalation target role IDs.
     pub escalation_paths: HashMap<Severity, RoleId>,
+    /// The event type that triggers this role.
     pub input_contract: EventType,
+    /// The event types this role is permitted to publish.
     pub output_contract: Vec<EventType>,
 }
 
+/// The lifecycle state of a role.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoleLifecycleState {
+    /// The role is waiting for work.
     Idle,
+    /// The role is actively executing a task.
     Running,
+    /// The role has completed its task successfully.
     Completed,
+    /// The role has failed its task.
     Failed,
+    /// The role has escalated to a higher authority.
     Escalated,
 }
 
+/// Messages sent from roles to the coordinator over an mpsc channel.
 #[derive(Clone, Debug)]
 pub enum CoordinatorMessage {
+    /// A role reports its current lifecycle state.
     ReportStatus {
         role_id: RoleId,
         state: RoleLifecycleState,
     },
+    /// A role requests escalation to a higher authority.
     RequestEscalation {
         from: RoleId,
         severity: Severity,
@@ -100,16 +153,19 @@ pub enum CoordinatorMessage {
     },
 }
 
+/// Handle that roles use to communicate with the coordinator.
 #[derive(Clone, Debug)]
 pub struct CoordinatorHandle {
     pub(crate) tx: mpsc::Sender<CoordinatorMessage>,
 }
 
+/// Registry of tools available to a role, keyed by name.
 #[derive(Clone, Debug)]
 pub struct ToolRegistry<T> {
     tools: HashMap<String, T>,
 }
 
+/// Execution context provided to a role when it starts running.
 pub struct RoleContext {
     pub bus: EventBus,
     pub receiver: EventReceiver,
@@ -118,16 +174,22 @@ pub struct RoleContext {
     pub tools: Box<dyn Any + Send + Sync>,
 }
 
+/// Errors that a role may return from its run loop.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RoleError {
+    /// A generic internal error.
     Internal(String),
+    /// The role's time or token budget was exceeded.
     BudgetExceeded(String),
+    /// The role violated its contract.
     ContractViolation(String),
+    /// Escalation to a higher-authority role is required.
     EscalationRequired(String),
 }
 
 pub(crate) struct RoleHandle<T: Role>(Arc<T>);
 
+/// Formats the severity as a human-readable string.
 impl fmt::Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -139,6 +201,7 @@ impl fmt::Display for Severity {
     }
 }
 
+/// Converts an [`EscalationSeverity`](event_stream::event::EscalationSeverity) into a [`Severity`].
 impl From<event_stream::event::EscalationSeverity> for Severity {
     fn from(s: event_stream::event::EscalationSeverity) -> Self {
         match s {
@@ -151,6 +214,7 @@ impl From<event_stream::event::EscalationSeverity> for Severity {
 }
 
 impl AuthorityScope {
+    /// Checks whether this authority scope permits publishing the given event type.
     pub fn can_publish(&self, event_type: &EventType) -> bool {
         if matches!(
             event_type,
@@ -202,6 +266,7 @@ impl AuthorityScope {
     }
 }
 
+/// Returns a [`Budget`] with defaults: 300s time limit, 100k tokens, 3 retries.
 impl Default for Budget {
     fn default() -> Self {
         Self {
@@ -213,6 +278,7 @@ impl Default for Budget {
 }
 
 impl RoleLifecycleState {
+    /// Checks whether a transition from the current state to `next` is valid.
     pub fn can_transition_to(&self, next: &Self) -> bool {
         match (self, next) {
             (Self::Idle, Self::Running) => true,
@@ -230,6 +296,7 @@ impl RoleLifecycleState {
     }
 }
 
+/// Formats the lifecycle state as a human-readable string.
 impl fmt::Display for RoleLifecycleState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -243,10 +310,12 @@ impl fmt::Display for RoleLifecycleState {
 }
 
 impl CoordinatorHandle {
+    /// Creates a new coordinator handle backed by the given sender.
     pub fn new(tx: mpsc::Sender<CoordinatorMessage>) -> Self {
         Self { tx }
     }
 
+    /// Sends a status report to the coordinator.
     pub async fn report_status(
         &self,
         role_id: RoleId,
@@ -257,6 +326,7 @@ impl CoordinatorHandle {
             .await
     }
 
+    /// Sends an escalation request to the coordinator.
     pub async fn request_escalation(
         &self,
         from: RoleId,
@@ -274,14 +344,17 @@ impl CoordinatorHandle {
 }
 
 impl<T> ToolRegistry<T> {
+    /// Creates an empty tool registry.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Registers a tool under the given name.
     pub fn register(&mut self, name: impl Into<String>, tool: T) {
         self.tools.insert(name.into(), tool);
     }
 
+    /// Looks up a tool by its registered name.
     pub fn get(&self, name: &str) -> Option<&T> {
         self.tools.get(name)
     }
@@ -296,10 +369,12 @@ impl<T> Default for ToolRegistry<T> {
 }
 
 impl RoleContext {
+    /// Downcasts the tools container to a [`ToolRegistry<T>`].
     pub fn tools<T: 'static>(&self) -> Option<&ToolRegistry<T>> {
         self.tools.downcast_ref::<ToolRegistry<T>>()
     }
 
+    /// Returns a new context with the given tool registry attached.
     pub fn with_tools<T: 'static + Send + Sync>(mut self, tools: ToolRegistry<T>) -> Self {
         self.tools = Box::new(tools);
         self
@@ -315,6 +390,7 @@ impl std::fmt::Debug for RoleContext {
     }
 }
 
+/// Formats the role error with a descriptive message.
 impl fmt::Display for RoleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -326,6 +402,7 @@ impl fmt::Display for RoleError {
     }
 }
 
+/// Marks [`RoleError`] as implementing the standard error trait.
 impl std::error::Error for RoleError {}
 
 impl<T: Role> RoleHandle<T> {

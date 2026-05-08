@@ -1,150 +1,227 @@
+//! Request and response types for OpenAI-compatible chat completions.
+
 use serde::{Deserialize, Serialize};
 
+/// Function call details within a [`ToolCall`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallFunction {
+    /// The name of the function to call.
     pub name: String,
+    /// The JSON-encoded function arguments.
     pub arguments: String,
 }
 
+/// A tool call requested by the model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// Unique identifier for this tool call.
     pub id: String,
+    /// The type of call (always `"function"`).
     #[serde(rename = "type")]
     pub call_type: String,
+    /// The function call details.
     pub function: ToolCallFunction,
 }
 
+/// A chat message in one of the four standard roles.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
+    /// A system message that provides instructions to the model.
     System {
+        /// The message content.
         content: String,
+        /// Optional participant name.
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// A message from the end user.
     User {
+        /// The message content.
         content: String,
+        /// Optional participant name.
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// A response from the model.
     Assistant {
+        /// The text content of the response, if any.
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<String>,
+        /// Tool calls requested by the model, if any.
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ToolCall>>,
+        /// Optional participant name.
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// The result of a tool invocation.
     Tool {
+        /// The tool output.
         content: String,
+        /// The ID of the tool call this result corresponds to.
         tool_call_id: String,
     },
 }
 
+/// Options for streaming completion requests.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StreamOptions {
+    /// Whether to include token usage in stream chunks.
     pub include_usage: bool,
 }
 
+/// A request for a chat completion.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompletionRequest {
+    /// The model to use (e.g. `"gpt-4"`).
     pub model: String,
+    /// The conversation messages.
     pub messages: Vec<Message>,
+    /// Tool definitions to make available to the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<serde_json::Value>>,
+    /// Controls which tool (if any) the model calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
+    /// Sampling temperature between 0 and 2.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Whether to stream the response.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// Additional streaming options.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
 }
 
+/// A single completion choice.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Choice {
+    /// The index of this choice.
     pub index: u32,
+    /// The message produced by the model.
     pub message: Message,
+    /// The reason the model stopped generating.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
 }
 
+/// Token usage statistics for a completion.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Number of tokens in the prompt.
     pub prompt_tokens: u32,
+    /// Number of tokens in the generated completion.
     pub completion_tokens: u32,
+    /// Total tokens consumed.
     pub total_tokens: u32,
 }
 
+/// A full (non-streaming) completion response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompletionResponse {
+    /// Unique identifier for this completion.
     pub id: String,
+    /// The object type (always `"chat.completion"`).
     pub object: String,
+    /// Unix timestamp of when the completion was created.
     pub created: u64,
+    /// The model used for the completion.
     pub model: String,
+    /// The list of completion choices.
     pub choices: Vec<Choice>,
+    /// Token usage statistics.
     pub usage: Usage,
 }
 
+/// Function call details within a streaming tool call delta.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StreamToolCallFunction {
+    /// The name of the function, provided in the first chunk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The partial JSON-encoded function arguments.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
 }
 
+/// A tool call delta in a streaming response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StreamToolCall {
+    /// The index of the tool call within the choice.
     pub index: u32,
+    /// Unique identifier for this tool call, provided in the first chunk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// The type of call (always `"function"`).
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub call_type: Option<String>,
+    /// The function call details, if present in this chunk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<StreamToolCallFunction>,
 }
 
+/// A delta update to a choice in a streaming response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceDelta {
+    /// The role of the message author (e.g. `"assistant"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// A fragment of the message content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Tool call fragments, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<StreamToolCall>>,
 }
 
+/// A streaming choice containing a delta.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StreamChoice {
+    /// The index of this choice.
     pub index: u32,
+    /// The delta content for this choice.
     pub delta: ChoiceDelta,
+    /// The reason the model stopped, provided in the final chunk.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
 }
 
+/// Token usage statistics included in a stream chunk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StreamUsage {
+    /// Number of tokens in the prompt.
     pub prompt_tokens: u32,
+    /// Number of tokens in the generated completion.
     pub completion_tokens: u32,
+    /// Total tokens consumed.
     pub total_tokens: u32,
 }
 
+/// A single chunk of a streaming completion response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompletionStreamChunk {
+    /// Unique identifier for this completion.
     pub id: String,
+    /// The object type (always `"chat.completion.chunk"`).
     pub object: String,
+    /// Unix timestamp of when the chunk was created.
     pub created: u64,
+    /// The model used for the completion.
     pub model: String,
+    /// The list of choice deltas.
     pub choices: Vec<StreamChoice>,
+    /// Token usage statistics, included when `stream_options.include_usage` is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<StreamUsage>,
 }
 
 impl Message {
+    /// Create a [`Message::System`] with the given content.
     pub fn system(content: impl Into<String>) -> Self {
         Self::System {
             content: content.into(),
@@ -152,6 +229,7 @@ impl Message {
         }
     }
 
+    /// Create a [`Message::User`] with the given content.
     pub fn user(content: impl Into<String>) -> Self {
         Self::User {
             content: content.into(),
@@ -159,6 +237,7 @@ impl Message {
         }
     }
 
+    /// Create a [`Message::Assistant`] with the given content.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::Assistant {
             content: Some(content.into()),
@@ -167,6 +246,7 @@ impl Message {
         }
     }
 
+    /// Create a [`Message::Tool`] with the given content and tool call ID.
     pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
         Self::Tool {
             content: content.into(),
@@ -176,6 +256,9 @@ impl Message {
 }
 
 impl CompletionRequest {
+    /// Create a new completion request with the given model and messages.
+    ///
+    /// All optional fields are initialised to [`None`].
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
         Self {
             model: model.into(),

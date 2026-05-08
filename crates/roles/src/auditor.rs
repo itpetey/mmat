@@ -1,3 +1,6 @@
+//! The Auditor role continuously monitors events for policy violations, evidence chain integrity,
+//! process adherence, confidence justification, and authority scope enforcement.
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,6 +19,7 @@ use crate::artefacts::{
     AuditReport, ConfidenceAssessment, EvidenceChainStatus, EvidencePack, ProcessAdherenceCheck,
 };
 
+/// The Auditor role monitors the organisation for policy violations and evidence integrity.
 pub struct Auditor {
     id: EventRoleId,
     provenance_engine: ProvenanceEngine,
@@ -33,10 +37,14 @@ pub struct Auditor {
     last_report_time: parking_lot::Mutex<std::time::Instant>,
 }
 
+/// Configuration for the Auditor's LLM-based semantic checks.
 #[derive(Clone, Debug)]
 pub struct AuditorLlmConfig {
+    /// Whether LLM-based checks are enabled.
     pub enabled: bool,
+    /// The model identifier to use for checks.
     pub model: String,
+    /// Maximum number of LLM checks per audit cycle.
     pub max_checks_per_cycle: u32,
 }
 
@@ -51,6 +59,7 @@ impl Default for AuditorLlmConfig {
 }
 
 impl Auditor {
+    /// Creates a new Auditor with default authority registry, no LLM client, and source verification disabled.
     pub fn new() -> Self {
         let mut authority_registry = HashMap::new();
         authority_registry.insert(
@@ -105,30 +114,36 @@ impl Auditor {
         }
     }
 
+    /// Sets the interval in seconds between periodic audit reports.
     pub fn with_report_interval(mut self, seconds: u64) -> Self {
         self.report_interval_seconds = seconds;
         self
     }
 
+    /// Configures the Auditor with an LLM client for semantic consistency checks.
     pub fn with_llm_client(mut self, client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(client);
         self
     }
 
+    /// Configures the Auditor with LLM settings.
     pub fn with_llm_config(mut self, config: AuditorLlmConfig) -> Self {
         self.llm_config = config;
         self
     }
 
+    /// Enables or disables source verification (e.g. checking reachability of web sources).
     pub fn with_source_verification(mut self, enabled: bool) -> Self {
         self.source_verification_enabled = enabled;
         self
     }
 
+    /// Registers a role's authority scope in the auditor's registry.
     pub fn register_authority(&mut self, role_id: EventRoleId, scope: AuthorityScope) {
         self.authority_registry.insert(role_id, scope);
     }
 
+    /// Registers authority scopes from a set of role specifications.
     pub fn with_role_specs(mut self, specs: &[RoleSpec]) -> Self {
         for spec in specs {
             self.authority_registry

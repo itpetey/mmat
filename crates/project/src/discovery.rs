@@ -1,41 +1,65 @@
+//! Repository discovery and project type detection.
+//!
+//! This module scans a directory for well-known project marker files
+//! (e.g. `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`) and
+//! extracts project metadata such as name and language-specific source files.
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
 
+/// Errors that can occur during project discovery.
 #[derive(Error, Debug)]
 pub enum DiscoveryError {
+    /// An I/O operation failed while reading filesystem entries.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Parsing a JSON manifest (e.g. `package.json`) failed.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// No recognised project was found at the given path.
     #[error("No project found at: {0}")]
     NoProjectFound(String),
 }
 
+/// The detected programming language or framework for a project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProjectType {
+    /// A Rust project (marker: `Cargo.toml`).
     Rust,
+    /// A Node.js project (marker: `package.json`).
     Node,
+    /// A Python project (marker: `pyproject.toml` or `requirements.txt`).
     Python,
+    /// A Go project (marker: `go.mod`).
     Go,
+    /// An unrecognised project type with no known marker file.
     Unknown,
 }
 
+/// Information about a detected project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectInfo {
+    /// The programming language or framework of the project.
     pub project_type: ProjectType,
+    /// The root directory path of the project.
     pub root_path: PathBuf,
+    /// The human-readable name extracted from the project manifest.
     pub name: String,
+    /// Source files belonging to the project, filtered by language extension.
     pub language_files: Vec<String>,
 }
 
+/// Stateless entry point for detecting and describing a project at a given path.
 pub struct RepoDiscovery;
 
 impl RepoDiscovery {
+    /// Scan the given directory for a known project marker and return
+    /// [`ProjectInfo`] if one is found.
     pub fn detect(path: &Path) -> Result<ProjectInfo, DiscoveryError> {
         info!("Detecting project at: {}", path.display());
 

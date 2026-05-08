@@ -1,3 +1,6 @@
+//! The Scholar role researches the codebase and external sources to gather evidence,
+//! producing research briefs, evidence packs, and open questions.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,6 +24,7 @@ const DEFAULT_MAX_LLM_CALLS: usize = 20;
 const DEFAULT_MAX_TOOL_INVOCATIONS: usize = 50;
 const DEFAULT_MAX_WEB_SEARCHES: usize = 10;
 
+/// The Scholar role conducts research and gathers evidence about the codebase and problem domain.
 pub struct Scholar {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -33,6 +37,7 @@ pub struct Scholar {
 }
 
 impl Scholar {
+    /// Creates a new Scholar with default budget limits and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("scholar-001".to_string()),
@@ -46,20 +51,24 @@ impl Scholar {
         }
     }
 
+    /// Configures the Scholar with an LLM client for research.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the Scholar with a custom tool registry.
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }
 
+    /// Returns the number of configured tools.
     pub fn tool_count(&self) -> usize {
         self.tool_registry.tool_specs().len()
     }
@@ -71,6 +80,7 @@ impl Scholar {
         }]
     }
 
+    /// Configures the Scholar's research budget limits.
     pub fn with_budget(
         mut self,
         llm_calls: usize,

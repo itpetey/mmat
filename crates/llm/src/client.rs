@@ -1,3 +1,5 @@
+//! LLM client trait and OpenAI-compatible implementation.
+
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -7,18 +9,25 @@ use tokio::sync::mpsc;
 use crate::error::{LlmError, Result};
 use crate::message::{CompletionRequest, CompletionResponse, CompletionStreamChunk};
 
+/// A client capable of sending chat completions to an LLM provider.
 #[async_trait::async_trait]
 pub trait LlmClient: Send + Sync {
+    /// Send a completion request and return the full response.
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
 }
 
+/// Configuration for connecting to an OpenAI-compatible API.
 #[derive(Clone, Debug)]
 pub struct OpenAiConfig {
+    /// The API key used for authentication.
     pub api_key: String,
+    /// The base URL of the API endpoint.
     pub base_url: String,
+    /// The HTTP request timeout.
     pub timeout: Duration,
 }
 
+/// Builder for constructing an [`OpenAiConfig`].
 #[derive(Default)]
 pub struct OpenAiConfigBuilder {
     api_key: Option<String>,
@@ -26,6 +35,7 @@ pub struct OpenAiConfigBuilder {
     timeout: Option<Duration>,
 }
 
+/// An OpenAI-compatible client using reqwest for HTTP transport.
 #[derive(Clone, Debug)]
 pub struct OpenAiClient {
     config: OpenAiConfig,
@@ -33,27 +43,35 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiConfig {
+    /// Create a new builder for constructing an [`OpenAiConfig`].
     pub fn builder() -> OpenAiConfigBuilder {
         OpenAiConfigBuilder::default()
     }
 }
 
 impl OpenAiConfigBuilder {
+    /// Set the API key used for authentication.
     pub fn api_key(mut self, key: impl Into<String>) -> Self {
         self.api_key = Some(key.into());
         self
     }
 
+    /// Set the base URL of the API endpoint.
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = Some(url.into());
         self
     }
 
+    /// Set the HTTP request timeout.
     pub fn timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
         self
     }
 
+    /// Consume the builder and produce an [`OpenAiConfig`].
+    ///
+    /// Defaults to `https://api.openai.com/v1` for the base URL and 60 seconds
+    /// for the timeout if not set.
     pub fn build(self) -> OpenAiConfig {
         OpenAiConfig {
             api_key: self.api_key.unwrap_or_default(),
@@ -66,11 +84,16 @@ impl OpenAiConfigBuilder {
 }
 
 impl OpenAiClient {
+    /// Create a new [`OpenAiClient`] from the given configuration.
     pub fn new(config: OpenAiConfig) -> Result<Self> {
         let http = Client::builder().timeout(config.timeout).build()?;
         Ok(Self { config, http })
     }
 
+    /// Send a completion request and return a streaming receiver of response chunks.
+    ///
+    /// The returned [`mpsc::Receiver`] yields [`Result`]`<`[`CompletionStreamChunk`]`>` items
+    /// as they arrive from the API.
     pub async fn complete_streaming(
         &self,
         request: CompletionRequest,

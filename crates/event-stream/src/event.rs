@@ -1,46 +1,73 @@
+//! Semantic event types, identifiers, helper structs, and the free `now_ns` function
+//! used throughout the event stream system.
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// A unique identifier for an event, backed by a UUID v4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EventId(pub Uuid);
 
+/// A unique identifier for a role (agent) within the system.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleId(pub String);
 
+/// A reference to an event used as supporting evidence for a claim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceRef {
+    /// The unique identifier of the referenced event.
     pub event_id: EventId,
+    /// A human-readable description of how this evidence supports the claim.
     pub description: String,
 }
 
+/// A contract declaring the work to be performed by a worker.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskContract {
+    /// The unique identifier for this contract.
     pub contract_id: String,
+    /// A human-readable description of the work to be performed.
     pub description: String,
 }
 
+/// A finding recorded during review of a task's output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReviewFinding {
+    /// A human-readable description of the finding.
     pub finding: String,
+    /// The severity level of the finding (e.g. "minor", "major", "critical").
     pub severity: String,
 }
 
+/// The severity level of an escalation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EscalationSeverity {
+    /// Low priority escalation.
     Low,
+    /// Medium priority escalation.
     Medium,
+    /// High priority escalation.
     High,
+    /// Critical priority escalation requiring immediate attention.
     Critical,
 }
 
+/// A reference to a produced artefact (e.g. a file, commit, or pull request).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArtefactRef {
+    /// The type of artefact (e.g. "file", "commit", "PR").
     pub artefact_type: String,
+    /// A reference string identifying the artefact (e.g. path, URL, hash).
     pub reference: String,
 }
 
+/// A semantic event representing a meaningful occurrence within the system.
+///
+/// Every variant carries a unique [`EventId`], the [`RoleId`] of the source agent
+/// that produced it, and a `timestamp_ns` in nanoseconds since the UNIX epoch.
+/// The [`serde` tag attribute](serde) serialises the variant name as `"variant"`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "variant")]
 pub enum SemanticEvent {
@@ -249,85 +276,123 @@ pub enum SemanticEvent {
     },
 }
 
+/// The set of known semantic event types, used for filtering.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventType {
+    /// A tool was executed by an agent.
     ToolExecuted,
+    /// A claim was made with supporting evidence.
     ClaimMade,
+    /// A decision was recorded with rationale references.
     DecisionRecorded,
+    /// A new memory entry was proposed for acceptance.
     MemoryProposed,
+    /// A proposed memory was accepted by the appropriate authority.
     MemoryAccepted,
+    /// A proposed memory was rejected.
     MemoryRejected,
+    /// An existing memory was superseded by a newer one.
     MemorySuperseded,
+    /// An evidence chain was detected as broken.
     EvidenceChainBroken,
+    /// A process step was skipped.
     ProcessSkipped,
+    /// A policy violation was detected.
     PolicyViolationDetected,
+    /// A task was assigned to a worker.
     TaskAssigned,
+    /// A worker began executing an assigned task.
     TaskStarted,
+    /// A task was completed successfully.
     TaskCompleted,
+    /// A task failed during execution.
     TaskFailed,
+    /// A review was requested for a task's output.
     ReviewRequested,
+    /// A review was completed with findings.
     ReviewCompleted,
+    /// An escalation was requested to a higher authority.
     EscalationRequested,
+    /// Human feedback was requested.
     HumanFeedbackRequested,
+    /// Human feedback was received.
     HumanFeedbackReceived,
+    /// An artefact was produced.
     ArtefactProduced,
+    /// A budget usage warning was issued.
     BudgetWarning,
+    /// An escalation was accepted by the target role.
     EscalationAccepted,
+    /// A role's state changed.
     RoleStateChanged,
+    /// The organisation was started.
     OrganisationStarted,
+    /// The organisation was stopped.
     OrganisationStopped,
+    /// A heartbeat signal was emitted.
     Heartbeat,
 }
 
 impl EventId {
+    /// Creates a new random [`EventId`] based on a UUID v4.
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 }
 
 impl Default for EventId {
+    /// Returns a new random [`EventId`].
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl fmt::Display for EventId {
+    /// Formats the inner UUID.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
 impl From<Uuid> for EventId {
+    /// Wraps a [`Uuid`] in an [`EventId`].
     fn from(uuid: Uuid) -> Self {
         Self(uuid)
     }
 }
 
 impl RoleId {
+    /// Creates a new [`RoleId`] from any type that can be converted into a [`String`].
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 }
 
 impl fmt::Display for RoleId {
+    /// Formats the inner role identifier string.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
 impl From<String> for RoleId {
+    /// Converts a [`String`] into a [`RoleId`].
     fn from(s: String) -> Self {
         Self(s)
     }
 }
 
 impl From<&str> for RoleId {
+    /// Converts a string slice into a [`RoleId`].
     fn from(s: &str) -> Self {
         Self(s.into())
     }
 }
 
 impl SemanticEvent {
+    /// Constructs a new [`ToolExecuted`](SemanticEvent::ToolExecuted) event.
+    ///
+    /// Generates a fresh [`EventId`] and stamps the current nanosecond timestamp.
     pub fn new_tool_executed(
         source_agent: RoleId,
         tool_name: impl Into<String>,
@@ -350,6 +415,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ClaimMade`](SemanticEvent::ClaimMade) event.
     pub fn new_claim_made(
         source_agent: RoleId,
         claim_text: impl Into<String>,
@@ -366,6 +432,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`DecisionRecorded`](SemanticEvent::DecisionRecorded) event.
     pub fn new_decision_recorded(
         source_agent: RoleId,
         decision_text: impl Into<String>,
@@ -380,6 +447,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`MemoryProposed`](SemanticEvent::MemoryProposed) event.
     pub fn new_memory_proposed(
         source_agent: RoleId,
         memory_type: impl Into<String>,
@@ -402,6 +470,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`MemoryAccepted`](SemanticEvent::MemoryAccepted) event.
     pub fn new_memory_accepted(
         source_agent: RoleId,
         memory_id: EventId,
@@ -416,6 +485,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`MemoryRejected`](SemanticEvent::MemoryRejected) event.
     pub fn new_memory_rejected(
         source_agent: RoleId,
         proposed_memory_type: impl Into<String>,
@@ -434,6 +504,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`MemorySuperseded`](SemanticEvent::MemorySuperseded) event.
     pub fn new_memory_superseded(
         source_agent: RoleId,
         old_memory_id: EventId,
@@ -450,6 +521,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`EvidenceChainBroken`](SemanticEvent::EvidenceChainBroken) event.
     pub fn new_evidence_chain_broken(
         source_agent: RoleId,
         claim_id: EventId,
@@ -466,6 +538,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ProcessSkipped`](SemanticEvent::ProcessSkipped) event.
     pub fn new_process_skipped(
         source_agent: RoleId,
         step: impl Into<String>,
@@ -480,6 +553,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`PolicyViolationDetected`](SemanticEvent::PolicyViolationDetected) event.
     pub fn new_policy_violation_detected(
         source_agent: RoleId,
         violation_type: impl Into<String>,
@@ -496,6 +570,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`TaskAssigned`](SemanticEvent::TaskAssigned) event.
     pub fn new_task_assigned(
         source_agent: RoleId,
         task_id: impl Into<String>,
@@ -514,6 +589,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`TaskStarted`](SemanticEvent::TaskStarted) event.
     pub fn new_task_started(
         source_agent: RoleId,
         task_id: impl Into<String>,
@@ -528,6 +604,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`TaskCompleted`](SemanticEvent::TaskCompleted) event.
     pub fn new_task_completed(
         source_agent: RoleId,
         task_id: impl Into<String>,
@@ -544,6 +621,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`TaskFailed`](SemanticEvent::TaskFailed) event.
     pub fn new_task_failed(
         source_agent: RoleId,
         task_id: impl Into<String>,
@@ -558,6 +636,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ReviewRequested`](SemanticEvent::ReviewRequested) event.
     pub fn new_review_requested(
         source_agent: RoleId,
         task_id: impl Into<String>,
@@ -572,6 +651,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ReviewCompleted`](SemanticEvent::ReviewCompleted) event.
     pub fn new_review_completed(
         source_agent: RoleId,
         task_id: impl Into<String>,
@@ -588,6 +668,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`EscalationRequested`](SemanticEvent::EscalationRequested) event.
     pub fn new_escalation_requested(
         source_agent: RoleId,
         from_role: RoleId,
@@ -606,6 +687,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`HumanFeedbackRequested`](SemanticEvent::HumanFeedbackRequested) event.
     pub fn new_human_feedback_requested(
         source_agent: RoleId,
         question: impl Into<String>,
@@ -620,6 +702,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`HumanFeedbackReceived`](SemanticEvent::HumanFeedbackReceived) event.
     pub fn new_human_feedback_received(source_agent: RoleId, answer: impl Into<String>) -> Self {
         Self::HumanFeedbackReceived {
             event_id: EventId::new(),
@@ -629,6 +712,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ArtefactProduced`](SemanticEvent::ArtefactProduced) event.
     pub fn new_artefact_produced(
         source_agent: RoleId,
         artefact_type: impl Into<String>,
@@ -645,6 +729,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`BudgetWarning`](SemanticEvent::BudgetWarning) event.
     pub fn new_budget_warning(
         source_agent: RoleId,
         contract_id: impl Into<String>,
@@ -661,6 +746,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`EscalationAccepted`](SemanticEvent::EscalationAccepted) event.
     pub fn new_escalation_accepted(
         source_agent: RoleId,
         escalation_event_id: EventId,
@@ -677,6 +763,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`RoleStateChanged`](SemanticEvent::RoleStateChanged) event.
     pub fn new_role_state_changed(
         source_agent: RoleId,
         role_id: RoleId,
@@ -693,6 +780,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`OrganisationStarted`](SemanticEvent::OrganisationStarted) event.
     pub fn new_organisation_started(source_agent: RoleId) -> Self {
         Self::OrganisationStarted {
             event_id: EventId::new(),
@@ -701,6 +789,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`OrganisationStopped`](SemanticEvent::OrganisationStopped) event.
     pub fn new_organisation_stopped(source_agent: RoleId, reason: impl Into<String>) -> Self {
         Self::OrganisationStopped {
             event_id: EventId::new(),
@@ -710,6 +799,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`Heartbeat`](SemanticEvent::Heartbeat) event.
     pub fn new_heartbeat(
         source_agent: RoleId,
         active_roles: u32,
@@ -726,6 +816,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Returns the [`EventId`] of this event.
     pub fn event_id(&self) -> EventId {
         match self {
             Self::ToolExecuted { event_id, .. } => *event_id,
@@ -757,6 +848,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Returns the variant name as a `&'static str` (e.g. `"ToolExecuted"`).
     pub fn variant_name(&self) -> &'static str {
         match self {
             Self::ToolExecuted { .. } => "ToolExecuted",
@@ -788,6 +880,7 @@ impl SemanticEvent {
         }
     }
 
+    /// Returns the [`EventType`] discriminator for this event.
     pub fn event_type(&self) -> EventType {
         match self {
             Self::ToolExecuted { .. } => EventType::ToolExecuted,
@@ -821,6 +914,7 @@ impl SemanticEvent {
 }
 
 impl EventType {
+    /// Returns the variant name as a `&'static str` (e.g. `"ToolExecuted"`).
     pub fn name(&self) -> &'static str {
         match self {
             Self::ToolExecuted => "ToolExecuted",
@@ -853,6 +947,7 @@ impl EventType {
     }
 }
 
+/// Returns the current system time as nanoseconds since the UNIX epoch.
 pub fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

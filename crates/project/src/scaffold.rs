@@ -1,3 +1,8 @@
+//! Project scaffolding and directory structure creation.
+//!
+//! This module creates the minimal boilerplate files and directory layouts
+//! for supported project types (Rust, Node, Python).
+
 use std::path::Path;
 
 use thiserror::Error;
@@ -5,24 +10,31 @@ use tracing::info;
 
 use crate::discovery::ProjectType;
 
+/// Errors that can occur during project scaffolding.
 #[derive(Error, Debug)]
 pub enum ScaffoldError {
+    /// An I/O operation failed while writing project files.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A JSON serialisation error occurred while writing a manifest.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The target directory already exists and would be overwritten.
     #[error("Directory already exists: {0}")]
     DirectoryExists(String),
 
+    /// The requested project type is not yet supported for scaffolding.
     #[error("Unsupported project type: {0}")]
     UnsupportedType(String),
 }
 
+/// Stateless entry point for generating project boilerplate on disk.
 pub struct ProjectScaffold;
 
 impl ProjectScaffold {
+    /// Create a minimal Rust project with a `Cargo.toml` and `src/main.rs`.
     pub fn create_rust_project(path: &Path, name: &str) -> Result<(), ScaffoldError> {
         info!("Creating Rust project: {} at {}", name, path.display());
 
@@ -50,6 +62,7 @@ edition = "2024"
         Ok(())
     }
 
+    /// Create a minimal Node.js project with a `package.json` and `src/index.js`.
     pub fn create_node_project(path: &Path, name: &str) -> Result<(), ScaffoldError> {
         info!("Creating Node project: {} at {}", name, path.display());
 
@@ -81,6 +94,8 @@ edition = "2024"
         Ok(())
     }
 
+    /// Create a minimal Python project with a `pyproject.toml` and package
+    /// directory containing `__init__.py`.
     pub fn create_python_project(path: &Path, name: &str) -> Result<(), ScaffoldError> {
         info!("Creating Python project: {} at {}", name, path.display());
 
@@ -102,6 +117,10 @@ requires-python = ">=3.12"
         Ok(())
     }
 
+    /// Create a new project scaffold on disk for the given [`ProjectType`].
+    ///
+    /// The target directory must not already exist. Dispatches to the
+    /// appropriate language-specific helper based on the project type.
     pub fn create(
         path: &Path,
         name: &str,

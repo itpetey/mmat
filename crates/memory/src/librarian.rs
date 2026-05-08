@@ -1,3 +1,5 @@
+//! The librarian, which accepts or rejects proposed memories through a gating pipeline.
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -11,6 +13,7 @@ use crate::qdrant::VectorMemoryBackend;
 use crate::store::MemoryStore;
 use crate::types::{Authority, Confidence, Memory, MemoryId, MemoryScope, MemoryType};
 
+/// The librarian runs a gating pipeline on proposed memories and manages decay scans.
 pub struct Librarian {
     store: Arc<MemoryStore>,
     qdrant: Arc<dyn VectorMemoryBackend>,
@@ -26,6 +29,7 @@ enum ContradictionResult {
 }
 
 impl Librarian {
+    /// Creates a new librarian backed by the given store and vector backend.
     pub fn new(
         store: Arc<MemoryStore>,
         qdrant: Arc<dyn VectorMemoryBackend>,
@@ -38,6 +42,8 @@ impl Librarian {
         }
     }
 
+    /// Runs the librarian loop, subscribing to memory proposals, supersessions, and
+    /// policy violations, while running periodic decay scans.
     pub async fn run(&self, bus: Arc<EventBus>) -> Result<()> {
         let mut rx = bus.subscribe(&[
             EventType::MemoryProposed,
@@ -310,7 +316,8 @@ impl Librarian {
         Self::durability_gate_static(content)
     }
 
-    fn durability_gate_static(content: &str) -> std::result::Result<(), String> {
+    /// Rejects content that is too short or appears trivial/transient.
+    pub fn durability_gate_static(content: &str) -> std::result::Result<(), String> {
         let trivial_patterns = ["ok", "done", "yes", "no", "thanks", "thank you", "sure"];
         let lower = content.to_lowercase().trim().to_string();
 
@@ -370,7 +377,9 @@ impl Librarian {
         Self::invalidatability_gate_static(content)
     }
 
-    fn invalidatability_gate_static(content: &str) -> std::result::Result<(), String> {
+    /// Rejects memories phrased as unfalsifiable or permanent (e.g., containing
+    /// "always", "never", or "impossible" without caveats like "as of" or "unless").
+    pub fn invalidatability_gate_static(content: &str) -> std::result::Result<(), String> {
         let lower = content.to_lowercase();
         let invalidatable = [
             "until",
@@ -395,7 +404,9 @@ impl Librarian {
         Ok(())
     }
 
-    fn scope_gate_static(
+    /// Rejects memories whose type is incompatible with the requested scope
+    /// (e.g. SOP or Lesson with Ephemeral scope).
+    pub fn scope_gate_static(
         memory_type: &MemoryType,
         scope: &MemoryScope,
     ) -> std::result::Result<(), String> {

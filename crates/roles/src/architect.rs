@@ -1,3 +1,6 @@
+//! The Architect role evaluates tradeoffs and produces Architecture Decision Records (ADRs),
+//! interface specifications, and dependency rules.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -17,6 +20,7 @@ use uuid::Uuid;
 use crate::artefacts::{Adr, DependencyRules, InterfaceSpec};
 use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
+/// The Architect role evaluates architectural tradeoffs and produces ADRs, interface specs, and dependency rules.
 pub struct Architect {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -27,6 +31,7 @@ pub struct Architect {
 }
 
 impl Architect {
+    /// Creates a new Architect with default settings and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("architect-001".to_string()),
@@ -37,16 +42,19 @@ impl Architect {
         }
     }
 
+    /// Configures the Architect with an LLM client for making architecture decisions.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the Architect with a custom tool registry.
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }

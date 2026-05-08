@@ -1,3 +1,6 @@
+//! The OpsManager role defines and enforces standard operating procedures (SOPs),
+//! validation policies, escalation rules, delivery standards, and review rubrics.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,6 +28,7 @@ use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
 const DEFAULT_REVIEW_INTERVAL_SECONDS: u64 = 604800;
 
+/// The OpsManager role defines SOPs, validation policies, escalation rules, delivery standards, and review rubrics.
 pub struct OpsManager {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -35,6 +39,7 @@ pub struct OpsManager {
 }
 
 impl OpsManager {
+    /// Creates a new OpsManager with default settings and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("ops-manager-001".to_string()),
@@ -46,20 +51,24 @@ impl OpsManager {
         }
     }
 
+    /// Configures the OpsManager with an LLM client.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the OpsManager with a custom tool registry.
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }
 
+    /// Returns the number of configured tools.
     pub fn tool_count(&self) -> usize {
         self.tool_registry.tool_specs().len()
     }
@@ -71,6 +80,7 @@ impl OpsManager {
         }]
     }
 
+    /// Sets the interval in seconds between periodic SOP reviews.
     pub fn with_review_interval(mut self, seconds: u64) -> Self {
         self.review_interval_seconds = seconds;
         self

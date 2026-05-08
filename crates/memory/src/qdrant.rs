@@ -1,3 +1,5 @@
+//! Vector-memory backend abstraction and Qdrant implementation.
+
 use std::collections::HashMap;
 
 use qdrant_client::Qdrant;
@@ -10,8 +12,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::types::MemoryId;
 
+/// A trait for vector-memory backends that store embeddings and support
+/// nearest-neighbour search.
 #[async_trait::async_trait]
 pub trait VectorMemoryBackend: Send + Sync {
+    /// Inserts or updates a vector embedding for a memory.
     async fn upsert(
         &self,
         id: MemoryId,
@@ -19,24 +24,35 @@ pub trait VectorMemoryBackend: Send + Sync {
         payload: HashMap<String, Value>,
     ) -> Result<()>;
 
+    /// Searches for the `limit` nearest neighbours to the query embedding.
+    /// Returns IDs and their cosine similarity scores.
     async fn search(&self, query_embedding: Vec<f32>, limit: u64) -> Result<Vec<(MemoryId, f32)>>;
 
+    /// Deletes the embedding for the given memory.
     async fn delete(&self, id: MemoryId) -> Result<()>;
 }
 
+/// Configuration for connecting to a Qdrant vector database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QdrantMemoryConfig {
+    /// URL of the Qdrant server.
     pub url: String,
+    /// Optional API key for authentication.
     pub api_key: Option<String>,
+    /// Name of the Qdrant collection to use.
     pub collection_name: String,
+    /// Dimensionality of the vectors stored in the collection.
     pub vector_dimension: u64,
 }
 
+/// A [`VectorMemoryBackend`] backed by a Qdrant vector database.
 pub struct QdrantMemoryBackend {
     client: Qdrant,
     collection_name: String,
 }
 
+/// Defaults to connecting to `http://localhost:6334`, the `"memories"` collection,
+/// and a vector dimension of 64.
 impl Default for QdrantMemoryConfig {
     fn default() -> Self {
         Self {
@@ -49,6 +65,8 @@ impl Default for QdrantMemoryConfig {
 }
 
 impl QdrantMemoryBackend {
+    /// Creates a new Qdrant backend, connecting to the configured server and
+    /// creating the collection if it does not exist.
     pub async fn new(config: QdrantMemoryConfig) -> Result<Self> {
         let mut client_builder = Qdrant::from_url(&config.url);
         if let Some(ref api_key) = config.api_key {
@@ -84,6 +102,7 @@ impl QdrantMemoryBackend {
         })
     }
 
+    /// Inserts or updates a point in the Qdrant collection.
     pub async fn upsert(
         &self,
         id: MemoryId,
@@ -103,6 +122,7 @@ impl QdrantMemoryBackend {
         Ok(())
     }
 
+    /// Searches the collection for the nearest neighbours to the query embedding.
     pub async fn search(
         &self,
         query_embedding: Vec<f32>,
@@ -136,6 +156,7 @@ impl QdrantMemoryBackend {
         Ok(scored)
     }
 
+    /// Deletes a point from the Qdrant collection.
     pub async fn delete(&self, id: MemoryId) -> Result<()> {
         self.client
             .delete_points(

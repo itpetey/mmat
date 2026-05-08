@@ -1,3 +1,9 @@
+//! SQLite-backed persistent storage for semantic events.
+//!
+//! The [`EventStore`] provides insert and query capabilities over a local
+//! SQLite database. It is used by the [`EventBus`](crate::event_bus::EventBus)
+//! for optional persistence and replay.
+
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -6,22 +12,28 @@ use thiserror::Error;
 
 use crate::event::{EventId, SemanticEvent};
 
+/// The result type for event store operations.
 pub type Result<T> = std::result::Result<T, EventStoreError>;
 
+/// Errors that can occur during event store operations.
 #[derive(Error, Debug)]
 pub enum EventStoreError {
+    /// An error from the underlying SQLite database.
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    /// An error serialising or deserialising event JSON.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 }
 
+/// A persistent, thread-safe event store backed by SQLite.
 pub struct EventStore {
     conn: Mutex<Connection>,
 }
 
 impl EventStore {
+    /// Opens (or creates) a SQLite database at `path` and runs migrations.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -50,6 +62,7 @@ impl EventStore {
         Ok(())
     }
 
+    /// Inserts a semantic event into the store and returns its [`EventId`].
     pub fn insert(&self, event: &SemanticEvent) -> Result<EventId> {
         let payload = serde_json::to_string(event)?;
         let variant = event.variant_name();
@@ -73,6 +86,8 @@ impl EventStore {
         Ok(event_id)
     }
 
+    /// Replays events in rowid order from `after_row` (exclusive) up to
+    /// `before_row` (inclusive, if provided).
     pub fn replay(&self, after_row: i64, before_row: Option<i64>) -> Result<Vec<SemanticEvent>> {
         let sql = if before_row.is_some() {
             "SELECT payload FROM events WHERE rowid > ?1 AND rowid <= ?2 ORDER BY rowid ASC"
@@ -104,6 +119,7 @@ impl EventStore {
         })
     }
 
+    /// Queries events by variant name, optionally bounded by rowid range.
     pub fn query_by_variant(
         &self,
         variant: &str,
@@ -145,6 +161,7 @@ impl EventStore {
         Ok(events)
     }
 
+    /// Returns the maximum `rowid` in the table, or `None` if the table is empty.
     pub fn latest_row(&self) -> Result<Option<i64>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT MAX(rowid) FROM events")?;
@@ -156,6 +173,7 @@ impl EventStore {
         Ok(None)
     }
 
+    /// Returns the `rowid` for a given [`EventId`], or `None` if not found.
     pub fn row_for_event_id(&self, event_id: EventId) -> Result<Option<i64>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT rowid FROM events WHERE event_id = ?1")?;
@@ -167,6 +185,7 @@ impl EventStore {
         Ok(None)
     }
 
+    /// Retrieves a full [`SemanticEvent`] by its [`EventId`], if it exists.
     pub fn get_by_event_id(&self, event_id: EventId) -> Result<Option<SemanticEvent>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT payload FROM events WHERE event_id = ?1")?;

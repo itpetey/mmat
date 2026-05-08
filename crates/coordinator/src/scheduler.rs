@@ -1,3 +1,5 @@
+//! Task scheduling, budget tracking, and role lifecycle management.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,16 +15,25 @@ use crate::contract::{ContractId, TaskContext};
 use crate::registry::RoleRegistry;
 use crate::role::{Budget, CoordinatorMessage, RoleLifecycleState, Severity};
 
+/// Tracks the resource budget usage for a single contract.
 #[derive(Clone, Debug)]
 pub struct BudgetState {
+    /// When the budget tracking started.
     pub started: Instant,
+    /// Maximum wall-clock time allowed.
     pub time_limit: Duration,
+    /// Number of tokens consumed so far.
     pub tokens_used: u64,
+    /// Maximum number of tokens allowed.
     pub token_limit: u64,
+    /// Current retry attempt count.
     pub retry_current: u32,
+    /// Maximum permitted retry attempts.
     pub retry_max: u32,
 }
 
+/// Core scheduler that manages role lifecycle, task dispatch, budget enforcement,
+/// escalation routing, and heartbeat monitoring.
 #[allow(dead_code)]
 pub struct Scheduler {
     role_states: HashMap<RoleId, RoleLifecycleState>,
@@ -39,6 +50,7 @@ pub struct Scheduler {
 }
 
 impl BudgetState {
+    /// Creates a new budget state initialised from a [`Budget`] specification.
     pub fn new(budget: &Budget) -> Self {
         Self {
             started: Instant::now(),
@@ -50,14 +62,17 @@ impl BudgetState {
         }
     }
 
+    /// Returns `true` if the time limit has been exceeded.
     pub fn is_timeout(&self) -> bool {
         self.started.elapsed() > self.time_limit
     }
 
+    /// Returns `true` if the token limit has been exceeded.
     pub fn is_token_exceeded(&self) -> bool {
         self.tokens_used > self.token_limit
     }
 
+    /// Returns token usage as a percentage (0–100).
     pub fn token_usage_percent(&self) -> u8 {
         if self.token_limit == 0 {
             return 0;
@@ -65,12 +80,14 @@ impl BudgetState {
         ((self.tokens_used as f64 / self.token_limit as f64) * 100.0).min(100.0) as u8
     }
 
+    /// Returns `true` if the contract has remaining retry attempts.
     pub fn can_retry(&self) -> bool {
         self.retry_current < self.retry_max
     }
 }
 
 impl Scheduler {
+    /// Creates a new scheduler with the given event bus, registry, and coordinator receiver.
     pub fn new(
         bus: EventBus,
         registry: Arc<RoleRegistry>,
@@ -91,11 +108,13 @@ impl Scheduler {
         }
     }
 
+    /// Sets the heartbeat timeout duration for dead-role detection.
     pub fn with_heartbeat_timeout(mut self, timeout: Duration) -> Self {
         self.heartbeat_timeout = timeout;
         self
     }
 
+    /// Transitions a role to a new lifecycle state, publishing a state change event.
     pub fn set_role_state(&mut self, role_id: RoleId, state: RoleLifecycleState) {
         let old_state = self
             .role_states
@@ -129,6 +148,7 @@ impl Scheduler {
         }
     }
 
+    /// Returns the current lifecycle state of a role.
     pub fn get_role_state(&self, role_id: &RoleId) -> RoleLifecycleState {
         self.role_states
             .get(role_id)
@@ -136,14 +156,19 @@ impl Scheduler {
             .unwrap_or(RoleLifecycleState::Idle)
     }
 
+    /// Returns a reference to all role lifecycle states.
     pub fn role_states(&self) -> &HashMap<RoleId, RoleLifecycleState> {
         &self.role_states
     }
 
+    /// Returns a reference to the budget tracker.
     pub fn budget_tracker(&self) -> &HashMap<ContractId, BudgetState> {
         &self.budget_tracker
     }
 
+    /// Checks all active budgets for time or token overruns.
+    ///
+    /// Expired contracts are failed, and the affected roles transitioned to `Failed`.
     pub fn check_budgets(&mut self) {
         let expired: Vec<(RoleId, ContractId)> = self
             .budget_tracker
@@ -183,6 +208,7 @@ impl Scheduler {
         }
     }
 
+    /// Processes a semantic event, updating role state, budgets, and escalations.
     pub fn handle_event(&mut self, event: &SemanticEvent) {
         debug!("Scheduler handling event: {:?}", event.variant_name());
 
@@ -361,6 +387,7 @@ impl Scheduler {
         }
     }
 
+    /// Handles a single coordinator message (status report or escalation request).
     pub fn handle_coordinator_message(&mut self, msg: CoordinatorMessage) {
         match msg {
             CoordinatorMessage::ReportStatus { role_id, state } => {
@@ -382,6 +409,8 @@ impl Scheduler {
         }
     }
 
+    /// Detects running roles that have not sent a heartbeat within the timeout
+    /// and marks them as `Failed`.
     pub fn check_dead_roles(&mut self) {
         let now = Instant::now();
         let dead_roles: Vec<RoleId> = self

@@ -1,3 +1,5 @@
+//! Role registry for managing role specifications and event dispatch indexing.
+
 use std::collections::HashMap;
 
 use event_stream::event::{EventType, RoleId};
@@ -5,6 +7,7 @@ use event_stream::event::{EventType, RoleId};
 use crate::error::{Error, Result};
 use crate::role::{RoleSpec, Severity};
 
+/// Registry that holds all role specifications and indexes them for event dispatch.
 #[derive(Clone)]
 pub struct RoleRegistry {
     roles: HashMap<RoleId, RoleSpec>,
@@ -12,6 +15,7 @@ pub struct RoleRegistry {
 }
 
 impl RoleRegistry {
+    /// Creates an empty role registry.
     pub fn new() -> Self {
         Self {
             roles: HashMap::new(),
@@ -19,6 +23,10 @@ impl RoleRegistry {
         }
     }
 
+    /// Registers a role specification in the registry.
+    ///
+    /// Validates the input contract and escalation path compatibility
+    /// before inserting.
     pub fn register(&mut self, spec: RoleSpec) -> Result<()> {
         let role_id = spec.id.clone();
 
@@ -69,10 +77,12 @@ impl RoleRegistry {
         Ok(())
     }
 
+    /// Looks up a role specification by its ID.
     pub fn get(&self, id: RoleId) -> Option<&RoleSpec> {
         self.roles.get(&id)
     }
 
+    /// Returns all role specifications matching a given [`RoleType`](crate::role::RoleType).
     pub fn get_by_type(&self, role_type: crate::role::RoleType) -> Vec<&RoleSpec> {
         self.roles
             .values()
@@ -80,6 +90,7 @@ impl RoleRegistry {
             .collect()
     }
 
+    /// Returns the role specifications that subscribe to the given event type.
     pub fn subscribers_for(&self, event_type: &EventType) -> Vec<&RoleSpec> {
         self.dispatch_index
             .get(event_type)
@@ -108,6 +119,7 @@ impl RoleRegistry {
         None
     }
 
+    /// Returns a reference to all registered roles.
     pub fn all_roles(&self) -> &HashMap<RoleId, RoleSpec> {
         &self.roles
     }

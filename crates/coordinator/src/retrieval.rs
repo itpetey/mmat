@@ -1,3 +1,5 @@
+//! Memory retrieval planning and profile management.
+
 use std::time::Duration;
 
 use memory::attention::AttentionEngine;
@@ -8,18 +10,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::role::RoleType;
 
+/// Configuration for memory retrieval, defining scope, type, and authority filters.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetrievalProfile {
+    /// Memory scopes that are permitted for retrieval.
     pub allowed_scopes: Vec<MemoryScope>,
+    /// Memory types that are permitted for retrieval.
     pub allowed_types: Vec<MemoryType>,
+    /// Minimum authority level required for retrieved memories.
     pub min_authority: Authority,
+    /// Maximum age of memories to consider (none = unlimited).
     pub max_age: Option<Duration>,
+    /// Maximum number of results to return.
     pub result_limit: usize,
 }
 
+/// Planner for memory retrieval operations, supporting both structured and semantic search.
 pub struct RetrievalPlanner;
 
 impl RetrievalProfile {
+    /// Returns a maximally permissive retrieval profile with all scopes, all types,
+    /// speculative authority, and a limit of 50 results.
     pub fn all() -> Self {
         Self {
             allowed_scopes: vec![
@@ -49,10 +60,15 @@ impl RetrievalProfile {
 }
 
 impl RetrievalPlanner {
+    /// Creates a new retrieval planner.
     pub fn new() -> Self {
         Self
     }
 
+    /// Performs structured retrieval from the memory store using the given profile.
+    ///
+    /// Filters by scope, type, authority, and age, then optionally refines
+    /// with keyword matching against the task context.
     pub fn retrieve(
         &self,
         memory_store: &MemoryStore,
@@ -164,6 +180,7 @@ impl Default for RetrievalPlanner {
     }
 }
 
+/// Returns the default [`RetrievalProfile`] for a given [`RoleType`].
 pub fn default_profile_for_role_type(role_type: RoleType) -> RetrievalProfile {
     match role_type {
         RoleType::Worker => RetrievalProfile {

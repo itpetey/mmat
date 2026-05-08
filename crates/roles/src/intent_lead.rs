@@ -1,3 +1,6 @@
+//! The IntentLead role gathers goals, constraints, and preferences from the human stakeholder
+//! and produces an IntentBrief artefact to guide the rest of the organisation.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,6 +17,7 @@ use uuid::Uuid;
 use crate::artefacts::IntentBrief;
 use crate::tooling::RoleToolRegistry;
 
+/// The IntentLead role elicits goals, constraints, and preferences from the human stakeholder.
 pub struct IntentLead {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -22,6 +26,7 @@ pub struct IntentLead {
 }
 
 impl IntentLead {
+    /// Creates a new IntentLead with default settings and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("intent-lead-001".to_string()),
@@ -31,20 +36,24 @@ impl IntentLead {
         }
     }
 
+    /// Configures the IntentLead with an LLM client.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the IntentLead with a set of read-only tools.
     pub fn with_read_tools(mut self, read_tools: RoleToolRegistry) -> Self {
         self.read_tools = read_tools;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }
 
+    /// Returns the number of configured read tools.
     pub fn read_tool_count(&self) -> usize {
         self.read_tools.tool_specs().len()
     }

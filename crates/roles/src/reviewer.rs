@@ -1,3 +1,6 @@
+//! The Reviewer role evaluates implementation quality against a rubric, checks architectural compliance
+//! against ADRs and interface specs, classifies failures, and triggers rework or escalation.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,6 +18,7 @@ use tracing::{info, warn};
 use crate::artefacts::{Adr, FailureClass, InterfaceSpec};
 use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
+/// The Reviewer role evaluates implementation quality and architectural compliance.
 pub struct Reviewer {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -28,6 +32,7 @@ pub struct Reviewer {
 }
 
 impl Reviewer {
+    /// Creates a new Reviewer with default settings and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("reviewer-001".to_string()),
@@ -41,21 +46,25 @@ impl Reviewer {
         }
     }
 
+    /// Configures the Reviewer with an LLM client for rubric checking and architectural compliance.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the Reviewer with a custom tool registry.
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
     }
 
+    /// Sets the maximum number of rework attempts before escalation.
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }

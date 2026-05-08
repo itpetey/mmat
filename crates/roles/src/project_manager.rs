@@ -1,3 +1,6 @@
+//! The ProjectManager role decomposes architectural decisions into task cards, manages a delivery graph,
+//! assigns tasks to workers, and tracks progress through to completion.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,30 +21,46 @@ use uuid::Uuid;
 use crate::artefacts::{Adr, TaskCard as ArtefactTaskCard, ValidationPolicy};
 use crate::tooling::{RoleToolRegistry, RoleToolRuntime};
 
+/// The lifecycle status of a task within the delivery graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
+    /// The task is waiting for dependencies to be satisfied.
     Pending,
+    /// The task has been assigned to a worker.
     Assigned,
+    /// The task is currently being executed.
     Running,
+    /// The task has been completed successfully.
     Completed,
+    /// The task has failed.
     Failed,
 }
 
+/// A node in the delivery graph representing a task and its dependencies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryGraphNode {
+    /// The task card describing the work.
     pub task_card: ArtefactTaskCard,
+    /// Current status of the task.
     pub status: TaskStatus,
+    /// IDs of tasks this task depends on.
     pub dependencies: Vec<String>,
+    /// The role assigned to execute this task, if any.
     pub assignee: Option<String>,
 }
 
+/// A directed acyclic graph representing the delivery plan for a project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryGraph {
+    /// Unique identifier for this delivery graph.
     pub id: String,
+    /// Nodes keyed by task ID.
     pub nodes: HashMap<String, DeliveryGraphNode>,
+    /// Directed edges from dependency to dependent task.
     pub edges: Vec<(String, String)>,
 }
 
+/// The ProjectManager role decomposes ADRs into tasks, manages the delivery graph, and assigns work to workers.
 pub struct ProjectManager {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
@@ -56,6 +75,7 @@ pub struct ProjectManager {
 }
 
 impl DeliveryGraph {
+    /// Creates a new empty delivery graph.
     pub fn new() -> Self {
         Self {
             id: format!("dg-{}", Uuid::new_v4()),
@@ -64,6 +84,7 @@ impl DeliveryGraph {
         }
     }
 
+    /// Adds a task card as a node in the delivery graph with the given dependencies.
     pub fn add_node(&mut self, task_card: ArtefactTaskCard, dependencies: Vec<String>) {
         let id = task_card.id.clone();
         self.nodes.insert(
@@ -80,6 +101,7 @@ impl DeliveryGraph {
         }
     }
 
+    /// Performs a topological sort of the delivery graph. Returns an error if a cycle is detected.
     pub fn topological_sort(&self) -> Result<Vec<String>, String> {
         let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut adj: HashMap<String, Vec<String>> = HashMap::new();
@@ -121,6 +143,7 @@ impl DeliveryGraph {
         }
     }
 
+    /// Returns the IDs of tasks whose dependencies are all completed and are pending execution.
     pub fn ready_tasks(&self) -> Vec<String> {
         self.nodes
             .iter()
@@ -137,6 +160,7 @@ impl DeliveryGraph {
             .collect()
     }
 
+    /// Updates the status of a task in the delivery graph.
     pub fn update_status(&mut self, task_id: &str, status: TaskStatus) {
         if let Some(node) = self.nodes.get_mut(task_id) {
             node.status = status;
@@ -144,6 +168,7 @@ impl DeliveryGraph {
     }
 }
 
+/// Creates an empty delivery graph with a new unique identifier.
 impl Default for DeliveryGraph {
     fn default() -> Self {
         Self::new()
@@ -151,6 +176,7 @@ impl Default for DeliveryGraph {
 }
 
 impl ProjectManager {
+    /// Creates a new ProjectManager with default settings and no LLM client.
     pub fn new() -> Self {
         Self {
             id: EventRoleId("pm-001".to_string()),
@@ -165,20 +191,24 @@ impl ProjectManager {
         }
     }
 
+    /// Configures the ProjectManager with an LLM client for task decomposition.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
         self
     }
 
+    /// Configures the ProjectManager with a custom tool registry.
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
     }
 
+    /// Returns whether an LLM client has been configured.
     pub fn has_llm_client(&self) -> bool {
         self.llm_client.is_some()
     }
 
+    /// Returns a reference to the shared delivery graph for external inspection.
     pub fn delivery_graph(&self) -> Arc<RwLock<DeliveryGraph>> {
         Arc::clone(&self.delivery_graph)
     }

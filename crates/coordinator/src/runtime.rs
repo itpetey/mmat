@@ -1,3 +1,5 @@
+//! Organisation runtime managing role execution, event processing, and shutdown.
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,15 +21,23 @@ use crate::role::{
 };
 use crate::scheduler::Scheduler;
 
+/// Configuration for the organisation runtime.
 #[derive(Clone, Debug)]
 pub struct OrganisationConfig {
+    /// Capacity of the internal event bus channel.
     pub event_bus_capacity: usize,
+    /// Interval at which heartbeat events are published.
     pub heartbeat_interval: Duration,
+    /// Grace period for role shutdown before forced abort.
     pub shutdown_grace_period: Duration,
+    /// File path for the event store database.
     pub event_store_path: PathBuf,
+    /// File path for the memory store database.
     pub memory_store_path: PathBuf,
 }
 
+/// Runtime that owns and orchestrates the entire organisation: roles, event bus,
+/// memory store, scheduler, and shutdown coordination.
 pub struct OrganisationRuntime {
     config: OrganisationConfig,
     bus: EventBus,
@@ -42,6 +52,7 @@ pub struct OrganisationRuntime {
     shutdown_tx: broadcast::Sender<()>,
 }
 
+/// Returns default organisation configuration with sensible defaults.
 impl Default for OrganisationConfig {
     fn default() -> Self {
         Self {
@@ -55,6 +66,10 @@ impl Default for OrganisationConfig {
 }
 
 impl OrganisationRuntime {
+    /// Creates a new organisation runtime from the given configuration and registry.
+    ///
+    /// Opens the event store and memory store, validates the registry is non-empty,
+    /// and initialises the scheduler.
     pub fn new(config: OrganisationConfig, registry: RoleRegistry) -> Result<Self> {
         let event_store = Arc::new(
             EventStore::open(&config.event_store_path)
@@ -94,23 +109,28 @@ impl OrganisationRuntime {
         })
     }
 
+    /// Adds a role to the runtime. The role will be spawned when [`run`](Self::run) is called.
     pub fn add_role<R: crate::role::Role>(&mut self, role: R) {
         self.roles
             .push(Arc::new(crate::role::RoleHandle::new(role)));
     }
 
+    /// Returns a reference to the event bus.
     pub fn bus(&self) -> &EventBus {
         &self.bus
     }
 
+    /// Returns a reference to the memory store.
     pub fn memory_store(&self) -> &Arc<MemoryStore> {
         &self.memory_store
     }
 
+    /// Returns a reference to the role registry.
     pub fn registry(&self) -> &Arc<RoleRegistry> {
         &self.registry
     }
 
+    /// Returns a reference to the scheduler.
     pub fn scheduler(&self) -> &Arc<tokio::sync::Mutex<Scheduler>> {
         &self.scheduler
     }
@@ -125,6 +145,12 @@ impl OrganisationRuntime {
         self.shutdown_tx.clone()
     }
 
+    /// Runs the organisation runtime.
+    ///
+    /// Replays stored events, publishes an organisation-started event, spawns all roles,
+    /// and runs background tasks for the scheduler, coordinator message processing,
+    /// budget monitoring, and heartbeats. Blocks until a shutdown signal is received
+    /// (Ctrl+C or explicit [`shutdown`](Self::shutdown) call), then gracefully stops all roles.
     pub async fn run(mut self) -> Result<()> {
         // Startup replay
         self.replay_events().await?;

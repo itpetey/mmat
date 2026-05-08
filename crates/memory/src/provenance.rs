@@ -1,3 +1,5 @@
+//! Provenance tracking engine that traces evidence chains for memories.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,17 +11,21 @@ use parking_lot::RwLock;
 use crate::error::Result;
 use crate::types::Memory;
 
+/// Tracks evidence chains from events, rebuilds from the event store, and detects broken references.
 pub struct ProvenanceEngine {
     evidence_index: RwLock<HashMap<EventId, Vec<EventId>>>,
 }
 
 impl ProvenanceEngine {
+    /// Creates a new provenance engine with an empty evidence index.
     pub fn new() -> Self {
         Self {
             evidence_index: RwLock::new(HashMap::new()),
         }
     }
 
+    /// Runs the provenance loop: rebuilds from the event store, then subscribes to
+    /// new events and checks for broken evidence references.
     pub async fn run(&self, bus: Arc<EventBus>, event_store: Arc<EventStore>) -> Result<()> {
         self.rebuild_index_from_store(&event_store)?;
 
@@ -85,6 +91,8 @@ impl ProvenanceEngine {
         }
     }
 
+    /// Traces the evidence chain starting from the given event, returning all
+    /// events in the chain in chronological order.
     pub fn trace_evidence(
         &self,
         event_id: EventId,
@@ -129,6 +137,8 @@ impl ProvenanceEngine {
         Ok(chain)
     }
 
+    /// Traces all evidence references held by a memory, returning deduplicated
+    /// events sorted by ID.
     pub fn trace_memory(
         &self,
         memory: &Memory,
@@ -147,6 +157,9 @@ impl ProvenanceEngine {
         Ok(all_events)
     }
 
+    /// Assesses the confidence of an event based on its evidence chain.
+    /// Returns `0.85` with direct tool evidence, `0.5` with indirect claims,
+    /// `0.2` with no evidence, and `0.0` if the event is not found.
     pub fn assess_confidence(&self, event_id: EventId, event_store: &EventStore) -> Result<f64> {
         let events = event_store.replay(0, None)?;
         let event = events.into_iter().find(|e| e.event_id() == event_id);
@@ -221,6 +234,7 @@ impl ProvenanceEngine {
         Ok(broken)
     }
 
+    /// Checks whether the event at the given ID references any non-existent events.
     pub fn check_broken_evidence(
         &self,
         event_id: EventId,
@@ -267,6 +281,7 @@ impl ProvenanceEngine {
         }
     }
 
+    /// Returns a read guard to the evidence index (available only in tests).
     #[cfg(test)]
     pub fn evidence_index(
         &self,
@@ -275,6 +290,7 @@ impl ProvenanceEngine {
     }
 }
 
+/// A new empty engine is created by default.
 impl Default for ProvenanceEngine {
     fn default() -> Self {
         Self::new()

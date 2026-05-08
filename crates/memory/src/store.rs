@@ -1,3 +1,5 @@
+//! SQLite-backed memory store with vector-search integration.
+
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -10,11 +12,16 @@ use crate::error::Result;
 use crate::qdrant::VectorMemoryBackend;
 use crate::types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType};
 
+/// Persistent store for memories backed by SQLite.
+///
+/// Provides CRUD operations, querying by type/scope/authority, decay scanning,
+/// and supersession chain traversal.
 pub struct MemoryStore {
     conn: Mutex<Connection>,
 }
 
 impl MemoryStore {
+    /// Opens (or creates) the SQLite database at the given path and runs migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -152,6 +159,7 @@ impl MemoryStore {
         })
     }
 
+    /// Inserts a memory into the store (without its embedding).
     pub fn insert(&self, memory: &Memory) -> Result<()> {
         let conn = self.conn.lock();
         let evidence_refs_json = serde_json::to_string(&memory.evidence_refs)?;
@@ -184,6 +192,7 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Retrieves a memory by its identifier.
     pub fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, memory_type, content, scope, authority, confidence, decay_policy, evidence_refs, supersedes, superseded_by, created_at, last_accessed_at, source_agent FROM memories WHERE id = ?1")?;
@@ -193,6 +202,7 @@ impl MemoryStore {
         Ok(memory)
     }
 
+    /// Queries all current (non-superseded) memories of the given type.
     pub fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, memory_type, content, scope, authority, confidence, decay_policy, evidence_refs, supersedes, superseded_by, created_at, last_accessed_at, source_agent FROM memories WHERE memory_type = ?1 AND superseded_by IS NULL")?;
@@ -204,6 +214,7 @@ impl MemoryStore {
         Ok(memories)
     }
 
+    /// Queries all current (non-superseded) memories of the given scope.
     pub fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, memory_type, content, scope, authority, confidence, decay_policy, evidence_refs, supersedes, superseded_by, created_at, last_accessed_at, source_agent FROM memories WHERE scope = ?1 AND superseded_by IS NULL")?;
@@ -215,6 +226,8 @@ impl MemoryStore {
         Ok(memories)
     }
 
+    /// Queries all current (non-superseded) memories whose authority falls
+    /// within the given inclusive range.
     pub fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, memory_type, content, scope, authority, confidence, decay_policy, evidence_refs, supersedes, superseded_by, created_at, last_accessed_at, source_agent FROM memories WHERE superseded_by IS NULL")?;
@@ -229,6 +242,7 @@ impl MemoryStore {
         Ok(memories)
     }
 
+    /// Queries all current memories whose decay policy indicates they are expired.
     pub fn query_decayed(&self) -> Result<Vec<Memory>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, memory_type, content, scope, authority, confidence, decay_policy, evidence_refs, supersedes, superseded_by, created_at, last_accessed_at, source_agent FROM memories WHERE superseded_by IS NULL")?;
@@ -243,6 +257,8 @@ impl MemoryStore {
         Ok(memories)
     }
 
+    /// Marks `old_id` as superseded by `new_id` and sets the reverse link.
+    /// Returns an error if either memory does not exist.
     pub fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
         let conn = self.conn.lock();
         let old_exists: i64 = conn.query_row(
@@ -282,6 +298,7 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Returns the full supersession chain for a memory, including ancestors and descendants.
     pub fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
         let mut forward = Vec::new();
         let mut current = self.get_by_id(id)?;
@@ -315,6 +332,8 @@ impl MemoryStore {
         Ok(backward)
     }
 
+    /// Runs a query function against the store and filters the results to include
+    /// only memories that have not been superseded.
     pub fn query_current_only<F>(&self, query_fn: F) -> Result<Vec<Memory>>
     where
         F: Fn(&Connection) -> rusqlite::Result<Vec<Memory>>,
@@ -327,6 +346,7 @@ impl MemoryStore {
             .collect())
     }
 
+    /// Updates the `last_accessed_at` timestamp of a memory to the current time.
     pub fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
         let conn = self.conn.lock();
         let now = Utc::now().to_rfc3339();
@@ -337,6 +357,7 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Replaces the content of an existing memory.
     pub fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
@@ -351,6 +372,8 @@ impl MemoryStore {
         self.conn.lock()
     }
 
+    /// Inserts a memory into both the SQLite store and the vector backend
+    /// atomically. If the vector upsert fails the SQLite insert is rolled back.
     pub async fn insert_with_embedding(
         &self,
         memory: &Memory,
@@ -424,6 +447,8 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Searches for memories similar to the given embedding, filtering out
+    /// superseded entries and returning up to `limit` results.
     pub async fn search_similar(
         &self,
         embedding: Vec<f32>,

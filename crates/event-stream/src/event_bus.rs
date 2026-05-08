@@ -1,3 +1,9 @@
+//! A publish-subscribe event bus with optional persistence via [`EventStore`].
+//!
+//! The [`EventBus`] is the central mechanism for distributing [`SemanticEvent`]s
+//! to subscribers. Subscribers can filter by [`EventType`] and receive events
+//! through an asynchronous [`EventReceiver`].
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -6,18 +12,29 @@ use tokio::sync::broadcast::{self, Receiver, Sender};
 use crate::event::{EventType, SemanticEvent};
 use crate::event_store::{EventStore, EventStoreError};
 
+/// A broadcast bus for publishing semantic events to multiple subscribers.
+///
+/// Optionally backed by an [`EventStore`] for persistence. When a store is
+/// configured, each published event is persisted before being sent to subscribers.
 #[derive(Clone, Debug)]
 pub struct EventBus {
     sender: Sender<Arc<SemanticEvent>>,
     store: Option<Arc<EventStore>>,
 }
 
+/// Errors that can occur when receiving events from an [`EventReceiver`].
 #[derive(Debug)]
 pub enum RecvError {
+    /// The sender (and all its clones) have been dropped; no more events will be sent.
     Closed,
+    /// The receiver has missed `n` events due to a full buffer.
     Lagged(u64),
 }
 
+/// A filtered subscription to the [`EventBus`].
+///
+/// Created via [`EventBus::subscribe`]. Events that match the optional filter
+/// are yielded via [`recv`](EventReceiver::recv).
 #[derive(Debug)]
 pub struct EventReceiver {
     receiver: Receiver<Arc<SemanticEvent>>,
@@ -25,6 +42,7 @@ pub struct EventReceiver {
 }
 
 impl EventBus {
+    /// Creates a new [`EventBus`] with the given channel capacity and no persistent store.
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         Self {
@@ -33,11 +51,16 @@ impl EventBus {
         }
     }
 
+    /// Attaches a persistent [`EventStore`] to this bus, consuming `self`.
     pub fn with_store(mut self, store: Arc<EventStore>) -> Self {
         self.store = Some(store);
         self
     }
 
+    /// Publishes an event to all subscribers.
+    ///
+    /// If a store is configured the event is persisted first. The event is
+    /// wrapped in an [`Arc`] before being broadcast.
     pub fn publish(&self, event: SemanticEvent) -> std::result::Result<(), EventStoreError> {
         if let Some(store) = &self.store {
             store.insert(&event)?;
@@ -47,6 +70,10 @@ impl EventBus {
         Ok(())
     }
 
+    /// Subscribes to the bus with an optional event-type filter.
+    ///
+    /// Returns an [`EventReceiver`] that yields events matching the given
+    /// types. Pass an empty slice to receive all events.
     pub fn subscribe(&self, filter: &[EventType]) -> EventReceiver {
         let receiver = self.sender.subscribe();
         let filter_set: HashSet<EventType> = filter.iter().cloned().collect();
@@ -56,12 +83,18 @@ impl EventBus {
         }
     }
 
+    /// Returns a reference to the attached [`EventStore`], if any.
     pub fn store(&self) -> Option<Arc<EventStore>> {
         self.store.clone()
     }
 }
 
 impl EventReceiver {
+    /// Awaits the next event that matches the configured filter.
+    ///
+    /// If the sender is dropped, returns [`RecvError::Closed`]. If the
+    /// receiver has fallen behind, returns [`RecvError::Lagged`] with the
+    /// number of skipped messages.
     pub async fn recv(&mut self) -> std::result::Result<Arc<SemanticEvent>, RecvError> {
         loop {
             match self.receiver.recv().await {

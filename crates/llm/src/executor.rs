@@ -1,3 +1,5 @@
+//! Tool-using loop that repeatedly calls the LLM until a final answer is produced.
+
 use serde_json::Value;
 use thiserror::Error;
 
@@ -5,35 +7,47 @@ use crate::client::LlmClient;
 use crate::message::{CompletionRequest, Message};
 use crate::tool::ToolRegistry;
 
+/// Alias for [`Result`](std::result::Result) with the executor's [`ExecutorError`].
 pub type Result<T, E> = std::result::Result<T, ExecutorError<E>>;
 
+/// Configuration for the executor loop.
 #[derive(Clone, Debug)]
 pub struct ExecutorConfig {
+    /// Maximum number of LLM round-trips before giving up.
     pub max_turns: usize,
+    /// Optional token budget; the executor stops if total usage exceeds this.
     pub max_tokens: Option<u32>,
 }
 
+/// Errors that may occur during the executor loop.
 #[derive(Error, Debug)]
 pub enum ExecutorError<E> {
+    /// The LLM client returned an error.
     #[error("Client error: {0}")]
     Client(String),
 
+    /// The maximum number of turns was reached without a final answer.
     #[error("Turn limit exceeded")]
     TurnLimitExceeded,
 
+    /// The token budget was exceeded.
     #[error("Token limit exceeded: used {used}, budget {budget}")]
     TokenLimitExceeded { used: u32, budget: u32 },
 
+    /// A tool returned an error.
     #[error("Tool error: {0}")]
     Tool(E),
 
+    /// Failed to parse a tool's arguments or the LLM response.
     #[error("Parse error: {0}")]
     Parse(String),
 }
 
+/// Runs the tool-using completion loop.
 pub struct Executor;
 
 impl Default for ExecutorConfig {
+    /// Create a default configuration with 10 turns and no token budget.
     fn default() -> Self {
         Self {
             max_turns: 10,
@@ -43,6 +57,12 @@ impl Default for ExecutorConfig {
 }
 
 impl Executor {
+    /// Execute a loop of LLM calls, invoking tools as needed, until a final response or error.
+    ///
+    /// The type parameters are:
+    /// - `Runtime`: the shared state passed to each tool invocation.
+    /// - `Error`: the error type produced by tools.
+    /// - `Client`: an implementation of [`LlmClient`].
     pub async fn run<Runtime, Error, Client>(
         client: &Client,
         registry: &ToolRegistry<Runtime, Error>,
