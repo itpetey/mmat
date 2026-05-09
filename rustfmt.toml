@@ -1,5 +1,3 @@
-# Formatting configuration for Selium
-
 # https://github.com/rust-lang/rustfmt/issues/4991
 # Prefer grouped imports within the same crate
 # imports_granularity = "Crate"

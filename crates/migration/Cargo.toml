@@ -7,7 +7,6 @@ edition.workspace = true
 chrono = { workspace = true, features = ["now"] }
 mmat-event-stream = { path = "../event-stream" }
 rusqlite = { workspace = true, features = ["bundled"] }
-serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 sqlx = { workspace = true, features = [
   "derive",
