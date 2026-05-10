@@ -1501,6 +1501,7 @@ dependencies = [
  "mmat-event-stream",
  "mmat-memory",
  "mmat-roles",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

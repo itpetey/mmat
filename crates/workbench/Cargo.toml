@@ -29,4 +29,5 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }

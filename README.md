@@ -50,6 +50,25 @@ Set `DATABASE_URL` in your environment using the connection details from `.env.e
 export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
 ```
 
+## Testing
+
+```bash
+cargo test       # run all workspace tests (unit + integration)
+cargo test -p <crate>  # run tests for a specific crate
+```
+
+Some integration tests require a running Postgres instance and the `DATABASE_URL` environment variable. Without it, those tests are silently skipped:
+
+```bash
+export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
+cargo test
+```
+
+Tests that use Postgres create an isolated schema per run and clean up
+automatically. The workbench crate also includes HTTP integration tests
+(`tests/api.rs`) that run against an in-memory server on a random port
+and do not need Postgres.
+
 ## Usage
 
 Add the relevant crate from this workspace to another Rust crate while MMAT is under active local development:
