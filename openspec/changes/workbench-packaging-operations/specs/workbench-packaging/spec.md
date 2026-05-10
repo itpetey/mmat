@@ -15,9 +15,11 @@ The workbench SHALL return clear errors for missing configuration, bind failures
 - **WHEN** the configured bind address is already in use
 - **THEN** startup MUST fail with an error mentioning the address and bind failure
 
-#### Scenario: Static assets are missing
-- **WHEN** required static assets are unavailable
-- **THEN** startup or the relevant route MUST report which asset is missing
+#### Scenario: Static assets are embedded at compile time
+- **GIVEN** the workbench uses `include_str!()` to embed HTML, CSS, and JavaScript into the binary
+- **WHEN** a required static asset file is missing from the source tree
+- **THEN** compilation fails with a compiler error containing the missing file path
+- **AND** no runtime asset directory is needed at startup
 
 ### Requirement: Release builds serve the workbench
 The documented release build SHALL produce a workbench executable that can serve the UI and API from the documented working directory.

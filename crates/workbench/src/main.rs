@@ -35,7 +35,14 @@ async fn main() -> Result<(), WorkbenchError> {
 
     let app = build_app_router(state);
 
-    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
+    info!("static assets compiled into binary (index.html, style.css, app.js)");
+
+    let listener = tokio::net::TcpListener::bind(socket_addr)
+        .await
+        .map_err(|source| WorkbenchError::Bind {
+            address: socket_addr.to_string(),
+            source,
+        })?;
     info!("MMAT workbench listening on http://{}", socket_addr);
 
     axum::serve(listener, app)

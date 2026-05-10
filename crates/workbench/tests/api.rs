@@ -456,3 +456,101 @@ async fn replay_restores_full_projection_through_api() {
 
     common::drop_postgres_schema(&admin_pool, &schema).await;
 }
+
+// ---------------------------------------------------------------------------
+// 4.1  Smoke check — all documented routes respond
+//
+// This test exercises the same route handlers compiled into the release
+// binary — routing logic is identical between debug and release profiles.
+// A separate manual `cargo build --release` confirmed the release binary
+// compiles and contains all embedded static assets.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn smoke_check_all_routes_respond() {
+    let state = common::test_app_state();
+    let base_url = common::spawn_test_server(state).await;
+    let client = reqwest::Client::new();
+
+    // Static assets
+    let resp = client.get(&format!("{base_url}/")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        ct.starts_with("text/html"),
+        "index: expected text/html, got {ct}"
+    );
+
+    let resp = client
+        .get(&format!("{base_url}/style.css"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        ct.starts_with("text/css"),
+        "style.css: expected text/css, got {ct}"
+    );
+
+    let resp = client
+        .get(&format!("{base_url}/app.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        ct.starts_with("application/javascript"),
+        "app.js: expected application/javascript, got {ct}"
+    );
+
+    // API endpoints
+    let resp = client
+        .get(&format!("{base_url}/api/state"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "/api/state should return 200");
+
+    let resp = client
+        .get(&format!("{base_url}/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "/events should return 200");
+
+    let resp = client
+        .post(&format!("{base_url}/api/messages"))
+        .json(&serde_json::json!({ "message": "smoke test" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202, "POST /api/messages should return 202");
+
+    // Unknown route returns 404
+    let resp = client
+        .get(&format!("{base_url}/nonexistent"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "unknown route should return 404");
+}

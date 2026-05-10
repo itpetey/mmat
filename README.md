@@ -2,7 +2,7 @@
 
 MMAT, short for **Make Me A Thing**, is a Rust workspace for turning an open-ended software request into a structured, observable delivery flow. It provides the foundations for agent-style project work: role coordination, semantic events, memory, LLM integration, repository discovery, project scaffolding, and controlled process execution.
 
-The project is currently a library workspace. It does not expose a command-line interface yet.
+The project is a library workspace with a browser-based workbench frontend. Most crates are libraries; `mmat-workbench` and `mmat-migration` provide runnable binaries.
 
 ## Why This Exists
 
@@ -38,7 +38,9 @@ The core goals are:
 - Optional: Qdrant for vector-backed memory experiments.
 - Optional: an OpenAI-compatible API endpoint for `mmat-llm` integration.
 
-Start the local Postgres service with:
+### Quick Start (Postgres)
+
+Start the local Postgres service:
 
 ```bash
 docker compose up -d postgres
@@ -49,6 +51,16 @@ Set `DATABASE_URL` in your environment using the connection details from `.env.e
 ```bash
 export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
 ```
+
+### Workbench Environment Variables
+
+The `mmat-workbench` binary reads these environment variables at startup:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | Yes | — | Postgres connection string for event, memory, and artefact stores. |
+| `MMAT_WORKBENCH_ADDR` | No | `127.0.0.1:8080` | Address and port the HTTP server binds to. |
+| `RUST_LOG` | No | `mmat_workbench=info` | Tracing/logging filter directive. |
 
 ## Testing
 
@@ -116,7 +128,7 @@ cargo build
 cargo test
 ```
 
-Run the prototype workbench frontend:
+Run the workbench frontend during development:
 
 ```bash
 DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run -p mmat-workbench
@@ -129,7 +141,20 @@ DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
   MMAT_WORKBENCH_ADDR=127.0.0.1:8090 cargo run -p mmat-workbench
 ```
 
-The workbench requires a valid Postgres `DATABASE_URL` and will fail at startup with a clear message if one is not set. It hydrates its UI projection by replaying persisted Postgres events, so the browser resumes the previous conversation history instead of starting from a blank projection.
+Run an optimised release build:
+
+```bash
+DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run --release -p mmat-workbench
+```
+
+The release binary can also be run directly from `target/release/mmat-workbench` after a build:
+
+```bash
+cargo build --release
+DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat ./target/release/mmat-workbench
+```
+
+The workbench requires a valid Postgres `DATABASE_URL` and will fail at startup with a clear message if one is not set. It hydrates its UI projection by replaying persisted Postgres events, so the browser resumes the previous conversation history instead of starting from a blank projection. Static assets (HTML, CSS, JavaScript) are compiled into the binary at build time via `include_str!()`, so no separate asset directory is needed at runtime.
 
 Migrate legacy SQLite stores into Postgres (one-off for existing `.mmat` data):
 

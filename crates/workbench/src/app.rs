@@ -39,8 +39,11 @@ pub enum WorkbenchError {
         address: String,
         source: std::net::AddrParseError,
     },
-    #[error("failed to bind listener: {0}")]
-    Bind(#[from] std::io::Error),
+    #[error("failed to bind listener at {address}: {source}")]
+    Bind {
+        address: String,
+        source: std::io::Error,
+    },
     #[error("server failed: {0}")]
     Server(std::io::Error),
     #[error("failed to initialise workbench runtime: {0}")]
@@ -239,6 +242,27 @@ impl AppState {
     }
 }
 
+fn redact_database_url(url: &str) -> String {
+    if let Some(rest) = url.strip_suffix('/') {
+        return redact_database_url(rest);
+    }
+    if let Some(colon_slash) = url.find("://") {
+        let after_scheme = &url[colon_slash + 3..];
+        if let Some(at_pos) = after_scheme.find('@') {
+            let credentials = &after_scheme[..at_pos];
+            if let Some(colon_pos) = credentials.find(':') {
+                let user = &credentials[..colon_pos];
+                return format!(
+                    "{}:***@{}",
+                    &url[..colon_slash + 3 + user.len()],
+                    &after_scheme[at_pos + 1..]
+                );
+            }
+        }
+    }
+    url.to_string()
+}
+
 fn require_database_url() -> Result<String, WorkbenchError> {
     std::env::var("DATABASE_URL").map_err(|_| {
         WorkbenchError::Init(
@@ -264,45 +288,49 @@ pub fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError
     let auditor = Auditor::new();
 
     let mut registry = RoleRegistry::new();
-    registry
-        .register(intent_lead.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    registry
-        .register(scholar.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    registry
-        .register(ops_manager.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    registry
-        .register(architect.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    registry
-        .register(project_manager.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
+    registry.register(intent_lead.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (intent lead) failed: {err}"))
+    })?;
+    registry.register(scholar.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (scholar) failed: {err}"))
+    })?;
+    registry.register(ops_manager.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (ops manager) failed: {err}"))
+    })?;
+    registry.register(architect.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (architect) failed: {err}"))
+    })?;
+    registry.register(project_manager.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (project manager) failed: {err}"))
+    })?;
     registry
         .register(worker.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    registry
-        .register(reviewer.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    registry
-        .register(auditor.spec())
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
+        .map_err(|err| WorkbenchError::Init(format!("role registration (worker) failed: {err}")))?;
+    registry.register(reviewer.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (reviewer) failed: {err}"))
+    })?;
+    registry.register(auditor.spec()).map_err(|err| {
+        WorkbenchError::Init(format!("role registration (auditor) failed: {err}"))
+    })?;
 
     let config = OrganisationConfig {
-        database_url: Some(database_url),
+        database_url: Some(database_url.clone()),
         event_store_path: None,
         memory_store_path: None,
         ..OrganisationConfig::default()
     };
 
-    let mut runtime = OrganisationRuntime::new(config, registry)
-        .map_err(|err| WorkbenchError::Init(err.to_string()))?;
+    let mut runtime = OrganisationRuntime::new(config, registry).map_err(|err| {
+        WorkbenchError::Init(format!(
+            "failed to create organisation runtime (database: {}): {err}",
+            redact_database_url(&database_url),
+        ))
+    })?;
 
     let replayed_events = runtime
         .event_store()
         .replay(0, None)
-        .map_err(|err| WorkbenchError::Init(format!("failed to replay events: {err}")))?;
+        .map_err(|err| WorkbenchError::Init(format!("failed to replay persisted events: {err}")))?;
 
     let state = AppState::with_events(
         runtime.bus().clone(),
@@ -1882,5 +1910,45 @@ mod tests {
             .execute(&admin_pool)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn redact_database_url_redacts_password() {
+        assert_eq!(
+            redact_database_url("postgres://user:secret@localhost:5432/mmat"),
+            "postgres://user:***@localhost:5432/mmat",
+        );
+    }
+
+    #[test]
+    fn redact_database_url_redacts_empty_password() {
+        assert_eq!(
+            redact_database_url("postgres://user:@localhost:5432/mmat"),
+            "postgres://user:***@localhost:5432/mmat",
+        );
+    }
+
+    #[test]
+    fn redact_database_url_does_not_change_without_credentials() {
+        assert_eq!(
+            redact_database_url("postgres://localhost:5432/mmat"),
+            "postgres://localhost:5432/mmat",
+        );
+    }
+
+    #[test]
+    fn redact_database_url_strips_trailing_slash() {
+        assert_eq!(
+            redact_database_url("postgres://user:secret@localhost/mmat/"),
+            "postgres://user:***@localhost/mmat",
+        );
+    }
+
+    #[test]
+    fn redact_database_url_preserves_unix_socket_paths() {
+        assert_eq!(
+            redact_database_url("/var/run/postgres.sock"),
+            "/var/run/postgres.sock",
+        );
     }
 }
