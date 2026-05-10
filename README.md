@@ -21,9 +21,9 @@ The core goals are:
 | Crate | Purpose |
 | --- | --- |
 | `mmat-coordinator` | Role runtime, contracts, budget management, escalation routing, scheduling, and retrieval planning. |
-| `mmat-event-stream` | Semantic event types, publish-subscribe event bus, and optional SQLite-backed event persistence. |
+| `mmat-event-stream` | Semantic event types, publish-subscribe event bus, and Postgres-backed event persistence. Legacy SQLite support retained for migration. |
 | `mmat-llm` | OpenAI-compatible chat completions, streaming responses, and tool execution support. |
-| `mmat-memory` | Typed semantic memory built on event streams, SQLite storage, Qdrant vector search, attention, provenance, and librarian workflows. |
+| `mmat-memory` | Typed semantic memory built on event streams, Postgres storage, Qdrant vector search, attention, provenance, and librarian workflows. Legacy SQLite support retained for migration. |
 | `mmat-migration` | SQLite-to-Postgres migration utility for events, memories, and artefact blobs. |
 | `mmat-process` | Shell command execution with working-directory and environment support. |
 | `mmat-project` | Repository discovery, project type detection, project scaffolding, git worktree handling, and related project operations. |
@@ -34,7 +34,7 @@ The core goals are:
 
 - Rust toolchain with Edition 2024 support.
 - Cargo.
-- Optional: Postgres 16 with pgvector for Postgres-backed event, memory, and artefact storage.
+- Postgres 16 with pgvector for event, memory, and artefact storage.
 - Optional: Qdrant for vector-backed memory experiments.
 - Optional: an OpenAI-compatible API endpoint for `mmat-llm` integration.
 
@@ -44,10 +44,10 @@ Start the local Postgres service with:
 docker compose up -d postgres
 ```
 
-Use `.env.example` as the local storage configuration template:
+Set `DATABASE_URL` in your environment using the connection details from `.env.example`:
 
 ```bash
-DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
+export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
 ```
 
 ## Usage
@@ -100,18 +100,19 @@ cargo test
 Run the prototype workbench frontend:
 
 ```bash
-cargo run -p mmat-workbench
+DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run -p mmat-workbench
 ```
 
 Then open `http://127.0.0.1:8080`. Override the bind address with `MMAT_WORKBENCH_ADDR`, for example:
 
 ```bash
-MMAT_WORKBENCH_ADDR=127.0.0.1:8090 cargo run -p mmat-workbench
+DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
+  MMAT_WORKBENCH_ADDR=127.0.0.1:8090 cargo run -p mmat-workbench
 ```
 
-The workbench is intentionally event-native: submitting an answer publishes `HumanFeedbackReceived`, role mentions publish runtime task events, and the UI renders projections for the Intent Lead conversation, DAG flow, role state, artefacts, and memory/evidence inspection. It hydrates from `.mmat/workbench/events.db` on startup so the browser resumes the previous event history instead of starting from a blank projection.
+The workbench requires a valid Postgres `DATABASE_URL` and will fail at startup with a clear message if one is not set. It hydrates its UI projection by replaying persisted Postgres events, so the browser resumes the previous conversation history instead of starting from a blank projection.
 
-Migrate legacy SQLite stores into Postgres with:
+Migrate legacy SQLite stores into Postgres (one-off for existing `.mmat` data):
 
 ```bash
 cargo run -p mmat-migration -- \
@@ -144,8 +145,8 @@ cargo build --release
 - The workspace uses Rust Edition 2024.
 - Dependencies are centralised in `[workspace.dependencies]` in the root `Cargo.toml`.
 - The event stream is the main integration surface between roles, memory, and coordination.
-- When `DATABASE_URL` is set, event, memory, and artefact storage use Postgres; otherwise legacy SQLite and `.mmat/artefacts/` file storage are used.
-- `**/.mmat/` remains ignored because the directory is only created in legacy SQLite/file-backed mode.
+- The workbench requires `DATABASE_URL` and uses Postgres-backed event, memory, and artefact stores exclusively. The coordinator runtime still supports SQLite and `.mmat/artefacts/` file-based fallback outside the workbench for backward compatibility; these legacy paths are retained for the migration tool and for non-workbench usage.
+- `**/.mmat/` remains ignored for any remaining legacy data that has not yet been migrated.
 - Memory entries carry metadata such as type, scope, authority, confidence, source role, evidence references, supersession, and decay policy.
 - LLM support is provider-shaped around OpenAI-compatible chat completions rather than hard-wiring higher-level role behaviour to one service.
 - Project operations are split into focused crates so orchestration code can remain separate from filesystem, process, and repository concerns.

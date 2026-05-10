@@ -159,6 +159,16 @@ impl OrganisationRuntime {
         &self.bus
     }
 
+    /// Returns a reference to the event store.
+    pub fn event_store(&self) -> &Arc<EventStore> {
+        &self.event_store
+    }
+
+    /// Returns a reference to the artefact store.
+    pub fn artefact_store(&self) -> &Arc<ArtefactStore> {
+        &self.artefact_store
+    }
+
     /// Returns a reference to the memory store.
     pub fn memory_store(&self) -> &Arc<MemoryStore> {
         &self.memory_store

@@ -1,11 +1,4 @@
-use std::{
-    cmp::Reverse,
-    collections::BTreeMap,
-    convert::Infallible,
-    net::SocketAddr,
-    path::{Path as FsPath, PathBuf},
-    sync::Arc,
-};
+use std::{cmp::Reverse, collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -19,8 +12,8 @@ use mmat_coordinator::{OrganisationConfig, OrganisationRuntime, Role, RoleRegist
 use mmat_event_stream::{
     event::{RoleId, SemanticEvent, TaskContract},
     event_bus::{EventBus, RecvError},
-    event_store::EventStore,
 };
+use mmat_memory::artefact_store::ArtefactStore;
 use mmat_roles::{
     Architect, Auditor, IntentLead, OpsManager, ProjectManager, Reviewer, Scholar, Worker,
 };
@@ -36,6 +29,7 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 struct AppState {
     bus: EventBus,
     projection: Arc<RwLock<WorkbenchProjection>>,
+    artefact_store: Arc<ArtefactStore>,
 }
 
 #[derive(Debug, Error)]
@@ -66,6 +60,7 @@ struct WorkbenchProjection {
     pending_question: Option<String>,
     active_artefact_id: Option<String>,
     active_step_id: Option<String>,
+    has_conversation: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -214,10 +209,18 @@ async fn main() -> Result<(), WorkbenchError> {
 }
 
 impl AppState {
-    fn with_events(bus: EventBus, events: &[SemanticEvent]) -> Self {
+    fn with_events(
+        bus: EventBus,
+        events: &[SemanticEvent],
+        artefact_store: Arc<ArtefactStore>,
+    ) -> Self {
         Self {
             bus,
-            projection: Arc::new(RwLock::new(WorkbenchProjection::from_events(events))),
+            projection: Arc::new(RwLock::new(WorkbenchProjection::from_events(
+                events,
+                &artefact_store,
+            ))),
+            artefact_store,
         }
     }
 
@@ -228,12 +231,20 @@ impl AppState {
     }
 }
 
+fn require_database_url() -> Result<String, WorkbenchError> {
+    std::env::var("DATABASE_URL").map_err(|_| {
+        WorkbenchError::Init(
+            "DATABASE_URL is not set.\n\
+             The workbench requires a Postgres database to store events, memories, and artefacts.\n\
+             Set DATABASE_URL in your environment, for example:\n\
+             export DATABASE_URL=\"postgres://user:password@localhost:5432/mmat\""
+                .to_string(),
+        )
+    })
+}
+
 fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
-    let data_dir = PathBuf::from(".mmat").join("workbench");
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|err| WorkbenchError::Init(format!("failed to create data directory: {err}")))?;
-    let event_store_path = data_dir.join("events.db");
-    let replayed_events = replay_workbench_events(&event_store_path)?;
+    let database_url = require_database_url()?;
 
     let intent_lead = IntentLead::new();
     let scholar = Scholar::new();
@@ -271,14 +282,25 @@ fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
         .map_err(|err| WorkbenchError::Init(err.to_string()))?;
 
     let config = OrganisationConfig {
-        event_store_path: Some(event_store_path),
-        memory_store_path: Some(data_dir.join("memory.db")),
+        database_url: Some(database_url),
+        event_store_path: None,
+        memory_store_path: None,
         ..OrganisationConfig::default()
     };
 
     let mut runtime = OrganisationRuntime::new(config, registry)
         .map_err(|err| WorkbenchError::Init(err.to_string()))?;
-    let state = AppState::with_events(runtime.bus().clone(), &replayed_events);
+
+    let replayed_events = runtime
+        .event_store()
+        .replay(0, None)
+        .map_err(|err| WorkbenchError::Init(format!("failed to replay events: {err}")))?;
+
+    let state = AppState::with_events(
+        runtime.bus().clone(),
+        &replayed_events,
+        runtime.artefact_store().clone(),
+    );
 
     runtime.add_role(intent_lead);
     runtime.add_role(scholar);
@@ -290,14 +312,6 @@ fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
     runtime.add_role(auditor);
 
     Ok((state, runtime))
-}
-
-fn replay_workbench_events(path: &FsPath) -> Result<Vec<SemanticEvent>, WorkbenchError> {
-    let store = EventStore::open(path)
-        .map_err(|err| WorkbenchError::Init(format!("failed to open event store: {err}")))?;
-    store
-        .replay(0, None)
-        .map_err(|err| WorkbenchError::Init(format!("failed to replay event store: {err}")))
 }
 
 impl WorkbenchProjection {
@@ -360,27 +374,23 @@ impl WorkbenchProjection {
             pending_question: None,
             active_artefact_id: None,
             active_step_id: Some("intent".to_string()),
+            has_conversation: false,
         }
     }
 
-    fn from_events(events: &[SemanticEvent]) -> Self {
+    fn from_events(events: &[SemanticEvent], artefact_store: &ArtefactStore) -> Self {
         let mut projection = Self::new();
         for event in events {
-            projection.apply_event(event);
+            projection.apply_event(event, artefact_store);
         }
         projection
     }
 
     fn has_conversation_history(&self) -> bool {
-        self.events.iter().any(|event| {
-            matches!(
-                event.variant.as_str(),
-                "HumanFeedbackRequested" | "HumanFeedbackReceived"
-            )
-        })
+        self.has_conversation
     }
 
-    fn apply_event(&mut self, event: &SemanticEvent) {
+    fn apply_event(&mut self, event: &SemanticEvent, artefact_store: &ArtefactStore) {
         self.events.push(EventView::from_event(event));
         if self.events.len() > 200 {
             let overflow = self.events.len().saturating_sub(200);
@@ -394,6 +404,7 @@ impl WorkbenchProjection {
                 timestamp_ns,
                 ..
             } => {
+                self.has_conversation = true;
                 self.pending_question = Some(question.clone());
                 self.messages.push(MessageView {
                     speaker: "Intent Lead".to_string(),
@@ -422,6 +433,7 @@ impl WorkbenchProjection {
                 timestamp_ns,
                 ..
             } => {
+                self.has_conversation = true;
                 self.acknowledge_kind("Question");
                 self.pending_question = None;
                 self.messages.push(MessageView {
@@ -566,7 +578,7 @@ impl WorkbenchProjection {
                         title: label_for_artefact(artefact_type),
                         producer_role: producer_role.0.clone(),
                         content_hash: content_hash.clone(),
-                        content: load_artefact_content(storage_uri),
+                        content: load_artefact_content(storage_uri, artefact_store),
                         evidence_refs: evidence_refs
                             .iter()
                             .map(|evidence| evidence.event_id.to_string())
@@ -778,7 +790,7 @@ fn spawn_projection_task(state: AppState) {
             match receiver.recv().await {
                 Ok(event) => {
                     let mut projection = state.projection.write().await;
-                    projection.apply_event(event.as_ref());
+                    projection.apply_event(event.as_ref(), &state.artefact_store);
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     error!("workbench projection lagged by {} events", skipped);
@@ -919,7 +931,26 @@ fn extract_constraints(answer: &str) -> Vec<String> {
     }
 }
 
-fn load_artefact_content(storage_uri: &str) -> serde_json::Value {
+fn load_artefact_content(storage_uri: &str, artefact_store: &ArtefactStore) -> serde_json::Value {
+    if storage_uri.starts_with("db://") {
+        let handle = tokio::runtime::Handle::try_current();
+        if let Ok(handle) = handle {
+            return tokio::task::block_in_place(|| {
+                match handle.block_on(artefact_store.get_payload(storage_uri)) {
+                    Ok(Some(content)) => serde_json::from_str(&content)
+                        .unwrap_or_else(|_| serde_json::json!({ "content": content })),
+                    Ok(None) => {
+                        serde_json::json!({ "storage_uri": storage_uri, "error": "not found" })
+                    }
+                    Err(err) => serde_json::json!({
+                        "storage_uri": storage_uri,
+                        "error": format!("failed to load artefact: {err}")
+                    }),
+                }
+            });
+        }
+    }
+
     if let Some(path) = storage_uri.strip_prefix("file://") {
         return match std::fs::read_to_string(path) {
             Ok(content) => serde_json::from_str(&content)
@@ -1183,7 +1214,8 @@ mod tests {
             SemanticEvent::new_human_feedback_received(RoleId::new("human"), "A useful tool"),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events);
+        let store = ArtefactStore::new();
+        let projection = WorkbenchProjection::from_events(&events, &store);
 
         assert!(projection.has_conversation_history());
         assert_eq!(projection.messages.len(), 2);
@@ -1193,12 +1225,151 @@ mod tests {
 
     #[test]
     fn organisation_events_do_not_count_as_conversation_history() {
-        let projection =
-            WorkbenchProjection::from_events(&[SemanticEvent::new_organisation_started(
-                RoleId::new("coordinator"),
-            )]);
+        let store = ArtefactStore::new();
+        let projection = WorkbenchProjection::from_events(
+            &[SemanticEvent::new_organisation_started(RoleId::new(
+                "coordinator",
+            ))],
+            &store,
+        );
 
         assert!(!projection.has_conversation_history());
+    }
+
+    #[test]
+    fn missing_database_url_error_message_is_clear() {
+        let err = WorkbenchError::Init(
+            "DATABASE_URL is not set.\n\
+             The workbench requires a Postgres database to store events, memories, and artefacts.\n\
+             Set DATABASE_URL in your environment, for example:\n\
+             export DATABASE_URL=\"postgres://user:password@localhost:5432/mmat\""
+                .to_string(),
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DATABASE_URL"),
+            "should mention DATABASE_URL: {msg}",
+        );
+        assert!(
+            msg.contains("Postgres"),
+            "should mention Postgres: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_event_replay_preserves_events_across_restart() {
+        let base_url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => return,
+        };
+
+        let schema = format!(
+            "workbench_replay_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let admin_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&base_url)
+            .await
+            .unwrap();
+
+        sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+
+        let task_id = Uuid::new_v4().to_string();
+
+        // First runtime: publish events including TaskAssigned, then drop
+        {
+            let config = OrganisationConfig {
+                database_url: Some(database_url.clone()),
+                event_store_path: None,
+                memory_store_path: None,
+                ..Default::default()
+            };
+            let intent_lead = IntentLead::new();
+            let mut registry = RoleRegistry::new();
+            registry.register(intent_lead.spec()).unwrap();
+
+            let runtime = OrganisationRuntime::new(config, registry).unwrap();
+
+            runtime
+                .bus()
+                .publish(SemanticEvent::new_human_feedback_requested(
+                    RoleId::new("intent-lead-001"),
+                    "What are we making?",
+                    "test",
+                ))
+                .unwrap();
+
+            runtime
+                .bus()
+                .publish(SemanticEvent::new_human_feedback_received(
+                    RoleId::new("human"),
+                    "A test answer",
+                ))
+                .unwrap();
+
+            runtime
+                .bus()
+                .publish(SemanticEvent::new_task_assigned(
+                    RoleId::new("human"),
+                    &task_id,
+                    RoleId::new("worker-001"),
+                    TaskContract {
+                        contract_id: Uuid::new_v4().to_string(),
+                        description: "Implement the feature".to_string(),
+                    },
+                    Vec::new(),
+                ))
+                .unwrap();
+        }
+
+        // Second runtime: same database_url, replay and verify
+        {
+            let config = OrganisationConfig {
+                database_url: Some(database_url.clone()),
+                event_store_path: None,
+                memory_store_path: None,
+                ..Default::default()
+            };
+            let intent_lead = IntentLead::new();
+            let mut registry = RoleRegistry::new();
+            registry.register(intent_lead.spec()).unwrap();
+
+            let artefact_store = ArtefactStore::new();
+            let runtime = OrganisationRuntime::new(config, registry).unwrap();
+            let events = runtime.event_store().replay(0, None).unwrap();
+
+            assert_eq!(events.len(), 3, "should replay 3 persisted events");
+            assert_eq!(events[0].variant_name(), "HumanFeedbackRequested");
+            assert_eq!(events[1].variant_name(), "HumanFeedbackReceived");
+            assert_eq!(events[2].variant_name(), "TaskAssigned");
+
+            // Verify projection hydrates messages and DAG steps from Postgres events
+            let projection = WorkbenchProjection::from_events(&events, &artefact_store);
+
+            assert!(projection.has_conversation_history());
+            assert_eq!(projection.messages.len(), 2, "should have 2 chat messages");
+            assert_eq!(projection.messages[0].speaker, "Intent Lead");
+            assert_eq!(projection.messages[1].speaker, "You");
+            assert!(
+                projection.dag_steps.iter().any(|s| s.role == "worker-001"),
+                "should have a DAG step for worker-001 from TaskAssigned",
+            );
+        }
+        sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
     }
 }
 
