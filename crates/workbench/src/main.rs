@@ -1,5 +1,10 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
+use mmat_memory::librarian::Librarian;
+use mmat_memory::qdrant::{QdrantMemoryBackend, QdrantMemoryConfig};
+use mmat_memory::vector_backend::{NoopVectorBackend, VectorMemoryBackend};
 use mmat_workbench::{
     DEFAULT_BIND_ADDR, WorkbenchError, build_app_router, build_runtime, seed_workbench,
     spawn_projection_task,
@@ -26,6 +31,17 @@ async fn main() -> Result<(), WorkbenchError> {
 
     let (state, runtime) = build_runtime()?;
     spawn_projection_task(state.clone());
+
+    let librarian_bus: Arc<_> = runtime.bus().clone().into();
+    let librarian_store = runtime.memory_store().clone();
+    let vector_backend = build_vector_backend().await?;
+    let librarian = Librarian::new(librarian_store, vector_backend, Duration::from_secs(3600));
+    tokio::spawn(async move {
+        if let Err(err) = librarian.run(librarian_bus).await {
+            error!("Librarian stopped with error: {}", err);
+        }
+    });
+
     tokio::spawn(async move {
         if let Err(err) = runtime.run().await {
             error!("MMAT organisation runtime stopped with error: {}", err);
@@ -48,4 +64,27 @@ async fn main() -> Result<(), WorkbenchError> {
     axum::serve(listener, app)
         .await
         .map_err(WorkbenchError::Server)
+}
+
+async fn build_vector_backend() -> Result<Arc<dyn VectorMemoryBackend>, WorkbenchError> {
+    let Ok(url) = std::env::var("MMAT_QDRANT_URL") else {
+        return Ok(Arc::new(NoopVectorBackend));
+    };
+
+    let vector_dimension = std::env::var("MMAT_QDRANT_VECTOR_DIMENSION")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(64);
+    let config = QdrantMemoryConfig {
+        url,
+        api_key: std::env::var("MMAT_QDRANT_API_KEY").ok(),
+        collection_name: std::env::var("MMAT_QDRANT_COLLECTION")
+            .unwrap_or_else(|_| "memories".to_string()),
+        vector_dimension,
+    };
+
+    let backend = QdrantMemoryBackend::new(config)
+        .await
+        .map_err(|err| WorkbenchError::Init(format!("failed to initialise Qdrant: {err}")))?;
+    Ok(Arc::new(backend))
 }

@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{Stream, StreamExt, stream};
-use mmat_coordinator::{OrganisationConfig, OrganisationRuntime, Role, RoleRegistry};
+use mmat_coordinator::{OrganisationConfig, OrganisationRuntime, Role, RoleRegistry, Scheduler};
 use mmat_event_stream::{
     event::{RoleId, SemanticEvent, TaskContract},
     event_bus::{EventBus, RecvError},
@@ -19,7 +19,7 @@ use mmat_roles::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::error;
 use uuid::Uuid;
 
@@ -30,6 +30,7 @@ pub struct AppState {
     bus: EventBus,
     projection: Arc<RwLock<WorkbenchProjection>>,
     artefact_store: Arc<ArtefactStore>,
+    scheduler: Option<Arc<Mutex<Scheduler>>>,
 }
 
 #[derive(Debug, Error)]
@@ -60,6 +61,7 @@ pub struct WorkbenchProjection {
     pub(crate) memories: Vec<MemoryView>,
     pub(crate) notifications: Vec<NotificationView>,
     pub(crate) dag_steps: Vec<DagStepView>,
+    pub(crate) completed_task_ids: Vec<String>,
     pub(crate) pending_question: Option<String>,
     pub(crate) active_artefact_id: Option<String>,
     pub(crate) active_step_id: Option<String>,
@@ -197,6 +199,14 @@ pub struct DagStepView {
 #[derive(Clone, Debug, Deserialize)]
 struct MessageRequest {
     message: String,
+    active_step_id: Option<String>,
+    active_artefact_id: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct ReviewContext<'a> {
+    step_id: Option<&'a str>,
+    artefact_id: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,7 +242,13 @@ impl AppState {
                 &artefact_store,
             ))),
             artefact_store,
+            scheduler: None,
         }
+    }
+
+    pub fn with_scheduler(mut self, scheduler: Arc<Mutex<Scheduler>>) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     pub fn publish(&self, event: SemanticEvent) {
@@ -336,7 +352,8 @@ pub fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError
         runtime.bus().clone(),
         &replayed_events,
         runtime.artefact_store().clone(),
-    );
+    )
+    .with_scheduler(runtime.scheduler().clone());
 
     runtime.add_role(intent_lead);
     runtime.add_role(scholar);
@@ -413,6 +430,7 @@ impl WorkbenchProjection {
                 artefact_ids: Vec::new(),
                 event_ids: Vec::new(),
             }],
+            completed_task_ids: Vec::new(),
             pending_question: None,
             active_artefact_id: None,
             active_step_id: Some("intent".to_string()),
@@ -430,6 +448,24 @@ impl WorkbenchProjection {
 
     pub fn has_conversation_history(&self) -> bool {
         self.has_conversation
+    }
+
+    fn reviewable_task_id(&self, context: ReviewContext<'_>) -> Option<String> {
+        if let Some(step_id) = context.step_id
+            && self.completed_task_ids.iter().any(|id| id == step_id)
+        {
+            return Some(step_id.to_string());
+        }
+
+        let artefact_id = context.artefact_id.or(self.active_artefact_id.as_deref())?;
+        let step = self
+            .dag_steps
+            .iter()
+            .find(|step| step.artefact_ids.iter().any(|id| id == artefact_id))?;
+        self.completed_task_ids
+            .iter()
+            .any(|id| id == &step.id)
+            .then(|| step.id.clone())
     }
 
     #[allow(dead_code)]
@@ -450,27 +486,34 @@ impl WorkbenchProjection {
         match event {
             SemanticEvent::HumanFeedbackRequested {
                 event_id,
+                source_agent,
                 question,
                 timestamp_ns,
                 ..
             } => {
+                let speaker = label_for_role(&source_agent.0);
                 self.has_conversation = true;
                 self.pending_question = Some(question.clone());
                 self.messages.push(MessageView {
-                    speaker: "Intent Lead".to_string(),
+                    speaker: speaker.clone(),
                     content: question.clone(),
                     timestamp_ns: *timestamp_ns,
                 });
                 self.set_role(
-                    "intent-lead-001",
+                    &source_agent.0,
                     "Waiting",
-                    "Interviewing the human stakeholder",
+                    format!("{speaker} is waiting for human input"),
                 );
-                self.add_step_event("intent", event_id.to_string());
+                let step_id = if source_agent.0 == "intent-lead-001" {
+                    "intent"
+                } else {
+                    &source_agent.0
+                };
+                self.add_step_event(step_id, event_id.to_string());
                 self.add_notification(NotificationView {
                     id: event_id.to_string(),
                     kind: "Question".to_string(),
-                    title: "Intent Lead question".to_string(),
+                    title: format!("{speaker} question"),
                     summary: question.clone(),
                     target: "chat".to_string(),
                     acknowledged: false,
@@ -507,23 +550,38 @@ impl WorkbenchProjection {
                 evidence_refs,
                 confidence,
                 ..
-            } => self.memories.push(MemoryView {
-                id: event_id.to_string(),
-                memory_type: memory_type.clone(),
-                scope: scope.clone(),
-                authority: proposed_authority.0.clone(),
-                confidence: *confidence,
-                content: content.clone(),
-                evidence_refs: evidence_refs
-                    .iter()
-                    .map(|r| format!("{}: {}", r.event_id, r.description))
-                    .collect(),
-                status: "Proposed".to_string(),
-            }),
+            } => {
+                self.memories.push(MemoryView {
+                    id: event_id.to_string(),
+                    memory_type: memory_type.clone(),
+                    scope: scope.clone(),
+                    authority: proposed_authority.0.clone(),
+                    confidence: *confidence,
+                    content: content.clone(),
+                    evidence_refs: evidence_refs
+                        .iter()
+                        .map(|r| format!("{}: {}", r.event_id, r.description))
+                        .collect(),
+                    status: "Proposed".to_string(),
+                });
+                self.set_role("librarian", "Running", "Evaluating proposed memory");
+                self.upsert_step(DagStepView {
+                    id: "librarian".to_string(),
+                    label: "Librarian".to_string(),
+                    role: "librarian".to_string(),
+                    state: "Running".to_string(),
+                    summary: format!("Evaluating {scope} {memory_type} memory"),
+                    dependencies: Vec::new(),
+                    artefact_ids: Vec::new(),
+                    event_ids: vec![event_id.to_string()],
+                });
+            }
             SemanticEvent::MemoryAccepted {
+                event_id,
                 proposal_event_id,
                 memory_id,
                 accepted_authority,
+                timestamp_ns,
                 ..
             } => {
                 let proposal_id = proposal_event_id.to_string();
@@ -535,13 +593,104 @@ impl WorkbenchProjection {
                     }
                 }
                 self.set_role("librarian", "Completed", "Accepted a durable memory");
+                self.ensure_librarian_step();
+                self.update_step("librarian", "Completed", "Accepted a durable memory");
+                self.add_step_event("librarian", event_id.to_string());
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "Memory".to_string(),
+                    title: "Memory accepted".to_string(),
+                    summary: format!("Accepted memory {memory_id}"),
+                    target: "memories".to_string(),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                });
+            }
+            SemanticEvent::MemoryRejected {
+                event_id,
+                proposed_memory_type,
+                proposed_content,
+                rejection_gate,
+                rejection_reason,
+                timestamp_ns,
+                ..
+            } => {
+                self.memories.push(MemoryView {
+                    id: event_id.to_string(),
+                    memory_type: proposed_memory_type.clone(),
+                    scope: String::new(),
+                    authority: String::new(),
+                    confidence: 0.0,
+                    content: proposed_content.clone(),
+                    evidence_refs: Vec::new(),
+                    status: format!("Rejected at {}: {}", rejection_gate, rejection_reason),
+                });
+                self.set_role(
+                    "librarian",
+                    "Completed",
+                    format!("Rejected memory at {rejection_gate}"),
+                );
+                self.ensure_librarian_step();
+                self.update_step(
+                    "librarian",
+                    "Completed",
+                    &format!("Rejected memory at {rejection_gate}"),
+                );
+                self.add_step_event("librarian", event_id.to_string());
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "Memory".to_string(),
+                    title: "Memory rejected".to_string(),
+                    summary: format!("Rejected at {rejection_gate}: {rejection_reason}"),
+                    target: "memories".to_string(),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                });
+            }
+            SemanticEvent::MemorySuperseded {
+                event_id,
+                old_memory_id,
+                new_memory_id,
+                reason,
+                timestamp_ns,
+                ..
+            } => {
+                let old_id = old_memory_id.to_string();
+                for memory in &mut self.memories {
+                    if memory.id == old_id {
+                        memory.status = format!("Superseded by {new_memory_id}: {reason}");
+                    }
+                }
+                self.set_role(
+                    "librarian",
+                    "Completed",
+                    format!("Superseded memory: {reason}"),
+                );
+                self.ensure_librarian_step();
+                self.update_step(
+                    "librarian",
+                    "Completed",
+                    &format!("Superseded memory: {reason}"),
+                );
+                self.add_step_event("librarian", event_id.to_string());
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "Memory".to_string(),
+                    title: "Memory superseded".to_string(),
+                    summary: format!("Superseded {old_memory_id}: {reason}"),
+                    target: "memories".to_string(),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                });
             }
             SemanticEvent::TaskAssigned {
                 event_id,
+                source_agent,
                 task_id,
                 worker_id,
                 contract_ref,
                 dependencies,
+                timestamp_ns,
                 ..
             } => {
                 self.set_role(
@@ -559,6 +708,15 @@ impl WorkbenchProjection {
                     artefact_ids: Vec::new(),
                     event_ids: vec![event_id.to_string()],
                 });
+                if source_agent.0 != "human" {
+                    let from_label = label_for_role(&source_agent.0);
+                    let to_label = label_for_role(&worker_id.0);
+                    self.messages.push(MessageView {
+                        speaker: format!("System ({from_label})"),
+                        content: format!("Dispatched {to_label}: {}", contract_ref.description,),
+                        timestamp_ns: *timestamp_ns,
+                    });
+                }
             }
             SemanticEvent::ReviewCompleted {
                 event_id,
@@ -572,11 +730,11 @@ impl WorkbenchProjection {
                 } else {
                     "Review requested rework"
                 };
-                self.set_role("reviewer", "Completed", summary);
+                self.set_role("reviewer-001", "Completed", summary);
                 self.upsert_step(DagStepView {
                     id: format!("review-{task_id}"),
                     label: "Review".to_string(),
-                    role: "reviewer".to_string(),
+                    role: "reviewer-001".to_string(),
                     state: if *accepted {
                         "Accepted"
                     } else {
@@ -659,6 +817,121 @@ impl WorkbenchProjection {
                     "Running",
                     "Inspecting evidence and process integrity",
                 );
+            }
+            SemanticEvent::TaskStarted {
+                event_id,
+                task_id,
+                worker_id,
+                ..
+            } => {
+                self.set_role(
+                    &worker_id.0,
+                    "Running",
+                    role_summary(&worker_id.0, "Running"),
+                );
+                self.update_step(task_id, "Running", "Task is being worked on");
+                self.add_step_event(task_id, event_id.to_string());
+            }
+            SemanticEvent::TaskCompleted {
+                event_id, task_id, ..
+            } => {
+                if !self.completed_task_ids.contains(task_id) {
+                    self.completed_task_ids.push(task_id.clone());
+                }
+                self.update_step(task_id, "Completed", "Task completed successfully");
+                self.add_step_event(task_id, event_id.to_string());
+            }
+            SemanticEvent::BudgetWarning {
+                event_id,
+                contract_id,
+                message,
+                usage_percent,
+                timestamp_ns,
+                ..
+            } => {
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "Budget".to_string(),
+                    title: format!("Budget warning ({usage_percent}%)"),
+                    summary: message.clone(),
+                    target: format!("contract:{contract_id}"),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                });
+            }
+            SemanticEvent::TaskFailed {
+                event_id,
+                task_id,
+                error_description,
+                timestamp_ns,
+                ..
+            } => {
+                self.update_step(task_id, "Failed", error_description);
+                self.add_step_event(task_id, event_id.to_string());
+                let worker_role = self
+                    .dag_steps
+                    .iter()
+                    .find(|step| step.id == *task_id)
+                    .map(|step| step.role.clone());
+                if let Some(ref role) = worker_role {
+                    self.set_role(role, "Failed", error_description);
+                }
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "Failure".to_string(),
+                    title: "Task failed".to_string(),
+                    summary: error_description.clone(),
+                    target: format!("step:{task_id}"),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                });
+            }
+            SemanticEvent::ReviewRequested {
+                event_id,
+                task_id,
+                reviewer_id,
+                ..
+            } => {
+                self.set_role(&reviewer_id.0, "Running", "Review requested");
+                self.upsert_step(DagStepView {
+                    id: format!("review-{task_id}"),
+                    label: "Review".to_string(),
+                    role: reviewer_id.0.clone(),
+                    state: "Pending".to_string(),
+                    summary: format!("Review requested for task {task_id}"),
+                    dependencies: vec![task_id.clone()],
+                    artefact_ids: Vec::new(),
+                    event_ids: vec![event_id.to_string()],
+                });
+            }
+            SemanticEvent::EscalationRequested {
+                event_id,
+                from_role,
+                to_role,
+                reason,
+                timestamp_ns,
+                ..
+            } => {
+                self.upsert_step(DagStepView {
+                    id: format!("escalation-{event_id}"),
+                    label: "Escalation".to_string(),
+                    role: to_role.0.clone(),
+                    state: "Escalated".to_string(),
+                    summary: reason.clone(),
+                    dependencies: vec![from_role.0.clone()],
+                    artefact_ids: Vec::new(),
+                    event_ids: vec![event_id.to_string()],
+                });
+                self.set_role(&to_role.0, "Escalated", reason.clone());
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "Escalation".to_string(),
+                    title: format!("Escalation to {}", to_role),
+                    summary: reason.clone(),
+                    target: format!("role:{}", to_role),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                });
             }
             _ => {}
         }
@@ -752,6 +1025,30 @@ impl WorkbenchProjection {
             step.state = state.to_string();
             step.summary = summary.to_string();
         }
+    }
+
+    fn sync_scheduler_task_states(&mut self, task_states: &[(String, String)]) {
+        for (task_id, scheduler_state) in task_states {
+            if let Some(step) = self.dag_steps.iter_mut().find(|step| step.id == *task_id) {
+                step.state = scheduler_state.clone();
+            }
+        }
+    }
+
+    fn ensure_librarian_step(&mut self) {
+        if self.dag_steps.iter().any(|step| step.id == "librarian") {
+            return;
+        }
+        self.dag_steps.push(DagStepView {
+            id: "librarian".to_string(),
+            label: "Librarian".to_string(),
+            role: "librarian".to_string(),
+            state: "Running".to_string(),
+            summary: "Curating accepted memory".to_string(),
+            dependencies: Vec::new(),
+            artefact_ids: Vec::new(),
+            event_ids: Vec::new(),
+        });
     }
 
     fn add_step_event(&mut self, step_id: &str, event_id: String) {
@@ -882,7 +1179,22 @@ async fn app_js() -> impl IntoResponse {
 }
 
 async fn snapshot(State(state): State<AppState>) -> Json<WorkbenchProjection> {
-    Json(state.projection.read().await.clone())
+    Json(snapshot_projection(&state).await)
+}
+
+async fn snapshot_projection(state: &AppState) -> WorkbenchProjection {
+    let mut projection = state.projection.read().await.clone();
+    if let Some(scheduler) = &state.scheduler {
+        let task_states = scheduler
+            .lock()
+            .await
+            .task_states()
+            .iter()
+            .map(|(task_id, state)| (task_id.clone(), state.to_string()))
+            .collect::<Vec<_>>();
+        projection.sync_scheduler_task_states(&task_states);
+    }
+    projection
 }
 
 async fn post_message(
@@ -896,7 +1208,15 @@ async fn post_message(
 
     let human_event = SemanticEvent::new_human_feedback_received(RoleId::new("human"), &message);
     state.publish(human_event);
-    publish_mentions(&state, &message);
+    publish_mentions(
+        &state,
+        &message,
+        ReviewContext {
+            step_id: request.active_step_id.as_deref(),
+            artefact_id: request.active_artefact_id.as_deref(),
+        },
+    )
+    .await;
 
     StatusCode::ACCEPTED.into_response()
 }
@@ -913,23 +1233,95 @@ async fn ack_notification(
     }
 }
 
-fn publish_mentions(state: &AppState, message: &str) {
-    for role in mentioned_roles(message) {
-        let task_id = Uuid::new_v4().to_string();
-        state.publish(SemanticEvent::new_task_assigned(
+async fn publish_mentions(state: &AppState, message: &str, context: ReviewContext<'_>) {
+    let mentioned_roles = mentioned_role_ids(message);
+    let action_role = inline_action_role_id(message);
+
+    if mentioned_roles.contains(&"reviewer-001") || action_role == Some("reviewer-001") {
+        publish_review_request_or_guidance(state, context).await;
+    }
+
+    for role_id in mentioned_roles.iter().copied() {
+        if role_id == "reviewer-001" {
+            continue;
+        }
+        publish_role_task(state, role_id, message);
+    }
+
+    if let Some(role_id) = action_role
+        && role_id != "reviewer-001"
+        && !mentioned_roles.contains(&role_id)
+    {
+        publish_role_task(state, role_id, message);
+    }
+}
+
+async fn publish_review_request_or_guidance(state: &AppState, context: ReviewContext<'_>) {
+    let projection = state.projection.read().await;
+    if let Some(task_id) = projection.reviewable_task_id(context) {
+        drop(projection);
+        state.publish(SemanticEvent::new_review_requested(
             RoleId::new("human"),
             &task_id,
-            RoleId::new(role),
-            TaskContract {
-                contract_id: Uuid::new_v4().to_string(),
-                description: format!("Mentioned in SELIUM channel: {message}"),
-            },
-            Vec::new(),
+            RoleId::new("reviewer-001"),
+        ));
+    } else {
+        drop(projection);
+        state.publish(SemanticEvent::new_human_feedback_requested(
+            RoleId::new("reviewer-001"),
+            "What completed task or artefact should the Reviewer review?",
+            "review requested without completed task context",
         ));
     }
 }
 
-fn mentioned_roles(message: &str) -> Vec<&'static str> {
+fn publish_role_task(state: &AppState, role_id: &str, message: &str) {
+    let task_id = Uuid::new_v4().to_string();
+    state.publish(SemanticEvent::new_task_assigned(
+        RoleId::new("human"),
+        &task_id,
+        RoleId::new(role_id),
+        TaskContract {
+            contract_id: Uuid::new_v4().to_string(),
+            description: format!("{}: {message}", role_specific_task_description(role_id)),
+        },
+        Vec::new(),
+    ));
+}
+
+fn inline_action_role_id(message: &str) -> Option<&'static str> {
+    let first = message.split_whitespace().next()?.to_lowercase();
+    let action = first
+        .strip_prefix('/')
+        .or_else(|| first.strip_suffix(':'))?;
+
+    match action {
+        "intent" => Some("intent-lead-001"),
+        "research" | "scholar" => Some("scholar-001"),
+        "ops" => Some("ops-manager-001"),
+        "design" | "architect" => Some("architect-001"),
+        "plan" | "pm" => Some("pm-001"),
+        "implement" | "worker" => Some("worker-001"),
+        "review" | "reviewer" => Some("reviewer-001"),
+        "audit" | "auditor" => Some("auditor-001"),
+        _ => None,
+    }
+}
+
+fn role_specific_task_description(role_id: &str) -> &'static str {
+    match role_id {
+        "scholar-001" => "Research and evidence gathering",
+        "intent-lead-001" => "Intent elicitation and goal clarification",
+        "ops-manager-001" => "Process guardrail selection and operation design",
+        "architect-001" => "Architectural design and technical planning",
+        "pm-001" => "Work decomposition and task planning",
+        "worker-001" => "Implementation and execution",
+        "auditor-001" => "Process and evidence auditing",
+        _ => "General task",
+    }
+}
+
+fn mentioned_role_ids(message: &str) -> Vec<&'static str> {
     let lower = message.to_lowercase();
     [
         ("@intent", "intent-lead-001"),
@@ -942,15 +1334,41 @@ fn mentioned_roles(message: &str) -> Vec<&'static str> {
         ("@auditor", "auditor-001"),
     ]
     .into_iter()
-    .filter_map(|(mention, role)| lower.contains(mention).then_some(role))
+    .filter_map(|(mention, role)| contains_mention(&lower, mention).then_some(role))
     .collect()
+}
+
+fn contains_mention(message: &str, mention: &str) -> bool {
+    let mut search_start = 0;
+    while let Some(relative_pos) = message[search_start..].find(mention) {
+        let start = search_start + relative_pos;
+        let end = start + mention.len();
+        let previous_is_word = start > 0
+            && message[..start]
+                .chars()
+                .next_back()
+                .is_some_and(is_mention_word_char);
+        let next_is_word = message[end..]
+            .chars()
+            .next()
+            .is_some_and(is_mention_word_char);
+        if !previous_is_word && !next_is_word {
+            return true;
+        }
+        search_start = end;
+    }
+    false
+}
+
+fn is_mention_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
 }
 
 async fn events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let receiver = state.bus.subscribe(&[]);
-    let initial_state = state.projection.read().await.clone();
+    let initial_state = snapshot_projection(&state).await;
     let initial =
         stream::once(async move { Ok(sse_event(&StreamUpdate::State(Box::new(initial_state)))) });
     let live = stream::unfold(receiver, |mut receiver| async move {
@@ -1265,6 +1683,14 @@ fn event_summary(event: &SemanticEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn empty_review_context() -> ReviewContext<'static> {
+        ReviewContext {
+            step_id: None,
+            artefact_id: None,
+        }
+    }
 
     #[test]
     fn labels_runtime_role_ids_without_suffix_noise() {
@@ -1275,8 +1701,411 @@ mod tests {
 
     #[test]
     fn mention_detection_targets_runtime_role_ids() {
-        let roles = mentioned_roles("@intent please ask @scholar and @pm for help");
+        let roles = mentioned_role_ids("@intent please ask @scholar and @pm for help");
         assert_eq!(roles, vec!["intent-lead-001", "scholar-001", "pm-001"]);
+    }
+
+    #[test]
+    fn mention_detects_every_supported_target() {
+        let roles = mentioned_role_ids(
+            "talk to @intent, @scholar, @ops, @architect, @pm, @worker, @reviewer, @auditor",
+        );
+        assert_eq!(roles.len(), 8);
+        assert!(roles.contains(&"intent-lead-001"));
+        assert!(roles.contains(&"scholar-001"));
+        assert!(roles.contains(&"ops-manager-001"));
+        assert!(roles.contains(&"architect-001"));
+        assert!(roles.contains(&"pm-001"));
+        assert!(roles.contains(&"worker-001"));
+        assert!(roles.contains(&"reviewer-001"));
+        assert!(roles.contains(&"auditor-001"));
+    }
+
+    #[test]
+    fn mention_detection_is_case_insensitive() {
+        let roles = mentioned_role_ids("@Scholar AND @REVIEWER");
+        assert_eq!(roles, vec!["scholar-001", "reviewer-001"]);
+    }
+
+    #[test]
+    fn mention_detection_returns_empty_for_no_mentions() {
+        assert!(mentioned_role_ids("hello world").is_empty());
+    }
+
+    #[test]
+    fn mention_detection_uses_token_boundaries() {
+        assert!(mentioned_role_ids("email person@scholar.example").is_empty());
+        assert!(mentioned_role_ids("@scholarship is not a role").is_empty());
+    }
+
+    #[test]
+    fn inline_actions_route_to_roles() {
+        assert_eq!(
+            inline_action_role_id("/research durable context"),
+            Some("scholar-001")
+        );
+        assert_eq!(
+            inline_action_role_id("review: this artefact"),
+            Some("reviewer-001")
+        );
+        assert_eq!(
+            inline_action_role_id("implement: the patch"),
+            Some("worker-001")
+        );
+    }
+
+    #[test]
+    fn role_specific_task_descriptions_are_distinct() {
+        let descriptions: Vec<&str> = [
+            "scholar-001",
+            "intent-lead-001",
+            "ops-manager-001",
+            "architect-001",
+            "pm-001",
+            "worker-001",
+            "auditor-001",
+        ]
+        .into_iter()
+        .map(role_specific_task_description)
+        .collect();
+
+        let mut unique = descriptions.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            descriptions.len(),
+            unique.len(),
+            "each role should have a unique description"
+        );
+    }
+
+    #[test]
+    fn reviewer_mention_is_excluded_from_generic_routing() {
+        let roles = mentioned_role_ids("please @reviewer check this");
+        assert!(roles.contains(&"reviewer-001"));
+    }
+
+    #[tokio::test]
+    async fn reviewer_mention_with_active_artefact_publishes_review_requested() {
+        let bus = EventBus::new(16);
+        let artefact_store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+        let artefact_id = Uuid::new_v4().to_string();
+        let contract_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: contract_id.clone(),
+                    description: "build".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_artefact_produced_ref(
+                RoleId::new("worker-001"),
+                &artefact_id,
+                "prd",
+                "hash",
+                "file:///tmp/artefact.json",
+                RoleId::new("worker-001"),
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_completed(
+                RoleId::new("worker-001"),
+                &task_id,
+                &contract_id,
+                mmat_event_stream::event::ArtefactRef {
+                    artefact_type: "prd".to_string(),
+                    reference: "implementation|content".to_string(),
+                },
+            ),
+        ];
+
+        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store);
+        projection.active_artefact_id = Some(artefact_id.clone());
+
+        let state = AppState {
+            bus: bus.clone(),
+            projection: Arc::new(RwLock::new(projection)),
+            artefact_store,
+            scheduler: None,
+        };
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(
+            &state,
+            "@reviewer please look at this",
+            empty_review_context(),
+        )
+        .await;
+
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+
+        match received.as_ref() {
+            SemanticEvent::ReviewRequested {
+                task_id: received_task_id,
+                reviewer_id,
+                ..
+            } => {
+                assert_eq!(received_task_id, &task_id);
+                assert_eq!(reviewer_id.0, "reviewer-001");
+            }
+            other => panic!("expected ReviewRequested, got {}", other.variant_name()),
+        }
+    }
+
+    #[tokio::test]
+    async fn reviewer_routing_survives_event_history_truncation() {
+        let bus = EventBus::new(16);
+        let artefact_store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+        let artefact_id = Uuid::new_v4().to_string();
+        let contract_id = Uuid::new_v4().to_string();
+
+        let mut events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: contract_id.clone(),
+                    description: "build".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_artefact_produced_ref(
+                RoleId::new("worker-001"),
+                &artefact_id,
+                "prd",
+                "hash",
+                "file:///tmp/artefact.json",
+                RoleId::new("worker-001"),
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_completed(
+                RoleId::new("worker-001"),
+                &task_id,
+                &contract_id,
+                mmat_event_stream::event::ArtefactRef {
+                    artefact_type: "prd".to_string(),
+                    reference: "implementation|content".to_string(),
+                },
+            ),
+        ];
+        for index in 0..250 {
+            events.push(SemanticEvent::new_human_feedback_received(
+                RoleId::new("human"),
+                format!("filler {index}"),
+            ));
+        }
+
+        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store);
+        projection.active_artefact_id = Some(artefact_id);
+        assert!(
+            !projection
+                .events
+                .iter()
+                .any(|event| event.variant == "TaskCompleted"),
+            "TaskCompleted should be outside the rolling event log"
+        );
+        let state = AppState {
+            bus: bus.clone(),
+            projection: Arc::new(RwLock::new(projection)),
+            artefact_store,
+            scheduler: None,
+        };
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(
+            &state,
+            "@reviewer please look at this",
+            empty_review_context(),
+        )
+        .await;
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+
+        match received.as_ref() {
+            SemanticEvent::ReviewRequested {
+                task_id: received_task_id,
+                ..
+            } => assert_eq!(received_task_id, &task_id),
+            other => panic!("expected ReviewRequested, got {}", other.variant_name()),
+        }
+    }
+
+    #[tokio::test]
+    async fn reviewer_routing_uses_selected_step_context() {
+        let bus = EventBus::new(16);
+        let artefact_store = Arc::new(ArtefactStore::new());
+        let first_task_id = Uuid::new_v4().to_string();
+        let first_contract_id = Uuid::new_v4().to_string();
+        let second_task_id = Uuid::new_v4().to_string();
+        let second_contract_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &first_task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: first_contract_id.clone(),
+                    description: "first".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_completed(
+                RoleId::new("worker-001"),
+                &first_task_id,
+                &first_contract_id,
+                mmat_event_stream::event::ArtefactRef {
+                    artefact_type: "prd".to_string(),
+                    reference: "implementation|first".to_string(),
+                },
+            ),
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &second_task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: second_contract_id.clone(),
+                    description: "second".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_completed(
+                RoleId::new("worker-001"),
+                &second_task_id,
+                &second_contract_id,
+                mmat_event_stream::event::ArtefactRef {
+                    artefact_type: "prd".to_string(),
+                    reference: "implementation|second".to_string(),
+                },
+            ),
+        ];
+        let state = AppState {
+            bus: bus.clone(),
+            projection: Arc::new(RwLock::new(WorkbenchProjection::from_events(
+                &events,
+                &artefact_store,
+            ))),
+            artefact_store,
+            scheduler: None,
+        };
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(
+            &state,
+            "@reviewer please check the selected step",
+            ReviewContext {
+                step_id: Some(&first_task_id),
+                artefact_id: None,
+            },
+        )
+        .await;
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+
+        match received.as_ref() {
+            SemanticEvent::ReviewRequested { task_id, .. } => assert_eq!(task_id, &first_task_id),
+            other => panic!("expected ReviewRequested, got {}", other.variant_name()),
+        }
+    }
+
+    #[tokio::test]
+    async fn reviewer_mention_with_uncompleted_artefact_asks_for_context() {
+        let bus = EventBus::new(16);
+        let artefact_store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+        let artefact_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_artefact_produced_ref(
+                RoleId::new("worker-001"),
+                &artefact_id,
+                "prd",
+                "hash",
+                "file:///tmp/artefact.json",
+                RoleId::new("worker-001"),
+                Vec::new(),
+            ),
+        ];
+        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store);
+        projection.active_artefact_id = Some(artefact_id);
+        let state = AppState {
+            bus: bus.clone(),
+            projection: Arc::new(RwLock::new(projection)),
+            artefact_store,
+            scheduler: None,
+        };
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(
+            &state,
+            "@reviewer please look at this",
+            empty_review_context(),
+        )
+        .await;
+
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+        assert_eq!(received.variant_name(), "HumanFeedbackRequested");
+    }
+
+    #[tokio::test]
+    async fn reviewer_mention_without_artefact_asks_for_context() {
+        let bus = EventBus::new(16);
+        let artefact_store = Arc::new(ArtefactStore::new());
+        let projection = WorkbenchProjection::from_events(&[], &artefact_store);
+
+        let state = AppState {
+            bus: bus.clone(),
+            projection: Arc::new(RwLock::new(projection)),
+            artefact_store,
+            scheduler: None,
+        };
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(&state, "@reviewer check this", empty_review_context()).await;
+
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+
+        assert_eq!(received.variant_name(), "HumanFeedbackRequested");
+        let summary = super::event_summary(received.as_ref());
+        assert!(
+            summary.contains("review"),
+            "should ask about review context: {summary}"
+        );
+        let projection =
+            WorkbenchProjection::from_events(&[received.as_ref().clone()], &ArtefactStore::new());
+        assert_eq!(projection.messages[0].speaker, "Reviewer");
+        assert_eq!(projection.roles["reviewer-001"].state, "Waiting");
+        assert_ne!(projection.roles["intent-lead-001"].state, "Waiting");
     }
 
     #[test]
@@ -1342,6 +2171,8 @@ mod tests {
 
         let js = include_str!("../static/app.js");
         assert!(js.contains("loadState"));
+        assert!(js.contains("active_step_id"));
+        assert!(js.contains("#event-"));
     }
 
     #[tokio::test]
@@ -1756,6 +2587,288 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // 2.3 Librarian-visible memory lifecycle events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn memory_proposed_creates_memory_view() {
+        let store = Arc::new(ArtefactStore::new());
+        let events = vec![SemanticEvent::new_memory_proposed(
+            RoleId::new("scholar-001"),
+            "pattern",
+            "Users prefer dark mode in terminals",
+            "project",
+            RoleId::new("librarian"),
+            Vec::new(),
+            0.85,
+        )];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        assert_eq!(projection.memories.len(), 1);
+        assert_eq!(projection.memories[0].status, "Proposed");
+        assert_eq!(projection.memories[0].memory_type, "pattern");
+        assert!(projection.memories[0].content.contains("dark mode"));
+    }
+
+    #[test]
+    fn memory_accepted_updates_status_and_authority() {
+        let store = Arc::new(ArtefactStore::new());
+        let proposal_event = SemanticEvent::new_memory_proposed(
+            RoleId::new("scholar-001"),
+            "pattern",
+            "memory content",
+            "project",
+            RoleId::new("librarian"),
+            Vec::new(),
+            0.9,
+        );
+        let proposal_event_id = proposal_event.event_id();
+        let memory_uuid = uuid::Uuid::new_v4();
+
+        let events = vec![
+            proposal_event,
+            SemanticEvent::new_memory_accepted(
+                RoleId::new("librarian"),
+                mmat_event_stream::event::MemoryId(memory_uuid),
+                proposal_event_id,
+                RoleId::new("librarian"),
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        assert_eq!(projection.memories.len(), 1);
+        assert_eq!(projection.memories[0].status, "Accepted");
+        assert_eq!(projection.memories[0].id, memory_uuid.to_string());
+        assert_eq!(projection.memories[0].authority, "librarian");
+        let librarian_step = projection
+            .dag_steps
+            .iter()
+            .find(|step| step.id == "librarian")
+            .expect("librarian activity should have a DAG step");
+        assert_eq!(librarian_step.state, "Completed");
+        assert_eq!(librarian_step.event_ids.len(), 2);
+    }
+
+    #[test]
+    fn memory_rejected_shows_gate_and_reason() {
+        let store = Arc::new(ArtefactStore::new());
+        let events = vec![SemanticEvent::new_memory_rejected(
+            RoleId::new("librarian"),
+            "pattern",
+            "trivial thought",
+            "durability",
+            "content too short and lacks substance",
+        )];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        assert_eq!(projection.memories.len(), 1);
+        assert!(projection.memories[0].status.contains("Rejected"));
+        assert!(projection.memories[0].status.contains("durability"));
+        assert!(projection.memories[0].content.contains("trivial thought"));
+        let librarian_step = projection
+            .dag_steps
+            .iter()
+            .find(|step| step.id == "librarian")
+            .expect("rejection should be linked to librarian activity");
+        assert!(librarian_step.summary.contains("durability"));
+    }
+
+    #[test]
+    fn memory_superseded_marks_old_memory() {
+        let store = Arc::new(ArtefactStore::new());
+        let proposal_event = SemanticEvent::new_memory_proposed(
+            RoleId::new("scholar-001"),
+            "fact",
+            "old fact content",
+            "project",
+            RoleId::new("librarian"),
+            Vec::new(),
+            0.9,
+        );
+        let proposal_event_id = proposal_event.event_id();
+        let old_memory_uuid = uuid::Uuid::new_v4();
+        let new_memory_uuid = uuid::Uuid::new_v4();
+
+        let events = vec![
+            proposal_event,
+            SemanticEvent::new_memory_accepted(
+                RoleId::new("librarian"),
+                mmat_event_stream::event::MemoryId(old_memory_uuid),
+                proposal_event_id,
+                RoleId::new("librarian"),
+            ),
+            SemanticEvent::new_memory_superseded(
+                RoleId::new("librarian"),
+                mmat_event_stream::event::MemoryId(old_memory_uuid),
+                mmat_event_stream::event::MemoryId(new_memory_uuid),
+                "new evidence contradicts old finding",
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        let old_memory = projection
+            .memories
+            .iter()
+            .find(|m| m.id == old_memory_uuid.to_string());
+        assert!(old_memory.is_some(), "old memory should still exist");
+        assert!(
+            old_memory.unwrap().status.contains("Superseded"),
+            "old memory should be marked superseded: {}",
+            old_memory.unwrap().status
+        );
+    }
+
+    #[test]
+    fn memory_accepted_sets_librarian_role() {
+        let store = Arc::new(ArtefactStore::new());
+        let proposal_event = SemanticEvent::new_memory_proposed(
+            RoleId::new("scholar-001"),
+            "pattern",
+            "accepted content",
+            "project",
+            RoleId::new("librarian"),
+            Vec::new(),
+            0.9,
+        );
+        let proposal_event_id = proposal_event.event_id();
+        let memory_uuid = uuid::Uuid::new_v4();
+
+        let events = vec![
+            proposal_event,
+            SemanticEvent::new_memory_accepted(
+                RoleId::new("librarian"),
+                mmat_event_stream::event::MemoryId(memory_uuid),
+                proposal_event_id,
+                RoleId::new("librarian"),
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        let librarian = projection.roles.get("librarian");
+        assert!(librarian.is_some(), "librarian role should exist");
+        assert_eq!(librarian.unwrap().state, "Completed");
+    }
+
+    // -----------------------------------------------------------------------
+    // 3.1 DAG projection for TaskStarted, TaskFailed, ReviewRequested,
+    //     EscalationRequested
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn task_started_updates_dag_step_state() {
+        let store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build feature".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_started(
+                RoleId::new("worker-001"),
+                &task_id,
+                RoleId::new("worker-001"),
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        let step = projection.dag_steps.iter().find(|s| s.id == task_id);
+        assert!(step.is_some(), "task step should exist");
+        assert_eq!(step.unwrap().state, "Running");
+    }
+
+    #[test]
+    fn task_failed_marks_dag_step_as_failed() {
+        let store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build feature".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_failed(
+                RoleId::new("worker-001"),
+                &task_id,
+                "build error: dependency not found",
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        let step = projection.dag_steps.iter().find(|s| s.id == task_id);
+        assert!(step.is_some(), "task step should exist");
+        assert_eq!(step.unwrap().state, "Failed");
+        assert!(step.unwrap().summary.contains("dependency"));
+    }
+
+    #[test]
+    fn review_requested_creates_pending_review_step() {
+        let store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build feature".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_review_requested(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("reviewer-001"),
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        let review_step = projection
+            .dag_steps
+            .iter()
+            .find(|s| s.id == format!("review-{task_id}"));
+        assert!(review_step.is_some(), "review step should exist");
+        assert_eq!(review_step.unwrap().state, "Pending");
+        assert_eq!(review_step.unwrap().role, "reviewer-001");
+    }
+
+    #[test]
+    fn escalation_requested_creates_escalation_step() {
+        let store = Arc::new(ArtefactStore::new());
+
+        let events = vec![SemanticEvent::new_escalation_requested(
+            RoleId::new("scholar-001"),
+            RoleId::new("scholar-001"),
+            RoleId::new("worker-001"),
+            "requires implementation skills",
+            mmat_event_stream::event::EscalationSeverity::Medium,
+        )];
+
+        let projection = WorkbenchProjection::from_events(&events, &store);
+        let esc_step = projection
+            .dag_steps
+            .iter()
+            .find(|s| s.id.starts_with("escalation-"));
+        assert!(esc_step.is_some(), "escalation step should exist");
+        assert_eq!(esc_step.unwrap().state, "Escalated");
+        assert!(esc_step.unwrap().summary.contains("implementation"));
+    }
+
     #[tokio::test]
     async fn enrich_replay_test_with_memories_and_artefacts() {
         let base_url = match std::env::var("DATABASE_URL") {
@@ -1836,7 +2949,7 @@ mod tests {
             // Memory event
             bus.publish(SemanticEvent::new_memory_proposed(
                 RoleId::new("scholar-001"),
-                "pattern",
+                "Preference",
                 "memory content",
                 "project",
                 RoleId::new("librarian"),
@@ -1910,6 +3023,168 @@ mod tests {
             .execute(&admin_pool)
             .await
             .unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // 4.1 Integration tests for mention-to-event routing
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn scholar_mention_publishes_task_assigned_with_research_description() {
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus.clone(), &[], store);
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(
+            &state,
+            "@scholar please research this topic",
+            empty_review_context(),
+        )
+        .await;
+
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+
+        match received.as_ref() {
+            SemanticEvent::TaskAssigned {
+                worker_id,
+                contract_ref,
+                ..
+            } => {
+                assert_eq!(worker_id.0, "scholar-001");
+                assert!(
+                    contract_ref
+                        .description
+                        .contains("Research and evidence gathering")
+                );
+            }
+            other => panic!("expected TaskAssigned, got {}", other.variant_name()),
+        }
+    }
+
+    #[tokio::test]
+    async fn inline_research_action_publishes_scholar_task() {
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus.clone(), &[], store);
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(&state, "/research compare options", empty_review_context()).await;
+
+        let received = tokio::time::timeout(Duration::from_millis(500), receiver.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+        match received.as_ref() {
+            SemanticEvent::TaskAssigned { worker_id, .. } => {
+                assert_eq!(worker_id.0, "scholar-001");
+            }
+            other => panic!("expected TaskAssigned, got {}", other.variant_name()),
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_mentions_publish_multiple_task_assigned_events() {
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus.clone(), &[], store);
+
+        let mut receiver = bus.subscribe(&[]);
+        publish_mentions(
+            &state,
+            "@intent and @scholar and @worker please help",
+            empty_review_context(),
+        )
+        .await;
+
+        let mut task_assigned_count = 0;
+        for _ in 0..3 {
+            if let Ok(event) =
+                tokio::time::timeout(Duration::from_millis(500), receiver.recv()).await
+            {
+                if let Ok(event) = event {
+                    if event.variant_name() == "TaskAssigned" {
+                        task_assigned_count += 1;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            task_assigned_count, 3,
+            "should publish 3 TaskAssigned events for 3 mentions (excl reviewer)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 4.2 Runtime smoke test with Librarian enabled (no-op vector backend)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn librarian_runs_with_noop_vector_backend() {
+        use mmat_memory::librarian::Librarian;
+        use mmat_memory::store::MemoryStore;
+        use mmat_memory::vector_backend::NoopVectorBackend;
+
+        let bus = EventBus::new(16);
+        let store = Arc::new(MemoryStore::open(":memory:").unwrap());
+        let librarian = Librarian::new(
+            store,
+            Arc::new(NoopVectorBackend),
+            Duration::from_secs(3600),
+        );
+
+        let librarian_bus: Arc<_> = bus.clone().into();
+        let handle = tokio::spawn(async move { librarian.run(librarian_bus).await });
+
+        let mut receiver = bus.subscribe(&[]);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let mut lifecycle_event = None;
+        for _ in 0..10 {
+            bus.publish(SemanticEvent::new_memory_proposed(
+                RoleId::new("scholar-001"),
+                "Preference",
+                "Users prefer dark mode in terminals",
+                "Project",
+                RoleId::new("librarian"),
+                Vec::new(),
+                0.95,
+            ))
+            .unwrap();
+
+            let wait_result = tokio::time::timeout(Duration::from_millis(100), async {
+                loop {
+                    let event = receiver.recv().await.expect("event should be available");
+                    if matches!(
+                        event.as_ref(),
+                        SemanticEvent::MemoryAccepted { .. } | SemanticEvent::MemoryRejected { .. }
+                    ) {
+                        break event;
+                    }
+                }
+            })
+            .await;
+
+            if let Ok(event) = wait_result {
+                lifecycle_event = Some(event);
+                break;
+            }
+        }
+
+        let lifecycle_event =
+            lifecycle_event.expect("librarian should publish a memory lifecycle event");
+
+        assert_eq!(source_agent(lifecycle_event.as_ref()), "librarian");
+
+        // Verify librarian is still running (not panicked/errored)
+        assert!(!handle.is_finished(), "librarian should still be running");
+
+        // Abort cleanly
+        handle.abort();
     }
 
     #[test]

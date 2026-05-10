@@ -23,3 +23,32 @@ pub trait VectorMemoryBackend: Send + Sync {
     /// Deletes the embedding for the given memory.
     async fn delete(&self, id: MemoryId) -> Result<()>;
 }
+
+/// A no-op vector backend that accepts all operations without persistence.
+/// Used as a fallback when Qdrant is not configured.
+#[derive(Default)]
+pub struct NoopVectorBackend;
+
+#[async_trait::async_trait]
+impl VectorMemoryBackend for NoopVectorBackend {
+    async fn upsert(
+        &self,
+        _id: MemoryId,
+        _embedding: Vec<f32>,
+        _payload: HashMap<String, Value>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn search(
+        &self,
+        _query_embedding: Vec<f32>,
+        _limit: u64,
+    ) -> Result<Vec<(MemoryId, f32)>> {
+        Ok(Vec::new())
+    }
+
+    async fn delete(&self, _id: MemoryId) -> Result<()> {
+        Ok(())
+    }
+}

@@ -316,7 +316,7 @@ impl Librarian {
 
         let accepted = SemanticEvent::MemoryAccepted {
             event_id: EventId::new(),
-            source_agent: source_agent.clone(),
+            source_agent: RoleId::new("librarian"),
             timestamp_ns: Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
             context: Default::default(),
             memory_id: EventMemoryId(memory.id.0),
@@ -625,7 +625,7 @@ impl Librarian {
     async fn publish_rejection(
         &self,
         bus: &EventBus,
-        source_agent: &RoleId,
+        _source_agent: &RoleId,
         memory_type: &str,
         content: &str,
         gate: &str,
@@ -633,7 +633,7 @@ impl Librarian {
     ) {
         let rejection = SemanticEvent::MemoryRejected {
             event_id: EventId::new(),
-            source_agent: source_agent.clone(),
+            source_agent: RoleId::new("librarian"),
             timestamp_ns: Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
             context: Default::default(),
             proposed_memory_type: memory_type.to_string(),

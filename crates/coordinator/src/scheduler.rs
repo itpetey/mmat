@@ -41,6 +41,7 @@ pub struct BudgetState {
 #[allow(dead_code)]
 pub struct Scheduler {
     role_states: HashMap<RoleId, RoleLifecycleState>,
+    task_states: HashMap<String, RoleLifecycleState>,
     task_tracker: HashMap<ContractId, TaskContext>,
     budget_tracker: HashMap<ContractId, BudgetState>,
     role_contracts: HashMap<RoleId, Vec<ContractId>>,
@@ -99,6 +100,7 @@ impl Scheduler {
     ) -> Self {
         Self {
             role_states: HashMap::new(),
+            task_states: HashMap::new(),
             task_tracker: HashMap::new(),
             budget_tracker: HashMap::new(),
             role_contracts: HashMap::new(),
@@ -165,6 +167,11 @@ impl Scheduler {
         &self.role_states
     }
 
+    /// Returns current scheduler-derived task states keyed by task ID.
+    pub fn task_states(&self) -> &HashMap<String, RoleLifecycleState> {
+        &self.task_states
+    }
+
     /// Returns a reference to the budget tracker.
     pub fn budget_tracker(&self) -> &HashMap<ContractId, BudgetState> {
         &self.budget_tracker
@@ -222,10 +229,13 @@ impl Scheduler {
 
         match event {
             SemanticEvent::TaskAssigned {
+                task_id,
                 worker_id,
                 contract_ref,
                 ..
             } => {
+                self.task_states
+                    .insert(task_id.clone(), RoleLifecycleState::Running);
                 self.set_role_state(worker_id.clone(), RoleLifecycleState::Running);
                 let Ok(contract_uuid) = uuid::Uuid::parse_str(&contract_ref.contract_id) else {
                     let _ = self.bus.publish(SemanticEvent::new_task_failed(
@@ -253,15 +263,22 @@ impl Scheduler {
                     self.timeout_flagged.remove(&contract_id);
                 }
             }
-            SemanticEvent::TaskStarted { worker_id, .. } => {
+            SemanticEvent::TaskStarted {
+                task_id, worker_id, ..
+            } => {
+                self.task_states
+                    .insert(task_id.clone(), RoleLifecycleState::Running);
                 self.last_event_time
                     .insert(worker_id.clone(), Instant::now());
             }
             SemanticEvent::TaskCompleted {
                 source_agent,
+                task_id,
                 contract_id,
                 ..
             } => {
+                self.task_states
+                    .insert(task_id.clone(), RoleLifecycleState::Completed);
                 self.set_role_state(source_agent.clone(), RoleLifecycleState::Completed);
                 self.last_event_time
                     .insert(source_agent.clone(), Instant::now());
@@ -274,7 +291,13 @@ impl Scheduler {
                     self.remove_contract(contract_id);
                 }
             }
-            SemanticEvent::TaskFailed { source_agent, .. } => {
+            SemanticEvent::TaskFailed {
+                source_agent,
+                task_id,
+                ..
+            } => {
+                self.task_states
+                    .insert(task_id.clone(), RoleLifecycleState::Failed);
                 self.last_event_time
                     .insert(source_agent.clone(), Instant::now());
                 let budget_opt = self

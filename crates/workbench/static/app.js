@@ -52,31 +52,35 @@ function renderConversation() {
 }
 
 function channelEntries() {
-  return (state.events || []).filter(isChannelEvent).map(event => {
+  const eventEntries = (state.events || []).filter(isChannelEvent).map(event => {
     const detail = event.detail || {};
     switch (event.variant) {
       case 'HumanFeedbackReceived':
-        return { speaker: 'ME', kind: 'text', content: detail.answer || event.summary };
+        return { speaker: 'ME', kind: 'text', content: detail.answer || event.summary, timestamp_ns: event.timestamp_ns };
       case 'HumanFeedbackRequested':
-        return { speaker: roleName(event.source_agent), kind: 'text', content: `@me ${detail.question || event.summary}` };
+        return { speaker: roleName(event.source_agent), kind: 'text', content: `@me ${detail.question || event.summary}`, timestamp_ns: event.timestamp_ns };
       case 'ToolExecuted':
-        return { speaker: roleName(event.source_agent), kind: 'log', content: toolText(detail) };
+        return { speaker: roleName(event.source_agent), kind: 'log', content: toolText(detail), timestamp_ns: event.timestamp_ns };
       case 'ClaimMade':
-        return { speaker: roleName(event.source_agent), kind: 'text', content: detail.claim_text || event.summary };
+        return { speaker: roleName(event.source_agent), kind: 'text', content: detail.claim_text || event.summary, timestamp_ns: event.timestamp_ns };
       case 'DecisionRecorded':
-        return { speaker: roleName(event.source_agent), kind: 'text', content: detail.decision_text || event.summary };
+        return { speaker: roleName(event.source_agent), kind: 'text', content: detail.decision_text || event.summary, timestamp_ns: event.timestamp_ns };
       case 'ArtefactProduced':
-        return { speaker: roleName(event.source_agent), kind: 'system', content: `Produced ${detail.artefact_type || 'artefact'} ${detail.artefact_id || ''}` };
+        return { speaker: roleName(event.source_agent), kind: 'system', content: `Produced ${detail.artefact_type || 'artefact'} ${detail.artefact_id || ''}`, timestamp_ns: event.timestamp_ns };
       case 'ReviewCompleted':
-        return { speaker: roleName(event.source_agent), kind: 'system', content: event.summary };
+        return { speaker: roleName(event.source_agent), kind: 'system', content: event.summary, timestamp_ns: event.timestamp_ns };
       default:
-        return { speaker: roleName(event.source_agent), kind: 'system', content: event.summary };
+        return { speaker: roleName(event.source_agent), kind: 'system', content: event.summary, timestamp_ns: event.timestamp_ns };
     }
   });
+  const handoffEntries = (state.messages || [])
+    .filter(message => String(message.speaker || '').startsWith('System ('))
+    .map(message => ({ speaker: message.speaker, kind: 'system', content: message.content, timestamp_ns: message.timestamp_ns }));
+  return eventEntries.concat(handoffEntries).sort((a, b) => (a.timestamp_ns || 0) - (b.timestamp_ns || 0));
 }
 
 function isChannelEvent(event) {
-  return !['OrganisationStarted', 'OrganisationStopped', 'RoleStateChanged', 'Heartbeat', 'MemoryAccepted'].includes(event.variant);
+  return !['OrganisationStarted', 'OrganisationStopped', 'RoleStateChanged', 'Heartbeat'].includes(event.variant);
 }
 
 function renderDag() {
@@ -186,7 +190,15 @@ document.getElementById('message-form').addEventListener('submit', async (event)
   const message = textarea.value.trim();
   if (!message) return;
   textarea.value = '';
-  await fetch('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) });
+  await fetch('/api/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      active_step_id: selectedStepId || state.active_step_id || null,
+      active_artefact_id: selectedArtefactId || state.active_artefact_id || null
+    })
+  });
   await loadState();
 });
 
@@ -224,7 +236,7 @@ function artefactsHtml(artefacts) {
 
 function eventsHtml(events) {
   if (!events.length) return '<div class="empty">No logs linked to this step yet.</div>';
-  return `<ul class="compact-list">${events.map(event => `<li><strong>${escapeHtml(event.variant)}</strong> ${escapeHtml(event.summary)}</li>`).join('')}</ul>`;
+  return `<ul class="compact-list">${events.map(event => `<li><a href="#event-${escapeHtml(event.id)}" id="event-${escapeHtml(event.id)}"><strong>${escapeHtml(event.variant)}</strong></a> <span class="meta">${escapeHtml(event.id)}</span> ${escapeHtml(event.summary)}</li>`).join('')}</ul>`;
 }
 
 function memoriesHtml(memories) {
