@@ -194,6 +194,8 @@ async fn main() -> Result<(), WorkbenchError> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/style.css", get(style_css))
+        .route("/app.js", get(app_js))
         .route("/events", get(events))
         .route("/api/state", get(snapshot))
         .route("/api/messages", post(post_message))
@@ -814,7 +816,21 @@ async fn seed_workbench(state: &AppState) {
 }
 
 async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+    Html(include_str!("../static/index.html"))
+}
+
+async fn style_css() -> impl IntoResponse {
+    (
+        [("content-type", "text/css")],
+        include_str!("../static/style.css"),
+    )
+}
+
+async fn app_js() -> impl IntoResponse {
+    (
+        [("content-type", "application/javascript")],
+        include_str!("../static/app.js"),
+    )
 }
 
 async fn snapshot(State(state): State<AppState>) -> Json<WorkbenchProjection> {
@@ -1250,10 +1266,22 @@ mod tests {
             msg.contains("DATABASE_URL"),
             "should mention DATABASE_URL: {msg}",
         );
-        assert!(
-            msg.contains("Postgres"),
-            "should mention Postgres: {msg}",
-        );
+        assert!(msg.contains("Postgres"), "should mention Postgres: {msg}",);
+    }
+
+    #[test]
+    fn static_assets_are_compiled_into_binary() {
+        let html = include_str!("../static/index.html");
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("makemeathing"));
+        assert!(html.contains("href=\"/style.css\""));
+        assert!(html.contains("src=\"/app.js\""));
+
+        let css = include_str!("../static/style.css");
+        assert!(css.contains(":root"));
+
+        let js = include_str!("../static/app.js");
+        assert!(js.contains("loadState"));
     }
 
     #[tokio::test]
@@ -1372,373 +1400,3 @@ mod tests {
             .unwrap();
     }
 }
-
-const INDEX_HTML: &str = r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MMAT Workbench</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #020407;
-      --text: #f4f7fb;
-      --muted: #8b8b8b;
-      --line: #8b8b8b;
-      --me: #23e09e;
-      --intent: #00c0e8;
-      --scholar: #ff2d55;
-      --ops: #f2c572;
-      --architect: #eace5e;
-      --panel: #070a0f;
-      --badge: #ff2d55;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    button, textarea { font: inherit; }
-    button { cursor: pointer; }
-    .app-shell { min-height: 100vh; padding: 32px 96px 22px; display: grid; grid-template-rows: 48px 1fr auto; gap: 28px; }
-    .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: start; }
-    .project-mark { justify-self: start; position: relative; margin-left: 14px; margin-top: 3px; color: white; font-size: 12px; line-height: 27px; min-width: 62px; text-align: center; border: 1px solid white; background: var(--bg); }
-    .project-mark::before { content: ""; position: absolute; inset: -4px 4px 4px -4px; border: 1px solid white; z-index: -1; }
-    .wordmark { justify-self: center; margin-top: -32px; background: white; color: #111; padding: 7px 10px 4px; font-family: "Major Mono Display", "Courier New", monospace; font-size: 24px; letter-spacing: 0.02em; text-decoration: underline; line-height: 1; }
-    .view-actions { justify-self: end; display: flex; gap: 24px; align-items: center; position: relative; }
-    .icon-button { position: relative; width: 24px; height: 24px; color: white; background: transparent; border: 0; padding: 0; opacity: 0.78; }
-    .icon-button.active, .icon-button:hover { opacity: 1; color: var(--me); }
-    .icon-button svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.6; }
-    .count-badge { position: absolute; top: -8px; right: -9px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--badge); color: white; font-size: 10px; line-height: 16px; text-align: center; }
-    .notification-panel { position: absolute; right: 0; top: 34px; width: min(380px, calc(100vw - 2rem)); background: #080b10; border: 1px solid #30343b; padding: 10px; display: none; z-index: 20; box-shadow: 0 20px 80px rgba(0,0,0,0.6); }
-    .notification-panel.open { display: block; }
-    .notice { padding: 10px 0; border-bottom: 1px solid #242830; }
-    .notice:last-child { border-bottom: 0; }
-    .notice strong { display: block; margin-bottom: 4px; }
-    .notice div { color: var(--muted); margin-bottom: 8px; }
-    .notice button { background: transparent; border: 1px solid var(--line); color: white; padding: 4px 8px; }
-    .workspace { min-height: 0; }
-    .view { display: none; min-height: calc(100vh - 165px); }
-    .view.active { display: block; }
-    .channel { height: calc(100vh - 186px); overflow: auto; padding-top: 10px; }
-    .channel-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); column-gap: 12px; margin-bottom: 14px; }
-    .speaker-label { text-align: right; font-size: 14px; white-space: nowrap; }
-    .speaker-label::after { content: " >"; }
-    .speaker-me { color: var(--me); }
-    .speaker-intent { color: var(--intent); }
-    .speaker-scholar { color: var(--scholar); }
-    .speaker-ops { color: var(--ops); }
-    .speaker-architect { color: var(--architect); }
-    .speaker-muted { color: var(--muted); }
-    .message-body { max-width: 1166px; white-space: pre-wrap; }
-    .message-body.log { color: var(--muted); font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; font-size: 13px; }
-    .message-body.system { color: var(--muted); }
-    .message-body .mention { color: white; font-weight: 700; }
-    .message-body .code-token { color: var(--architect); font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; }
-    .composer-wrap { border-top: 1px solid var(--line); padding-top: 24px; }
-    form { display: grid; gap: 8px; }
-    textarea { width: 100%; min-height: 54px; resize: vertical; background: transparent; border: 0; color: white; outline: none; padding: 0; }
-    .submit-hint { color: var(--muted); font-size: 13px; }
-    .submit-hint strong { color: var(--muted); }
-    .submit-hint code { font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; }
-    .dag-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 32px; }
-    .dag-canvas { min-height: calc(100vh - 186px); border-top: 1px solid #20242b; padding-top: 40px; display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 34px; align-content: start; }
-    .dag-step { color: white; background: transparent; border: 1px solid #30343b; text-align: left; padding: 16px; min-height: 120px; }
-    .dag-step.active { border-color: var(--me); box-shadow: 0 0 0 1px var(--me); }
-    .dag-step strong { display: block; margin-bottom: 10px; }
-    .dag-step .state { color: var(--me); font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
-    .side-panel { border-left: 1px solid #30343b; padding-left: 24px; min-height: calc(100vh - 186px); overflow: auto; }
-    .side-panel h2 { margin: 0 0 14px; font-size: 13px; color: var(--muted); font-weight: 400; text-transform: uppercase; letter-spacing: 0.1em; }
-    .detail-grid { display: grid; gap: 10px; }
-    .detail-card { border-top: 1px solid #30343b; padding: 14px 0; }
-    .detail-card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
-    .memory { margin-bottom: 12px; }
-    .memory .meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-    pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--muted); font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; font-size: 12px; }
-    .compact-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
-    .compact-list li, .empty { color: var(--muted); }
-    @media (max-width: 920px) { .app-shell { padding: 22px; } .topbar { grid-template-columns: 1fr auto; gap: 14px; } .wordmark { grid-column: 1 / -1; grid-row: 1; margin-top: 0; } .project-mark { grid-row: 2; } .view-actions { grid-row: 2; } .channel-row { grid-template-columns: 72px minmax(0, 1fr); } .dag-layout { grid-template-columns: 1fr; } .side-panel { border-left: 0; padding-left: 0; } }
-  </style>
-</head>
-<body>
-  <div class="app-shell">
-    <header class="topbar">
-      <div id="project-chip" class="project-mark">SELIUM</div>
-      <div class="wordmark">makemeathing</div>
-      <div class="view-actions">
-        <button id="dag-view-button" class="icon-button" type="button" aria-label="Show DAG">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="17" cy="6" r="2"/><circle cx="17" cy="18" r="2"/><path d="M8 11l7-4M8 13l7 4"/></svg>
-        </button>
-        <button id="chat-view-button" class="icon-button active" type="button" aria-label="Show chat">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H9l-4 3v-12z"/><path d="M8 9.5h8M8 12.5h5"/></svg>
-          <span id="notification-count" class="count-badge" hidden>0</span>
-        </button>
-        <div id="notification-panel" class="notification-panel"></div>
-      </div>
-    </header>
-    <main class="workspace">
-      <section id="chat-view" class="view active">
-        <div id="conversation" class="channel"></div>
-      </section>
-      <section id="dag-view" class="view">
-        <div class="dag-layout">
-          <div id="dag" class="dag-canvas"></div>
-          <aside id="step-detail" class="side-panel"></aside>
-        </div>
-      </section>
-    </main>
-    <div class="composer-wrap">
-      <form id="message-form">
-        <textarea id="message" placeholder="Message SELIUM. Mention @intent, @scholar, @ops, @architect, @pm, @worker, @reviewer or @auditor to summon attention."></textarea>
-        <div class="submit-hint"><strong>Press</strong> <code>⌘ + Return</code> <strong>to submit</strong></div>
-      </form>
-    </div>
-  </div>
-  <script>
-    let state = { project: {}, roles: {}, events: [], messages: [], artefacts: [], memories: [], notifications: [], dag_steps: [], active_artefact_id: null, active_step_id: null };
-    let selectedArtefactId = null;
-    let selectedStepId = null;
-    let activeView = 'chat';
-
-    async function loadState() {
-      const response = await fetch('/api/state');
-      state = await response.json();
-      render();
-    }
-
-    function connectEvents() {
-      const source = new EventSource('/events');
-      source.onmessage = (message) => {
-        const update = JSON.parse(message.data);
-        if (update.type === 'State') state = update.payload;
-        if (update.type === 'Event') state.events.push(update.payload);
-        if (update.type === 'Notice') console.warn(update.payload);
-        if (state.events.length > 200) state.events = state.events.slice(-200);
-        loadState();
-      };
-    }
-
-    function render() {
-      renderHeader();
-      renderConversation();
-      renderDag();
-      renderStepDetail();
-      renderNotifications();
-    }
-
-    function renderHeader() {
-      const project = state.project || {};
-      document.getElementById('project-chip').textContent = project.name || 'SELIUM';
-      document.getElementById('chat-view-button').classList.toggle('active', activeView === 'chat');
-      document.getElementById('dag-view-button').classList.toggle('active', activeView === 'dag');
-      document.getElementById('chat-view').classList.toggle('active', activeView === 'chat');
-      document.getElementById('dag-view').classList.toggle('active', activeView === 'dag');
-    }
-
-    function renderConversation() {
-      const root = document.getElementById('conversation');
-      root.innerHTML = '';
-      const entries = channelEntries();
-      for (const entry of entries) {
-        const el = document.createElement('div');
-        el.className = 'channel-row';
-        el.innerHTML = `<div class="speaker-label ${speakerClass(entry.speaker)}">${escapeHtml(entry.speaker)}</div><div class="message-body ${entry.kind}">${formatMessage(entry.content)}</div>`;
-        root.appendChild(el);
-      }
-      root.scrollTop = root.scrollHeight;
-    }
-
-    function channelEntries() {
-      return (state.events || []).filter(isChannelEvent).map(event => {
-        const detail = event.detail || {};
-        switch (event.variant) {
-          case 'HumanFeedbackReceived':
-            return { speaker: 'ME', kind: 'text', content: detail.answer || event.summary };
-          case 'HumanFeedbackRequested':
-            return { speaker: roleName(event.source_agent), kind: 'text', content: `@me ${detail.question || event.summary}` };
-          case 'ToolExecuted':
-            return { speaker: roleName(event.source_agent), kind: 'log', content: toolText(detail) };
-          case 'ClaimMade':
-            return { speaker: roleName(event.source_agent), kind: 'text', content: detail.claim_text || event.summary };
-          case 'DecisionRecorded':
-            return { speaker: roleName(event.source_agent), kind: 'text', content: detail.decision_text || event.summary };
-          case 'ArtefactProduced':
-            return { speaker: roleName(event.source_agent), kind: 'system', content: `Produced ${detail.artefact_type || 'artefact'} ${detail.artefact_id || ''}` };
-          case 'ReviewCompleted':
-            return { speaker: roleName(event.source_agent), kind: 'system', content: event.summary };
-          default:
-            return { speaker: roleName(event.source_agent), kind: 'system', content: event.summary };
-        }
-      });
-    }
-
-    function isChannelEvent(event) {
-      return !['OrganisationStarted', 'OrganisationStopped', 'RoleStateChanged', 'Heartbeat', 'MemoryAccepted'].includes(event.variant);
-    }
-
-    function renderDag() {
-      const root = document.getElementById('dag');
-      const steps = state.dag_steps || [];
-      const activeId = selectedStepId || state.active_step_id || (steps[0] && steps[0].id);
-      root.innerHTML = steps.length ? '' : '<div class="empty">No project flow yet.</div>';
-      for (const step of steps) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `dag-step ${step.id === activeId ? 'active' : ''}`;
-        button.onclick = () => { selectedStepId = step.id; renderDag(); renderStepDetail(); };
-        button.innerHTML = `<strong>${escapeHtml(step.label)}</strong><div class="state">${escapeHtml(step.state)} · ${escapeHtml(step.role)}</div><div>${escapeHtml(step.summary)}</div>`;
-        root.appendChild(button);
-      }
-    }
-
-    function renderStepDetail() {
-      const root = document.getElementById('step-detail');
-      const steps = state.dag_steps || [];
-      const step = steps.find(s => s.id === (selectedStepId || state.active_step_id)) || steps[0];
-      if (!step) {
-        root.innerHTML = '<div class="empty">Select a step to inspect artefacts, logs and semantic evidence.</div>';
-        return;
-      }
-      const artefacts = (state.artefacts || []).filter(a => (step.artefact_ids || []).includes(a.id));
-      const events = (state.events || []).filter(e => (step.event_ids || []).includes(e.id));
-      root.innerHTML = `
-        <div class="detail-card"><h3>${escapeHtml(step.label)}</h3><div>${escapeHtml(step.summary)}</div><div class="empty">Role: ${escapeHtml(step.role)} · State: ${escapeHtml(step.state)}</div></div>
-        <div class="detail-grid">
-          <div class="detail-card"><h3>Artefacts</h3>${artefactsHtml(artefacts)}</div>
-          <div class="detail-card"><h3>Logs</h3>${eventsHtml(events)}</div>
-          <div class="detail-card"><h3>Memory</h3>${memoriesHtml(state.memories || [])}</div>
-          <div class="detail-card"><h3>CoT</h3><p class="empty">Raw chain-of-thought is intentionally not shown. MMAT exposes consequential semantic events, claims, artefacts and evidence instead.</p></div>
-        </div>
-      `;
-    }
-
-    function renderNotifications() {
-      const pending = (state.notifications || []).filter(n => !n.acknowledged);
-      const badge = document.getElementById('notification-count');
-      badge.textContent = pending.length;
-      badge.hidden = pending.length === 0;
-      const panel = document.getElementById('notification-panel');
-      panel.innerHTML = pending.length ? '' : '<div class="empty">No items need your attention.</div>';
-      for (const item of pending) {
-        const el = document.createElement('div');
-        el.className = 'notice';
-        el.innerHTML = `<strong>${escapeHtml(item.title)}</strong><div>${escapeHtml(item.summary)}</div><button type="button">Acknowledge</button>`;
-        el.querySelector('button').onclick = async () => {
-          await fetch(`/api/notifications/${encodeURIComponent(item.id)}/ack`, { method: 'POST' });
-          await loadState();
-        };
-        panel.appendChild(el);
-      }
-    }
-
-    function roleName(role) {
-      return ({
-        human: 'ME',
-        'intent-lead': 'INTENT',
-        'intent-lead-001': 'INTENT',
-        scholar: 'SCHOLAR',
-        'scholar-001': 'SCHOLAR',
-        'ops-manager': 'OPS',
-        'ops-manager-001': 'OPS',
-        architect: 'ARCHITECT',
-        'architect-001': 'ARCHITECT',
-        'project-manager': 'PM',
-        'pm-001': 'PM',
-        worker: 'WORKER',
-        'worker-001': 'WORKER',
-        reviewer: 'REVIEWER',
-        'reviewer-001': 'REVIEWER',
-        auditor: 'AUDITOR',
-        'auditor-001': 'AUDITOR',
-        librarian: 'LIBRARIAN',
-        coordinator: 'SYSTEM'
-      })[role] || String(role || 'SYSTEM').toUpperCase();
-    }
-
-    function speakerClass(speaker) {
-      const normalised = String(speaker).toLowerCase();
-      if (normalised === 'me') return 'speaker-me';
-      if (normalised === 'intent') return 'speaker-intent';
-      if (normalised === 'scholar') return 'speaker-scholar';
-      if (normalised === 'ops') return 'speaker-ops';
-      if (normalised === 'architect') return 'speaker-architect';
-      return 'speaker-muted';
-    }
-
-    function toolText(detail) {
-      const command = detail.tool_name || 'tool';
-      const output = detail.stdout ? `\n${detail.stdout}` : '';
-      return `${command}${output}`;
-    }
-
-    function formatMessage(value) {
-      return escapeHtml(value)
-        .replace(/(@[a-zA-Z][a-zA-Z0-9_-]*)/g, '<span class="mention">$1</span>')
-        .replace(/(`[^`]+`)/g, '<span class="code-token">$1</span>');
-    }
-
-    document.getElementById('message-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const textarea = document.getElementById('message');
-      const message = textarea.value.trim();
-      if (!message) return;
-      textarea.value = '';
-      await fetch('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) });
-      await loadState();
-    });
-
-    document.getElementById('chat-view-button').addEventListener('click', () => {
-      activeView = 'chat';
-      renderHeader();
-    });
-
-    document.getElementById('dag-view-button').addEventListener('click', () => {
-      activeView = 'dag';
-      renderHeader();
-    });
-
-    document.getElementById('notification-count').addEventListener('click', (event) => {
-      event.stopPropagation();
-      document.getElementById('notification-panel').classList.toggle('open');
-    });
-
-    document.getElementById('message').addEventListener('keydown', (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-        event.preventDefault();
-        document.getElementById('message-form').requestSubmit();
-      }
-    });
-
-    function listHtml(items) {
-      if (!items.length) return '<span class="empty">Not known yet.</span>';
-      return `<ul class="compact-list">${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
-    }
-
-    function artefactsHtml(artefacts) {
-      if (!artefacts.length) return '<div class="empty">No artefact linked to this step yet.</div>';
-      return artefacts.map(artefact => `<div class="memory"><div class="meta">${escapeHtml(artefact.title)} · ${escapeHtml(artefact.producer_role)}</div><pre>${escapeHtml(JSON.stringify(artefact.content, null, 2))}</pre></div>`).join('');
-    }
-
-    function eventsHtml(events) {
-      if (!events.length) return '<div class="empty">No logs linked to this step yet.</div>';
-      return `<ul class="compact-list">${events.map(event => `<li><strong>${escapeHtml(event.variant)}</strong> ${escapeHtml(event.summary)}</li>`).join('')}</ul>`;
-    }
-
-    function memoriesHtml(memories) {
-      if (!memories.length) return '<div class="empty">No memory candidates yet.</div>';
-      return memories.slice().reverse().slice(0, 4).map(memory => `<div class="memory"><div class="meta">${escapeHtml(memory.status)} · ${escapeHtml(memory.scope)} · ${escapeHtml(memory.memory_type)}</div><div>${escapeHtml(memory.content)}</div></div>`).join('');
-    }
-
-    function escapeHtml(value) {
-      return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\'': '&#39;', '"': '&quot;' }[char]));
-    }
-
-    loadState();
-    connectEvents();
-  </script>
-</body>
-</html>"#;

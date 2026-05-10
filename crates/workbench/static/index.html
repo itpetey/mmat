@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MMAT Workbench</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div id="project-chip" class="project-mark">SELIUM</div>
+      <div class="wordmark">makemeathing</div>
+      <div class="view-actions">
+        <button id="dag-view-button" class="icon-button" type="button" aria-label="Show DAG">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="17" cy="6" r="2"/><circle cx="17" cy="18" r="2"/><path d="M8 11l7-4M8 13l7 4"/></svg>
+        </button>
+        <button id="chat-view-button" class="icon-button active" type="button" aria-label="Show chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H9l-4 3v-12z"/><path d="M8 9.5h8M8 12.5h5"/></svg>
+          <span id="notification-count" class="count-badge" hidden>0</span>
+        </button>
+        <div id="notification-panel" class="notification-panel"></div>
+      </div>
+    </header>
+    <main class="workspace">
+      <section id="chat-view" class="view active">
+        <div id="conversation" class="channel"></div>
+      </section>
+      <section id="dag-view" class="view">
+        <div class="dag-layout">
+          <div id="dag" class="dag-canvas"></div>
+          <aside id="step-detail" class="side-panel"></aside>
+        </div>
+      </section>
+    </main>
+    <div class="composer-wrap">
+      <form id="message-form">
+        <textarea id="message" placeholder="Message SELIUM. Mention @intent, @scholar, @ops, @architect, @pm, @worker, @reviewer or @auditor to summon attention."></textarea>
+        <div class="submit-hint"><strong>Press</strong> <code>⌘ + Return</code> <strong>to submit</strong></div>
+      </form>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
