@@ -28,6 +28,7 @@ The core goals are:
 | `mmat-process` | Shell command execution with working-directory and environment support. |
 | `mmat-project` | Repository discovery, project type detection, project scaffolding, git worktree handling, and related project operations. |
 | `mmat-roles` | Built-in delivery roles including intent lead, scholar, architect, project manager, ops manager, reviewer, auditor, and worker. |
+| `mmat-workbench` | Browser-based MVP frontend for intent conversation, live semantic events, role status, artefacts, and memory/evidence inspection. |
 
 ## Requirements
 
@@ -95,6 +96,20 @@ Use the workspace directly during development:
 cargo build
 cargo test
 ```
+
+Run the prototype workbench frontend:
+
+```bash
+cargo run -p mmat-workbench
+```
+
+Then open `http://127.0.0.1:8080`. Override the bind address with `MMAT_WORKBENCH_ADDR`, for example:
+
+```bash
+MMAT_WORKBENCH_ADDR=127.0.0.1:8090 cargo run -p mmat-workbench
+```
+
+The workbench is intentionally event-native: submitting an answer publishes `HumanFeedbackReceived`, role mentions publish runtime task events, and the UI renders projections for the Intent Lead conversation, DAG flow, role state, artefacts, and memory/evidence inspection. It hydrates from `.mmat/workbench/events.db` on startup so the browser resumes the previous event history instead of starting from a blank projection.
 
 Migrate legacy SQLite stores into Postgres with:
 

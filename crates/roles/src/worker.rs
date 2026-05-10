@@ -477,30 +477,24 @@ impl Role for Worker {
             .map_err(|e| RoleError::Internal(format!("Failed to report status: {e:?}")))?;
 
         let mut receiver = ctx.bus.subscribe(&[EventType::TaskAssigned]);
-        let event = receiver.recv().await.map_err(|e| {
-            RoleError::Internal(format!("Failed to receive task assigned event: {e:?}"))
-        })?;
+        let (contract_ref, task_id) = loop {
+            let event = receiver.recv().await.map_err(|e| {
+                RoleError::Internal(format!("Failed to receive task assigned event: {e:?}"))
+            })?;
 
-        let (contract_ref, worker_id, task_id) = match event.as_ref() {
-            SemanticEvent::TaskAssigned {
+            if let SemanticEvent::TaskAssigned {
                 contract_ref,
                 worker_id,
                 task_id,
                 ..
-            } => (contract_ref.clone(), worker_id.clone(), task_id.clone()),
-            _ => {
-                return Err(RoleError::Internal(
-                    "Expected TaskAssigned event".to_string(),
-                ));
+            } = event.as_ref()
+            {
+                if worker_id.0 == self.id.0 {
+                    break (contract_ref.clone(), task_id.clone());
+                }
+                warn!("Worker ignoring task assigned to {}", worker_id.0);
             }
         };
-
-        if worker_id.0 != self.id.0 {
-            return Err(RoleError::ContractViolation(format!(
-                "Task assigned to {} but Worker is {}",
-                worker_id.0, self.id.0
-            )));
-        }
 
         let repo_path = Path::new(".");
         let worktree = self.create_worktree(repo_path, &task_id).await?;
