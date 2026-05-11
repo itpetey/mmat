@@ -554,3 +554,163 @@ async fn smoke_check_all_routes_respond() {
         .unwrap();
     assert_eq!(resp.status(), 404, "unknown route should return 404");
 }
+
+// ---------------------------------------------------------------------------
+// 4.1  Project/run state and event filter endpoints
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn state_exposes_project_and_run_ids() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let resp = reqwest::get(&format!("{base_url}/api/state"))
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    assert!(
+        body.get("active_project_id").is_some(),
+        "state should expose active_project_id"
+    );
+    assert!(
+        body.get("active_run_id").is_some(),
+        "state should expose active_run_id"
+    );
+    let runs = body.get("runs").unwrap().as_array().unwrap();
+    assert!(
+        runs.iter().any(|r| r["id"] == "run-001"),
+        "default run should exist"
+    );
+
+    let project = body.get("project").unwrap();
+    assert!(
+        project.get("active_run_id").is_some(),
+        "project should expose active_run_id"
+    );
+}
+
+#[tokio::test]
+async fn create_run_returns_updated_projection() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/runs"))
+        .json(&serde_json::json!({ "label": "Release v2" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let runs = body.get("runs").unwrap().as_array().unwrap();
+    let new_run = runs.iter().find(|r| r["label"] == "Release v2");
+    assert!(new_run.is_some(), "new run should exist with label");
+    assert_eq!(new_run.unwrap()["status"], "active");
+    assert_eq!(body["active_run_id"], new_run.unwrap()["id"]);
+}
+
+#[tokio::test]
+async fn select_run_switches_active_run() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/runs"))
+        .json(&serde_json::json!({ "label": "First" }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let first_run_id = body["active_run_id"].as_str().unwrap().to_string();
+
+    let _resp = client
+        .post(&format!("{base_url}/api/runs"))
+        .json(&serde_json::json!({ "label": "Second" }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(&format!("{base_url}/api/runs/{first_run_id}/select"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["active_run_id"], first_run_id);
+}
+
+#[tokio::test]
+async fn archive_run_removes_active_surface() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/runs"))
+        .json(&serde_json::json!({ "label": "To archive" }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let run_id = body["active_run_id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(&format!("{base_url}/api/runs/{run_id}/archive"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    let resp = reqwest::get(&format!("{base_url}/api/state"))
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let runs = body.get("runs").unwrap().as_array().unwrap();
+    let archived = runs.iter().find(|r| r["id"] == run_id);
+    assert!(archived.is_some(), "archived run should still exist");
+    assert_eq!(archived.unwrap()["status"], "archived");
+}
+
+#[tokio::test]
+async fn reset_project_requires_confirmation_header() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/project/reset"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 428);
+}
+
+#[tokio::test]
+async fn reset_project_with_confirmation_clears_state() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/project/reset"))
+        .header("X-Confirm", "true")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.get("events").unwrap().as_array().unwrap().is_empty());
+    assert!(body.get("messages").unwrap().as_array().unwrap().is_empty());
+    assert!(!body.get("has_conversation").unwrap().as_bool().unwrap());
+    let runs = body.get("runs").unwrap().as_array().unwrap();
+    assert!(
+        runs.iter().any(|r| r["status"] == "active"),
+        "should have a fresh active run after reset"
+    );
+}

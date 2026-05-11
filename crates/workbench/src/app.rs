@@ -3,7 +3,7 @@ use std::{cmp::Reverse, collections::BTreeMap, convert::Infallible, sync::Arc};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Sse, sse::Event},
     routing::{get, post},
 };
@@ -72,6 +72,9 @@ pub struct WorkbenchProjection {
     pub(crate) active_step_id: Option<String>,
     pub(crate) active_lane_ids: Vec<String>,
     pub(crate) has_conversation: bool,
+    pub(crate) active_project_id: String,
+    pub(crate) active_run_id: String,
+    pub(crate) runs: Vec<RunView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -79,7 +82,16 @@ pub struct ProjectView {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) status: String,
+    pub(crate) active_run_id: Option<String>,
     pub(crate) understanding: UnderstandingView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RunView {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) status: String,
+    pub(crate) created_at_ns: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -346,6 +358,10 @@ pub fn build_app_router(state: AppState) -> Router {
         .route("/api/messages", get(get_messages).post(post_message))
         .route("/api/lanes", get(get_lanes))
         .route("/api/notifications/{id}/ack", post(ack_notification))
+        .route("/api/runs", post(create_run))
+        .route("/api/runs/{id}/select", post(select_run))
+        .route("/api/runs/{id}/archive", post(archive_run))
+        .route("/api/project/reset", post(reset_project))
         .with_state(state)
 }
 
@@ -370,7 +386,17 @@ impl AppState {
         self
     }
 
-    pub fn publish(&self, event: SemanticEvent) {
+    pub async fn publish(&self, event: SemanticEvent) {
+        let context = {
+            let projection = self.projection.read().await;
+            mmat_event_stream::event::EventContext::new(
+                "default-organisation",
+                "default-workspace",
+                &projection.active_project_id,
+                &projection.active_run_id,
+            )
+        };
+        let event = event.with_context(context);
         if let Err(err) = self.bus.publish(event) {
             error!("failed to publish workbench event: {}", err);
         }
@@ -583,6 +609,7 @@ impl WorkbenchProjection {
                 id: "project-workbench-mvp".to_string(),
                 name: "SELIUM".to_string(),
                 status: "New project".to_string(),
+                active_run_id: Some("run-001".to_string()),
                 understanding: UnderstandingView {
                     intent: "Waiting for the first project intent.".to_string(),
                     audience: "Unknown".to_string(),
@@ -616,6 +643,14 @@ impl WorkbenchProjection {
             active_step_id: Some("intent".to_string()),
             active_lane_ids: Vec::new(),
             has_conversation: false,
+            active_project_id: "project-workbench-mvp".to_string(),
+            active_run_id: "run-001".to_string(),
+            runs: vec![RunView {
+                id: "run-001".to_string(),
+                label: "Initial run".to_string(),
+                status: "active".to_string(),
+                created_at_ns: 0,
+            }],
         }
     }
 
@@ -1565,6 +1600,8 @@ impl WorkbenchProjection {
     }
 
     fn upsert_step(&mut self, step: DagStepView) {
+        let state = step.state.clone();
+        let step_id = step.id.clone();
         self.active_step_id = Some(step.id.clone());
         if let Some(existing) = self
             .dag_steps
@@ -1575,12 +1612,53 @@ impl WorkbenchProjection {
         } else {
             self.dag_steps.push(step);
         }
+        if state == "Failed" || state == "Escalated" {
+            self.propagate_blocked_state(&step_id);
+        }
     }
 
     fn update_step(&mut self, id: &str, state: &str, summary: &str) {
         if let Some(step) = self.dag_steps.iter_mut().find(|step| step.id == id) {
             step.state = state.to_string();
             step.summary = summary.to_string();
+        }
+        if state == "Failed" || state == "Escalated" {
+            self.propagate_blocked_state(id);
+        }
+    }
+
+    fn propagate_blocked_state(&mut self, failed_step_id: &str) {
+        let blocked_ids: Vec<String> = self
+            .dag_steps
+            .iter()
+            .filter(|step| {
+                step.state != "Failed"
+                    && step.state != "Escalated"
+                    && step.state != "Completed"
+                    && step.dependencies.iter().any(|dep| dep == failed_step_id)
+            })
+            .map(|step| step.id.clone())
+            .collect();
+
+        for blocked_id in blocked_ids {
+            if let Some(step) = self.dag_steps.iter_mut().find(|s| s.id == blocked_id) {
+                step.state = "Blocked".to_string();
+            }
+            if let Some(role_id) = self
+                .dag_steps
+                .iter()
+                .find(|s| s.id == blocked_id)
+                .map(|s| s.role.clone())
+                && let Some(role) = self.roles.get(&role_id)
+                && role.state != "Failed"
+                && role.state != "Escalated"
+            {
+                self.set_role(
+                    &role_id,
+                    "Blocked",
+                    format!("Blocked by failed step: {failed_step_id}"),
+                );
+            }
         }
     }
 
@@ -1713,11 +1791,13 @@ pub async fn seed_workbench(state: &AppState) {
         return;
     }
 
-    state.publish(SemanticEvent::new_human_feedback_requested(
-        RoleId::new("intent-lead-001"),
-        "What are we making, who is it for, and what would make it excellent?",
-        "Start of the Intent Lead interview.",
-    ));
+    state
+        .publish(SemanticEvent::new_human_feedback_requested(
+            RoleId::new("intent-lead-001"),
+            "What are we making, who is it for, and what would make it excellent?",
+            "Start of the Intent Lead interview.",
+        ))
+        .await;
 }
 
 async fn index() -> Html<&'static str> {
@@ -1776,15 +1856,19 @@ async fn post_message(
             .strip_prefix('/')
             .and_then(|s| s.split_whitespace().next())
     {
-        state.publish(SemanticEvent::new_action_request_resolved(
-            RoleId::new("human"),
-            &action_request_id,
-            label,
-        ));
-        state.publish(SemanticEvent::new_human_feedback_received(
-            RoleId::new("human"),
-            &message,
-        ));
+        state
+            .publish(SemanticEvent::new_action_request_resolved(
+                RoleId::new("human"),
+                &action_request_id,
+                label,
+            ))
+            .await;
+        state
+            .publish(SemanticEvent::new_human_feedback_received(
+                RoleId::new("human"),
+                &message,
+            ))
+            .await;
         return StatusCode::ACCEPTED.into_response();
     }
 
@@ -1800,10 +1884,12 @@ async fn post_message(
             .strip_prefix("/archive ")
             .map(|s| s.trim().to_string())
     {
-        state.publish(SemanticEvent::new_lane_archived(
-            RoleId::new("human"),
-            &lane_id,
-        ));
+        state
+            .publish(SemanticEvent::new_lane_archived(
+                RoleId::new("human"),
+                &lane_id,
+            ))
+            .await;
         return StatusCode::ACCEPTED.into_response();
     }
 
@@ -1812,15 +1898,17 @@ async fn post_message(
             .strip_prefix("/pause ")
             .map(|s| s.trim().to_string())
     {
-        state.publish(SemanticEvent::new_lane_paused(
-            RoleId::new("human"),
-            &lane_id,
-        ));
+        state
+            .publish(SemanticEvent::new_lane_paused(
+                RoleId::new("human"),
+                &lane_id,
+            ))
+            .await;
         return StatusCode::ACCEPTED.into_response();
     }
 
     let human_event = SemanticEvent::new_human_feedback_received(RoleId::new("human"), &message);
-    state.publish(human_event);
+    state.publish(human_event).await;
     publish_mentions(
         &state,
         &message,
@@ -1870,17 +1958,19 @@ async fn handle_lane_creation(state: &AppState, args: &str) {
         explicit_msg_id.or_else(|| projection.messages.last().map(|m| m.message_id.clone()));
     drop(projection);
 
-    state.publish(SemanticEvent::new_lane_created(
-        RoleId::new("human"),
-        &lane_id,
-        name,
-        kind,
-        colour,
-        purpose,
-        None,
-        Vec::new(),
-        source_message_id,
-    ));
+    state
+        .publish(SemanticEvent::new_lane_created(
+            RoleId::new("human"),
+            &lane_id,
+            name,
+            kind,
+            colour,
+            purpose,
+            None,
+            Vec::new(),
+            source_message_id,
+        ))
+        .await;
 }
 
 #[derive(Deserialize)]
@@ -1947,6 +2037,127 @@ async fn ack_notification(
     }
 }
 
+#[derive(Deserialize)]
+struct CreateRunRequest {
+    #[serde(default)]
+    label: String,
+}
+
+async fn create_run(
+    State(state): State<AppState>,
+    Json(request): Json<CreateRunRequest>,
+) -> impl IntoResponse {
+    let label = if request.label.is_empty() {
+        "New run".to_string()
+    } else {
+        request.label
+    };
+    let run_id = format!("run-{}", Uuid::new_v4());
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    let mut projection = state.projection.write().await;
+    projection.active_run_id = run_id.clone();
+    projection.project.active_run_id = Some(run_id.clone());
+    projection.runs.push(RunView {
+        id: run_id.clone(),
+        label,
+        status: "active".to_string(),
+        created_at_ns: now_ns,
+    });
+    let result = projection.clone();
+    drop(projection);
+    Json(result)
+}
+
+async fn select_run(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let mut projection = state.projection.write().await;
+    if projection.runs.iter().any(|r| r.id == id) {
+        if let Some(run) = projection.runs.iter_mut().find(|r| r.id == id) {
+            run.status = "active".to_string();
+        }
+        projection.active_run_id = id.clone();
+        projection.project.active_run_id = Some(id);
+        let result = projection.clone();
+        drop(projection);
+        Json(result).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "run not found").into_response()
+    }
+}
+
+async fn archive_run(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let mut projection = state.projection.write().await;
+    if let Some(run) = projection.runs.iter_mut().find(|r| r.id == id) {
+        run.status = "archived".to_string();
+        if projection.active_run_id == id {
+            projection.active_run_id = String::new();
+            projection.project.active_run_id = None;
+        }
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "run not found").into_response()
+    }
+}
+
+async fn reset_project(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let confirmed = headers
+        .get("X-Confirm")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !confirmed {
+        return (
+            StatusCode::PRECONDITION_REQUIRED,
+            "Destructive reset requires X-Confirm: true header",
+        )
+            .into_response();
+    }
+
+    let mut projection = state.projection.write().await;
+    // TODO: reset_project clears the in-memory projection but does not clear
+    // the persistent EventStore. On server restart, replayed events will restore
+    // the prior state. True destructive reset requires EventStore::clear().
+    let active_run = projection.active_run_id.clone();
+    projection.events.clear();
+    projection.messages.clear();
+    projection.artefacts.clear();
+    projection.memories.clear();
+    projection.notifications.clear();
+    projection.action_requests.clear();
+    projection.dag_steps.clear();
+    projection.lanes.clear();
+    projection.completed_task_ids.clear();
+    projection.pending_question = None;
+    projection.active_artefact_id = None;
+    projection.active_lane_ids.clear();
+    projection.has_conversation = false;
+    for run in &mut projection.runs {
+        run.status = "archived".to_string();
+    }
+    if !active_run.is_empty() {
+        let run_id = format!("run-{}", Uuid::new_v4());
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        projection.active_run_id = run_id.clone();
+        projection.project.active_run_id = Some(run_id.clone());
+        projection.runs.push(RunView {
+            id: run_id,
+            label: "Reset run".to_string(),
+            status: "active".to_string(),
+            created_at_ns: now_ns,
+        });
+    }
+    let result = projection.clone();
+    drop(projection);
+    Json(result).into_response()
+}
+
 async fn publish_mentions(state: &AppState, message: &str, context: ReviewContext<'_>) {
     let mentioned_roles = mentioned_role_ids(message);
     let action_role = inline_action_role_id(message);
@@ -1959,14 +2170,14 @@ async fn publish_mentions(state: &AppState, message: &str, context: ReviewContex
         if role_id == "reviewer-001" {
             continue;
         }
-        publish_role_task(state, role_id, message);
+        publish_role_task(state, role_id, message).await;
     }
 
     if let Some(role_id) = action_role
         && role_id != "reviewer-001"
         && !mentioned_roles.contains(&role_id)
     {
-        publish_role_task(state, role_id, message);
+        publish_role_task(state, role_id, message).await;
     }
 }
 
@@ -1974,33 +2185,39 @@ async fn publish_review_request_or_guidance(state: &AppState, context: ReviewCon
     let projection = state.projection.read().await;
     if let Some(task_id) = projection.reviewable_task_id(context) {
         drop(projection);
-        state.publish(SemanticEvent::new_review_requested(
-            RoleId::new("human"),
-            &task_id,
-            RoleId::new("reviewer-001"),
-        ));
+        state
+            .publish(SemanticEvent::new_review_requested(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("reviewer-001"),
+            ))
+            .await;
     } else {
         drop(projection);
-        state.publish(SemanticEvent::new_human_feedback_requested(
-            RoleId::new("reviewer-001"),
-            "What completed task or artefact should the Reviewer review?",
-            "review requested without completed task context",
-        ));
+        state
+            .publish(SemanticEvent::new_human_feedback_requested(
+                RoleId::new("reviewer-001"),
+                "What completed task or artefact should the Reviewer review?",
+                "review requested without completed task context",
+            ))
+            .await;
     }
 }
 
-fn publish_role_task(state: &AppState, role_id: &str, message: &str) {
+async fn publish_role_task(state: &AppState, role_id: &str, message: &str) {
     let task_id = Uuid::new_v4().to_string();
-    state.publish(SemanticEvent::new_task_assigned(
-        RoleId::new("human"),
-        &task_id,
-        RoleId::new(role_id),
-        TaskContract {
-            contract_id: Uuid::new_v4().to_string(),
-            description: role_contract(role_id, message),
-        },
-        Vec::new(),
-    ));
+    state
+        .publish(SemanticEvent::new_task_assigned(
+            RoleId::new("human"),
+            &task_id,
+            RoleId::new(role_id),
+            TaskContract {
+                contract_id: Uuid::new_v4().to_string(),
+                description: role_contract(role_id, message),
+            },
+            Vec::new(),
+        ))
+        .await;
 }
 
 fn role_contract(role_id: &str, message: &str) -> String {
@@ -3884,6 +4101,122 @@ mod tests {
         assert!(esc_step.is_some(), "escalation step should exist");
         assert_eq!(esc_step.unwrap().state, "Escalated");
         assert!(esc_step.unwrap().summary.contains("implementation"));
+    }
+
+    #[tokio::test]
+    async fn blocked_state_propagates_to_dependent_steps() {
+        let store = Arc::new(ArtefactStore::new());
+        let task_a_id = Uuid::new_v4().to_string();
+        let task_b_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_a_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build backend".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_b_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build frontend (depends on backend)".to_string(),
+                },
+                vec![task_a_id.clone()],
+            ),
+            SemanticEvent::new_task_failed(
+                RoleId::new("worker-001"),
+                &task_a_id,
+                "compilation failed",
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+
+        let task_a = projection.dag_steps.iter().find(|s| s.id == task_a_id);
+        assert!(task_a.is_some(), "task A should exist");
+        assert_eq!(task_a.unwrap().state, "Failed");
+
+        let task_b = projection.dag_steps.iter().find(|s| s.id == task_b_id);
+        assert!(task_b.is_some(), "task B should exist");
+        assert_eq!(task_b.unwrap().state, "Blocked");
+
+        let worker_role = projection.roles.get("worker-001");
+        assert!(worker_role.is_some());
+        assert_eq!(worker_role.unwrap().state, "Failed");
+    }
+
+    #[tokio::test]
+    async fn task_failed_updates_role_state_correctly() {
+        let store = Arc::new(ArtefactStore::new());
+        let task_id = Uuid::new_v4().to_string();
+
+        let events = vec![
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                &task_id,
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build feature".to_string(),
+                },
+                Vec::new(),
+            ),
+            SemanticEvent::new_task_failed(
+                RoleId::new("worker-001"),
+                &task_id,
+                "build error: missing dependency",
+            ),
+        ];
+
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let worker = projection.roles.get("worker-001");
+        assert!(worker.is_some(), "worker role should exist");
+        assert_eq!(worker.unwrap().state, "Failed");
+        assert!(worker.unwrap().summary.contains("missing dependency"));
+    }
+
+    #[tokio::test]
+    async fn escalation_sets_role_to_escalated() {
+        let store = Arc::new(ArtefactStore::new());
+
+        let events = vec![SemanticEvent::new_escalation_requested(
+            RoleId::new("scholar-001"),
+            RoleId::new("scholar-001"),
+            RoleId::new("worker-001"),
+            "requires implementation skills beyond research capability",
+            mmat_event_stream::event::EscalationSeverity::High,
+        )];
+
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+
+        let worker = projection.roles.get("worker-001");
+        assert!(worker.is_some(), "worker role should exist");
+        assert_eq!(worker.unwrap().state, "Escalated");
+
+        let scholar = projection.roles.get("scholar-001");
+        assert!(scholar.is_some(), "scholar role should exist");
+
+        let notification = projection
+            .notifications
+            .iter()
+            .find(|n| n.kind == "Escalation");
+        assert!(
+            notification.is_some(),
+            "escalation notification should exist"
+        );
+        assert!(
+            notification
+                .unwrap()
+                .summary
+                .contains("implementation skills")
+        );
     }
 
     #[tokio::test]

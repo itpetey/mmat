@@ -4,6 +4,9 @@ let selectedStepId = null;
 let selectedRoleId = null;
 let activeView = 'chat';
 
+let selectedEventId = null;
+let eventFilters = { role: '', variant: '', run: '', task: '', lane: '' };
+
 async function loadState() {
   const response = await fetch('/api/state');
   state = await response.json();
@@ -24,20 +27,35 @@ function connectEvents() {
 
 function render() {
   renderHeader();
+  renderRunControls();
   renderConversation();
   renderRoleReadiness();
   renderDag();
   renderStepDetail();
+  renderEvents();
   renderNotifications();
 }
 
 function renderHeader() {
   const project = state.project || {};
   document.getElementById('project-chip').textContent = project.name || 'SELIUM';
+  document.getElementById('events-view-button').classList.toggle('active', activeView === 'events');
   document.getElementById('chat-view-button').classList.toggle('active', activeView === 'chat');
   document.getElementById('dag-view-button').classList.toggle('active', activeView === 'dag');
+  document.getElementById('events-view').classList.toggle('active', activeView === 'events');
   document.getElementById('chat-view').classList.toggle('active', activeView === 'chat');
   document.getElementById('dag-view').classList.toggle('active', activeView === 'dag');
+}
+
+function renderRunControls() {
+  const runLabel = document.getElementById('run-label');
+  const runs = state.runs || [];
+  const activeRun = runs.find(r => r.id === state.active_run_id) || runs[0];
+  if (runLabel) runLabel.textContent = activeRun ? (activeRun.label || activeRun.id) : 'No run';
+  const selector = document.getElementById('run-selector');
+  if (selector) {
+    selector.innerHTML = runs.map(run => `<option value="${escapeHtml(run.id)}"${run.id === state.active_run_id ? ' selected' : ''}>${escapeHtml(run.label || run.id)} · ${escapeHtml(run.status)}</option>`).join('');
+  }
 }
 
 function renderConversation() {
@@ -103,7 +121,7 @@ function renderRoleReadiness() {
     badge.type = 'button';
     badge.className = `role-badge${selectedRoleId === roleId ? ' active' : ''}`;
     badge.onclick = () => { selectedRoleId = roleId; selectedStepId = null; renderRoleReadiness(); renderRoleDetail(); };
-    badge.innerHTML = `<span class="status-dot ${escapeHtml(capability)}" title="${escapeHtml(capability)}"></span><span class="role-name">${escapeHtml(label)}</span><span class="role-status">${escapeHtml(capability)}</span>`;
+    badge.innerHTML = `<span class="status-dot ${escapeHtml(capability)}" title="${escapeHtml(capability)}"></span><span class="role-name">${escapeHtml(label)}</span><span class="role-status">${escapeHtml(role.state || 'idle')}</span>`;
     root.appendChild(badge);
   }
   if (selectedRoleId) renderRoleDetail();
@@ -159,14 +177,31 @@ function renderRoleDetail() {
   }
   const r = role.readiness || {};
   const capability = r.capability || 'unknown';
-  const summary = r.summary || 'No readiness information';
+  const roleState = role.state || 'Idle';
+  const relatedSteps = (state.dag_steps || []).filter(s => s.role === selectedRoleId);
+  const relatedEvents = (state.events || []).filter(e => {
+    const eventIds = relatedSteps.flatMap(s => s.event_ids || []);
+    return eventIds.includes(e.id);
+  });
+
   root.innerHTML = `
     <div class="detail-card"><h3>${escapeHtml(role.label || selectedRoleId)} — Readiness</h3></div>
     <div class="detail-grid">
       <div class="detail-card">
-        <div class="meta">Status: <span class="status-dot ${escapeHtml(capability)}" style="display:inline-block;vertical-align:middle;margin-right:4px;"></span>${escapeHtml(capability)}</div>
-        <div>${escapeHtml(summary)}</div>
+        <div class="meta">Operational State: <strong>${escapeHtml(roleState)}</strong></div>
+        <div class="meta">Capability: <span class="status-dot ${escapeHtml(capability)}" style="display:inline-block;vertical-align:middle;margin-right:4px;"></span>${escapeHtml(capability)}</div>
+        <div>${escapeHtml(role.summary || '')}</div>
       </div>
+      ${relatedSteps.length ? `
+      <div class="detail-card">
+        <h3>Related DAG Steps</h3>
+        <ul class="compact-list">${relatedSteps.map(s => `<li><a href="#" onclick="selectedStepId='${escapeHtml(s.id)}';selectedRoleId=null;renderDag();renderStepDetail();renderRoleReadiness();return false;">${escapeHtml(s.label)} (${escapeHtml(s.state)})</a></li>`).join('')}</ul>
+      </div>` : ''}
+      ${relatedEvents.length ? `
+      <div class="detail-card">
+        <h3>Related Events</h3>
+        <ul class="compact-list">${relatedEvents.map(e => `<li><a href="#" onclick="selectedEventId='${escapeHtml(e.id)}';activeView='events';renderHeader();renderEvents();return false;">${escapeHtml(e.variant)}</a> <span class="meta">${escapeHtml(e.summary)}</span></li>`).join('')}</ul>
+      </div>` : ''}
       <div class="detail-card">
         <h3>Capability Details</h3>
         <ul class="compact-list">
@@ -179,6 +214,103 @@ function renderRoleDetail() {
       </div>
     </div>
   `;
+}
+
+function renderEvents() {
+  const listRoot = document.getElementById('events-list');
+  const detailRoot = document.getElementById('event-detail-panel');
+  let events = (state.events || []).slice().reverse();
+
+  if (eventFilters.role) events = events.filter(e => e.source_agent === eventFilters.role);
+  if (eventFilters.variant) events = events.filter(e => e.variant === eventFilters.variant);
+  if (eventFilters.run) events = events.filter(e => (e.detail || {}).context && e.detail.context.run_id === eventFilters.run);
+  if (eventFilters.task) events = events.filter(e => (e.detail || {}).context && e.detail.context.task_id === eventFilters.task);
+  if (eventFilters.lane) events = events.filter(e => {
+    const lane = classifyEventLane(e.variant);
+    return lane === eventFilters.lane;
+  });
+
+  if (listRoot) {
+    const filterBar = buildFilterBar();
+    listRoot.innerHTML = filterBar + (events.length ? '' : '<div class="empty">No matching events.</div>');
+    for (const event of events) {
+      const row = document.createElement('div');
+      row.className = `event-row${event.id === selectedEventId ? ' active' : ''}`;
+      row.onclick = () => { selectedEventId = event.id; renderEvents(); };
+      row.innerHTML = `<div class="event-variant">${escapeHtml(event.variant)}</div><div class="event-meta"><span>${escapeHtml(event.source_agent)}</span><span class="event-time">${new Date(Number(event.timestamp_ns / 1000000n)).toLocaleTimeString()}</span></div><div class="event-summary">${escapeHtml(event.summary)}</div>`;
+      listRoot.appendChild(row);
+    }
+  }
+  if (detailRoot) {
+    const event = events.find(e => e.id === selectedEventId);
+    if (!event) {
+      detailRoot.innerHTML = '<div class="empty">Select an event to inspect its details.</div>';
+      return;
+    }
+    const detail = event.detail || {};
+    const context = detail.context || {};
+    const dagSteps = (state.dag_steps || []).filter(s => (s.event_ids || []).includes(event.id));
+    detailRoot.innerHTML = `
+      <div class="detail-card"><h3>${escapeHtml(event.variant)}</h3><div class="meta">${escapeHtml(event.id)}</div></div>
+      <div class="detail-grid">
+        <div class="detail-card">
+          <h3>Metadata</h3>
+          <ul class="compact-list">
+            <li>Source: ${escapeHtml(event.source_agent)}</li>
+            <li>Time: ${new Date(Number(event.timestamp_ns / 1000000n)).toLocaleString()}</li>
+            <li>Project: ${escapeHtml(context.project_id || '—')}</li>
+            <li>Run: ${escapeHtml(context.run_id || '—')}</li>
+            <li>Task: ${escapeHtml(context.task_id || '—')}</li>
+            <li>Organisation: ${escapeHtml(context.organisation_id || '—')}</li>
+          </ul>
+        </div>
+        ${dagSteps.length ? `
+        <div class="detail-card">
+          <h3>DAG Steps</h3>
+          <ul class="compact-list">${dagSteps.map(s => `<li><a href="#" onclick="selectedStepId='${escapeHtml(s.id)}';selectedEventId=null;activeView='dag';renderHeader();renderDag();renderStepDetail();renderRoleReadiness();return false;">${escapeHtml(s.label)} (${escapeHtml(s.state)})</a></li>`).join('')}</ul>
+        </div>` : ''}
+        <div class="detail-card">
+          <h3>Summary</h3>
+          <div>${escapeHtml(event.summary)}</div>
+        </div>
+        <div class="detail-card">
+          <h3>Raw JSON</h3>
+          <pre>${escapeHtml(JSON.stringify(detail, null, 2))}</pre>
+        </div>
+      </div>
+    `;
+  }
+}
+
+function buildFilterBar() {
+  const roles = [...new Set((state.events || []).map(e => e.source_agent))].sort();
+  const variants = [...new Set((state.events || []).map(e => e.variant))].sort();
+  const runs = [...new Set((state.events || []).map(e => (e.detail || {}).context ? e.detail.context.run_id : ''))].filter(Boolean).sort();
+  const tasks = [...new Set((state.events || []).map(e => (e.detail || {}).context ? e.detail.context.task_id : ''))].filter(Boolean).sort();
+  return `<div class="event-filters" id="event-filters">
+    <select data-filter="role"><option value="">All Roles</option>${roles.map(r => `<option value="${escapeHtml(r)}"${eventFilters.role === r ? ' selected' : ''}>${escapeHtml(r)}</option>`).join('')}</select>
+    <select data-filter="variant"><option value="">All Types</option>${variants.map(v => `<option value="${escapeHtml(v)}"${eventFilters.variant === v ? ' selected' : ''}>${escapeHtml(v)}</option>`).join('')}</select>
+    ${runs.length ? `<select data-filter="run"><option value="">All Runs</option>${runs.map(r => `<option value="${escapeHtml(r)}"${eventFilters.run === r ? ' selected' : ''}>${escapeHtml(r)}</option>`).join('')}</select>` : ''}
+    ${tasks.length ? `<select data-filter="task"><option value="">All Tasks</option>${tasks.map(t => `<option value="${escapeHtml(t)}"${eventFilters.task === t ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('')}</select>` : ''}
+    <select data-filter="lane"><option value="">All Lanes</option><option value="conversation"${eventFilters.lane === 'conversation' ? ' selected' : ''}>Conversation</option><option value="discovery"${eventFilters.lane === 'discovery' ? ' selected' : ''}>Discovery</option><option value="delivery"${eventFilters.lane === 'delivery' ? ' selected' : ''}>Delivery</option><option value="system"${eventFilters.lane === 'system' ? ' selected' : ''}>System</option></select>
+  </div>`;
+}
+
+function classifyEventLane(variant) {
+  switch (variant) {
+    case 'HumanFeedbackRequested': case 'HumanFeedbackReceived':
+    case 'LaneCreated': case 'LaneArchived': case 'LanePaused':
+    case 'ActionRequestCreated': case 'ActionRequestResolved': case 'ActionRequestCancelled':
+      return 'conversation';
+    case 'MemoryProposed': case 'MemoryAccepted': case 'MemoryRejected': case 'MemorySuperseded':
+    case 'ToolExecuted': case 'ClaimMade': case 'DecisionRecorded':
+      return 'discovery';
+    case 'TaskAssigned': case 'TaskStarted': case 'TaskCompleted': case 'TaskFailed':
+    case 'ReviewRequested': case 'ReviewCompleted': case 'ArtefactProduced':
+      return 'delivery';
+    default:
+      return 'system';
+  }
 }
 
 function renderNotifications() {
@@ -274,6 +406,11 @@ document.getElementById('dag-view-button').addEventListener('click', () => {
   renderHeader();
 });
 
+document.getElementById('events-view-button').addEventListener('click', () => {
+  activeView = 'events';
+  renderHeader();
+});
+
 document.getElementById('notification-count').addEventListener('click', (event) => {
   event.stopPropagation();
   document.getElementById('notification-panel').classList.toggle('open');
@@ -332,3 +469,47 @@ function escapeHtml(value) {
 
 loadState();
 connectEvents();
+
+document.getElementById('new-run-button').addEventListener('click', async () => {
+  const label = prompt('Run label (optional):') || '';
+  await fetch('/api/runs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ label })
+  });
+  await loadState();
+});
+
+document.getElementById('run-selector').addEventListener('change', async (event) => {
+  const runId = event.target.value;
+  if (runId) {
+    await fetch(`/api/runs/${encodeURIComponent(runId)}/select`, { method: 'POST' });
+    await loadState();
+  }
+});
+
+document.getElementById('archive-run-button').addEventListener('click', async () => {
+  const activeRunId = state.active_run_id;
+  if (!activeRunId) return;
+  await fetch(`/api/runs/${encodeURIComponent(activeRunId)}/archive`, { method: 'POST' });
+  await loadState();
+});
+
+document.getElementById('reset-project-button').addEventListener('click', async () => {
+  if (!confirm('This will clear all project state (messages, events, artefacts, DAG). This cannot be undone. Continue?')) return;
+  await fetch('/api/project/reset', {
+    method: 'POST',
+    headers: { 'X-Confirm': 'true' }
+  });
+  await loadState();
+});
+
+document.addEventListener('change', (event) => {
+  const select = event.target;
+  if (!select.closest('#event-filters')) return;
+  const filter = select.dataset.filter;
+  if (filter && eventFilters.hasOwnProperty(filter)) {
+    eventFilters[filter] = select.value;
+    renderEvents();
+  }
+});

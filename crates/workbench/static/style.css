@@ -27,9 +27,17 @@ body {
 button, textarea { font: inherit; }
 button { cursor: pointer; }
 .app-shell { min-height: 100vh; padding: 32px 96px 22px; display: grid; grid-template-rows: 48px 1fr auto; gap: 28px; }
-.topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: start; }
+.topbar { display: grid; grid-template-columns: auto auto 1fr auto; align-items: start; gap: 12px; }
 .project-mark { justify-self: start; position: relative; margin-left: 14px; margin-top: 3px; color: white; font-size: 12px; line-height: 27px; min-width: 62px; text-align: center; border: 1px solid white; background: var(--bg); }
 .project-mark::before { content: ""; position: absolute; inset: -4px 4px 4px -4px; border: 1px solid white; z-index: -1; }
+.run-controls { display: flex; flex-direction: column; gap: 4px; margin-top: 3px; }
+.run-label { color: var(--muted); font-size: 11px; }
+.run-actions { display: flex; gap: 6px; align-items: center; }
+.run-selector { background: #080b10; color: var(--text); border: 1px solid #30343b; font-size: 12px; padding: 2px 6px; cursor: pointer; }
+.mini-button { background: transparent; color: var(--muted); border: 1px solid #30343b; font-size: 11px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+.mini-button:hover { border-color: var(--me); color: var(--me); }
+.mini-button.danger { color: var(--scholar); }
+.mini-button.danger:hover { border-color: var(--scholar); color: var(--scholar); }
 .wordmark { justify-self: center; margin-top: -32px; background: white; color: #111; padding: 7px 10px 4px; font-family: "Major Mono Display", "Courier New", monospace; font-size: 24px; letter-spacing: 0.02em; text-decoration: underline; line-height: 1; }
 .view-actions { justify-self: end; display: flex; gap: 24px; align-items: center; position: relative; }
 .icon-button { position: relative; width: 24px; height: 24px; color: white; background: transparent; border: 0; padding: 0; opacity: 0.78; }
@@ -68,6 +76,19 @@ textarea { width: 100%; min-height: 54px; resize: vertical; background: transpar
 .submit-hint strong { color: var(--muted); }
 .submit-hint code { font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; }
 .dag-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 32px; }
+.events-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 32px; }
+.events-list { min-height: calc(100vh - 186px); overflow: auto; border-top: 1px solid #20242b; padding-top: 10px; }
+.event-row { cursor: pointer; padding: 8px 0; border-bottom: 1px solid #20242b; }
+.event-row:hover { background: #0d1117; }
+.event-row.active { border-left: 2px solid var(--me); padding-left: 10px; }
+.event-variant { font-size: 13px; font-weight: 600; color: var(--text); }
+.event-meta { display: flex; gap: 12px; color: var(--muted); font-size: 11px; margin: 2px 0; }
+.event-time { opacity: 0.7; }
+.event-summary { color: var(--muted); font-size: 12px; }
+.event-filters { display: flex; gap: 6px; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #20242b; }
+.event-filters select { background: #080b10; color: var(--text); border: 1px solid #30343b; font-size: 12px; padding: 4px 8px; cursor: pointer; }
+.event-filters select:focus { border-color: var(--me); outline: none; }
+.detail-card pre { max-height: 300px; overflow: auto; }
 .dag-column { min-width: 0; }
 .dag-canvas { min-height: calc(100vh - 186px); border-top: 1px solid #20242b; padding-top: 40px; display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 34px; align-content: start; }
 .dag-step { color: white; background: transparent; border: 1px solid #30343b; text-align: left; padding: 16px; min-height: 120px; }
@@ -95,4 +116,4 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--mut
 .role-badge .status-dot.unavailable { background: var(--ready-unavailable); }
 .role-badge .role-name { font-weight: 600; }
 .role-badge .role-status { color: var(--muted); font-size: 11px; }
-@media (max-width: 920px) { .app-shell { padding: 22px; } .topbar { grid-template-columns: 1fr auto; gap: 14px; } .wordmark { grid-column: 1 / -1; grid-row: 1; margin-top: 0; } .project-mark { grid-row: 2; } .view-actions { grid-row: 2; } .channel-row { grid-template-columns: 72px minmax(0, 1fr); } .dag-layout { grid-template-columns: 1fr; } .side-panel { border-left: 0; padding-left: 0; } }
+@media (max-width: 920px) { .app-shell { padding: 22px; } .topbar { grid-template-columns: 1fr auto; gap: 14px; } .wordmark { grid-column: 1 / -1; grid-row: 1; margin-top: 0; } .project-mark { grid-row: 2; } .run-controls { grid-row: 2; } .view-actions { grid-row: 2; } .channel-row { grid-template-columns: 72px minmax(0, 1fr); } .dag-layout, .events-layout { grid-template-columns: 1fr; } .side-panel { border-left: 0; padding-left: 0; } }
