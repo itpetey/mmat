@@ -4,10 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-chrono = { workspace = true, features = ["now"] }
-mmat-event-stream = { path = "../event-stream" }
 rusqlite = { workspace = true, features = ["bundled"] }
-serde_json = { workspace = true, features = ["std"] }
 sqlx = { workspace = true, features = [
   "derive",
   "postgres",

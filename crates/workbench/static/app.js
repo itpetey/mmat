@@ -231,7 +231,27 @@ function listHtml(items) {
 
 function artefactsHtml(artefacts) {
   if (!artefacts.length) return '<div class="empty">No artefact linked to this step yet.</div>';
-  return artefacts.map(artefact => `<div class="memory"><div class="meta">${escapeHtml(artefact.title)} · ${escapeHtml(artefact.producer_role)}</div><pre>${escapeHtml(JSON.stringify(artefact.content, null, 2))}</pre></div>`).join('');
+  return artefacts.map(artefact => artefact.storage_kind === 'code' ? codeArtefactHtml(artefact) : blobArtefactHtml(artefact)).join('');
+}
+
+function blobArtefactHtml(artefact) {
+  const content = artefact.content || {};
+  const error = content.error ? `<div class="empty">${escapeHtml(content.error)}</div>` : '';
+  return `<div class="memory"><div class="meta">Blob · ${escapeHtml(artefact.title)} · ${escapeHtml(artefact.producer_role)} · ${escapeHtml(artefact.content_hash || '')}</div>${error}<pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre>${evidenceHtml(artefact.evidence_refs || [])}</div>`;
+}
+
+function codeArtefactHtml(artefact) {
+  const output = artefact.repository_output || {};
+  const content = artefact.content || {};
+  const paths = output.paths || content.paths || [];
+  const missing = content.missing_paths || [];
+  const error = content.error ? `<div class="empty">${escapeHtml(content.error)}${missing.length ? `: ${escapeHtml(missing.join(', '))}` : ''}</div>` : '';
+  return `<div class="memory"><div class="meta">Code · ${escapeHtml(artefact.title)} · ${escapeHtml(artefact.producer_role)}</div>${error}<ul class="compact-list"><li>Repository: ${escapeHtml(output.repository_path || content.repository_path || 'unknown')}</li><li>Worktree: ${escapeHtml(output.worktree_path || content.worktree_path || 'unknown')}</li><li>Branch: ${escapeHtml(output.worktree_branch || content.worktree_branch || 'unknown')}</li><li>Diff: ${escapeHtml(output.diff_summary || content.diff_summary || 'No diff summary')}</li><li>Validation: ${escapeHtml(output.validation_summary || content.validation_summary || 'Not run')}</li></ul>${listHtml(paths)}${evidenceHtml(artefact.evidence_refs || [])}</div>`;
+}
+
+function evidenceHtml(refs) {
+  if (!refs.length) return '<div class="empty">No evidence refs linked.</div>';
+  return `<div class="meta">Evidence: ${refs.map(ref => `<a href="#event-${escapeHtml(ref)}">${escapeHtml(ref)}</a>`).join(', ')}</div>`;
 }
 
 function eventsHtml(events) {

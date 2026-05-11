@@ -31,3 +31,4 @@ uuid = { workspace = true, features = ["v4"] }
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
+tempfile.workspace = true

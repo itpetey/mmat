@@ -8,17 +8,17 @@ use mmat_workbench::{AppState, build_app_router, spawn_projection_task};
 use tokio::net::TcpListener;
 
 /// Create a test AppState with no events (in-memory, no Postgres).
-pub fn test_app_state() -> AppState {
+pub async fn test_app_state() -> AppState {
     let bus = EventBus::new(16);
     let store = Arc::new(ArtefactStore::new());
-    AppState::with_events(bus, &[], store)
+    AppState::with_events(bus, &[], store).await
 }
 
 /// Create a test AppState pre-seeded with the given events.
-pub fn test_app_state_with_events(events: &[SemanticEvent]) -> AppState {
+pub async fn test_app_state_with_events(events: &[SemanticEvent]) -> AppState {
     let bus = EventBus::new(16);
     let store = Arc::new(ArtefactStore::new());
-    AppState::with_events(bus, events, store)
+    AppState::with_events(bus, events, store).await
 }
 
 /// Spawn a test HTTP server and return the base URL.

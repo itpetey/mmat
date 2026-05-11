@@ -11,7 +11,8 @@ use mmat_coordinator::{
     AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{
-    ArtefactRef, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
+    ArtefactRef, EventId, EventType, EvidenceRef, RepositoryOutputRef, RoleId as EventRoleId,
+    SemanticEvent, StoredArtefactRef, stable_content_hash,
 };
 use mmat_llm::{
     client::LlmClient,
@@ -33,6 +34,11 @@ pub struct Worker {
     tool_runtime: RoleToolRuntime,
     validation_commands: Vec<String>,
     allow_fallback_worktree: bool,
+}
+
+struct ImplementationOutput {
+    patch: String,
+    files_written: Vec<String>,
 }
 
 impl Worker {
@@ -112,7 +118,7 @@ impl Worker {
         task_id: &str,
         task_description: &str,
         worktree: &WorktreeHandle,
-    ) -> Result<String, RoleError> {
+    ) -> Result<ImplementationOutput, RoleError> {
         info!(
             "Worker implementation loop for task: {} in worktree: {}",
             task_description,
@@ -191,7 +197,10 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
             }
 
             let patch = Self::generate_patch(worktree, &files_written).await;
-            return Ok(patch);
+            return Ok(ImplementationOutput {
+                patch,
+                files_written,
+            });
         }
 
         let relative_file_path = format!("task-{}.txt", task_id);
@@ -220,8 +229,11 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
         })?;
         tool_event_ids.push(tool_event.event_id());
 
-        let patch = Self::generate_patch(worktree, &[relative_file_path]).await;
-        Ok(patch)
+        let patch = Self::generate_patch(worktree, std::slice::from_ref(&relative_file_path)).await;
+        Ok(ImplementationOutput {
+            patch,
+            files_written: vec![relative_file_path],
+        })
     }
 
     pub(crate) async fn parse_and_write_files(
@@ -404,17 +416,43 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
     async fn publish_artefact(
         &self,
         ctx: &RoleContext,
-        patch: &str,
+        output: &ImplementationOutput,
+        worktree: &WorktreeHandle,
+        validation_passed: bool,
+        evidence_refs: Vec<EvidenceRef>,
     ) -> Result<ArtefactRef, RoleError> {
-        let stored = ctx.store_artefact("implementation_patch", patch).await?;
-        let event = SemanticEvent::new_artefact_produced_ref(
+        let artefact_id = format!("implementation_patch-{}", uuid::Uuid::new_v4());
+        let storage_uri = format!(
+            "repo://worktrees/{}/{}",
+            worktree.branch_name(),
+            artefact_id
+        );
+        let validation_summary = if validation_passed {
+            Some("validation passed".to_string())
+        } else {
+            Some("validation failed".to_string())
+        };
+        let repository_output = RepositoryOutputRef {
+            repository_path: worktree.repo_path().display().to_string(),
+            worktree_path: worktree.path().display().to_string(),
+            worktree_branch: worktree.branch_name().to_string(),
+            paths: output.files_written.clone(),
+            diff_summary: Self::summarise_patch(&output.patch),
+            validation_summary,
+            revision: None,
+        };
+
+        let event = SemanticEvent::new_code_output_ref(
             EventRoleId(self.id.0.clone()),
-            stored.artefact_id.clone(),
             "implementation_patch",
-            stored.content_hash.clone(),
-            stored.storage_uri.clone(),
+            StoredArtefactRef {
+                artefact_id: artefact_id.clone(),
+                content_hash: stable_content_hash(&output.patch),
+                storage_uri: storage_uri.clone(),
+            },
             EventRoleId(self.id.0.clone()),
-            Vec::new(),
+            evidence_refs,
+            repository_output,
         );
         ctx.bus.publish(event).map_err(|e| {
             RoleError::Internal(format!("Failed to publish artefact produced event: {e:?}"))
@@ -422,8 +460,21 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
 
         Ok(ArtefactRef {
             artefact_type: "implementation_patch".to_string(),
-            reference: stored.storage_uri,
+            reference: storage_uri,
         })
+    }
+
+    fn summarise_patch(patch: &str) -> String {
+        let files = patch
+            .lines()
+            .filter_map(|line| line.strip_prefix("## File: "))
+            .collect::<Vec<_>>();
+
+        if files.is_empty() {
+            "No files changed".to_string()
+        } else {
+            format!("{} file(s) changed: {}", files.len(), files.join(", "))
+        }
     }
 
     fn build_evidence_refs(tool_event_ids: &[EventId], description: &str) -> Vec<EvidenceRef> {
@@ -508,7 +559,7 @@ impl Role for Worker {
             RoleError::Internal(format!("Failed to publish task started event: {e:?}"))
         })?;
 
-        let patch = self
+        let output = self
             .run_implementation_loop(&ctx, &task_id, &contract_ref.description, &worktree)
             .await?;
 
@@ -522,7 +573,7 @@ impl Role for Worker {
             "implementation_loop",
             &contract_ref.description,
             if validation_passed { 0 } else { 1 },
-            &patch,
+            &output.patch,
             "",
             0,
         );
@@ -533,6 +584,8 @@ impl Role for Worker {
         let all_tool_ids: Vec<EventId> = std::iter::once(tool_event.event_id())
             .chain(validation_event_ids.iter().copied())
             .collect();
+        let artefact_evidence_refs =
+            Self::build_evidence_refs(&all_tool_ids, "implementation and validation results");
 
         let claim_event = SemanticEvent::new_claim_made(
             EventRoleId(self.id.0.clone()),
@@ -544,7 +597,15 @@ impl Role for Worker {
             RoleError::Internal(format!("Failed to publish claim made event: {e:?}"))
         })?;
 
-        let artefact = self.publish_artefact(&ctx, &patch).await?;
+        let artefact = self
+            .publish_artefact(
+                &ctx,
+                &output,
+                &worktree,
+                validation_passed,
+                artefact_evidence_refs,
+            )
+            .await?;
 
         if validation_passed {
             let completed = SemanticEvent::new_task_completed(
@@ -566,11 +627,6 @@ impl Role for Worker {
                 RoleError::Internal(format!("Failed to publish task failed event: {e:?}"))
             })?;
         }
-
-        worktree
-            .delete()
-            .await
-            .map_err(|e| RoleError::Internal(format!("Failed to delete worktree: {e}")))?;
 
         ctx.coordinator
             .report_status(
@@ -652,5 +708,46 @@ mod tests {
             .unwrap();
         assert_eq!(written, vec!["src/lib.rs".to_string()]);
         assert!(worktree_path.join("src/lib.rs").exists());
+    }
+
+    #[test]
+    fn summarise_patch_empty_returns_no_files() {
+        assert_eq!(Worker::summarise_patch(""), "No files changed");
+        assert_eq!(
+            Worker::summarise_patch("# Implementation Patch\n\n"),
+            "No files changed"
+        );
+    }
+
+    #[test]
+    fn summarise_patch_single_file() {
+        let patch = "## File: src/lib.rs\npub fn hello() {}\n```\n";
+        assert_eq!(
+            Worker::summarise_patch(patch),
+            "1 file(s) changed: src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn summarise_patch_multiple_files() {
+        let patch = concat!(
+            "## File: src/lib.rs\npub fn hello() {}\n```\n\n",
+            "## File: Cargo.toml\n[dependencies]\n```\n\n",
+            "## File: tests/integration.rs\nfn test() {}\n```\n",
+        );
+        let summary = Worker::summarise_patch(patch);
+        assert!(summary.starts_with("3 file(s) changed:"));
+        assert!(summary.contains("src/lib.rs"));
+        assert!(summary.contains("Cargo.toml"));
+        assert!(summary.contains("tests/integration.rs"));
+    }
+
+    #[test]
+    fn summarise_patch_ignores_malformed_file_headers() {
+        let patch = "## File: valid.rs\ncontent\n## File:\nmissing name after colon\n## Not a file header\n";
+        assert_eq!(
+            Worker::summarise_patch(patch),
+            "1 file(s) changed: valid.rs"
+        );
     }
 }

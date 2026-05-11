@@ -29,7 +29,7 @@ async fn main() -> Result<(), WorkbenchError> {
                 source,
             })?;
 
-    let (state, runtime) = build_runtime()?;
+    let (state, runtime) = build_runtime().await?;
     spawn_projection_task(state.clone());
 
     let librarian_bus: Arc<_> = runtime.bus().clone().into();

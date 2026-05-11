@@ -1,12 +1,7 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use mmat_event_stream::event::stable_content_hash;
 use rusqlite::Connection;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
-use tracing::{info, warn};
+use tracing::info;
 
 #[tokio::main]
 async fn main() {
@@ -21,8 +16,6 @@ async fn main() {
 
     let sqlite_events = get_arg(&args, "--sqlite-events").unwrap_or_else(|| "events.db".into());
     let sqlite_memory = get_arg(&args, "--sqlite-memory").unwrap_or_else(|| "memory.db".into());
-    let artefacts_dir =
-        get_arg(&args, "--artefacts-dir").unwrap_or_else(|| ".mmat/artefacts".into());
     let database_url = get_arg(&args, "--database-url").expect("--database-url is required");
 
     if dry_run {
@@ -45,12 +38,8 @@ async fn main() {
         run_schema_migration(&pool).await;
     }
 
-    let artefacts_dir = PathBuf::from(&artefacts_dir);
-
     migrate_events(&events_conn, &pool, dry_run).await;
     migrate_memories(&memory_conn, &pool, dry_run).await;
-    let uri_map = migrate_artefacts(&artefacts_dir, &pool, dry_run).await;
-    rewrite_event_uris(&pool, &uri_map, dry_run).await;
 
     if !dry_run {
         info!("Migration complete");
@@ -61,10 +50,6 @@ async fn main() {
 
 fn get_arg(args: &[String], name: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
-}
-
-fn now_iso8601() -> String {
-    chrono::Utc::now().to_rfc3339()
 }
 
 async fn run_schema_migration(pool: &PgPool) {
@@ -275,143 +260,4 @@ async fn migrate_memories(sqlite: &Connection, pool: &PgPool, dry_run: bool) {
     }
 
     info!("  Migrated {count} memories");
-}
-
-async fn migrate_artefacts(
-    artefacts_dir: &PathBuf,
-    pool: &PgPool,
-    dry_run: bool,
-) -> Arc<HashMap<String, String>> {
-    info!("Migrating artefacts from {}...", artefacts_dir.display());
-
-    if !artefacts_dir.exists() {
-        info!("  Artefacts directory does not exist, skipping");
-        return Arc::new(HashMap::new());
-    }
-
-    let dir_entries: Vec<_> = match std::fs::read_dir(artefacts_dir) {
-        Ok(entries) => entries.filter_map(|e| e.ok()).collect(),
-        Err(e) => {
-            warn!("  Cannot read artefacts directory: {e}");
-            return Arc::new(HashMap::new());
-        }
-    };
-
-    if dir_entries.is_empty() {
-        info!("  No artefact files found");
-        return Arc::new(HashMap::new());
-    }
-
-    info!("  Found {} artefact files", dir_entries.len());
-
-    let mut map_inner = HashMap::new();
-    let mut count = 0u64;
-
-    for entry in &dir_entries {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let artefact_id = filename.to_string();
-        let artefact_type = filename.split('-').next().unwrap_or("unknown").to_string();
-
-        let payload = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("  Cannot read {}: {e}", path.display());
-                continue;
-            }
-        };
-
-        let content_hash = stable_content_hash(&payload);
-        let now_ts = now_iso8601();
-
-        if !dry_run {
-            sqlx::query(
-                "INSERT INTO artefacts (artefact_id, artefact_type, content_hash, payload, created_at)
-                 VALUES ($1, $2, $3, $4::jsonb, $5)
-                 ON CONFLICT (artefact_id) DO NOTHING",
-            )
-            .bind(&artefact_id)
-            .bind(&artefact_type)
-            .bind(&content_hash)
-            .bind(&payload)
-            .bind(&now_ts)
-            .execute(pool)
-            .await
-            .unwrap_or_else(|e| panic!("Failed to insert artefact {artefact_id}: {e}"));
-        }
-
-        let old_uri = format!("file://{}", path.display());
-        let new_uri = format!("db://artefacts/{artefact_id}");
-        map_inner.insert(old_uri, new_uri);
-
-        count += 1;
-    }
-
-    info!("  Migrated {count} artefacts");
-    Arc::new(map_inner)
-}
-
-async fn rewrite_event_uris(pool: &PgPool, uri_map: &HashMap<String, String>, dry_run: bool) {
-    if uri_map.is_empty() {
-        info!("No artefact URIs to rewrite");
-        return;
-    }
-
-    info!("Rewriting event payload URIs...");
-
-    if dry_run {
-        info!(
-            "  Would rewrite up to {} artefact URI mappings",
-            uri_map.len()
-        );
-        return;
-    }
-
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT event_id::text, payload::text FROM events WHERE payload::text LIKE '%file://%'",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("Failed to query events with file URIs");
-
-    info!("  Found {} events with file:// URIs", rows.len());
-
-    let mut rewritten = 0u64;
-    for (event_id, payload_json) in &rows {
-        let mut payload: serde_json::Value = serde_json::from_str(payload_json)
-            .unwrap_or_else(|e| panic!("Failed to parse event {event_id} payload: {e}"));
-
-        let storage_uri_opt = payload
-            .as_object()
-            .and_then(|obj| obj.get("storage_uri"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        if let Some(old_uri) = storage_uri_opt
-            && let Some(new_uri) = uri_map.get(&old_uri)
-            && let Some(obj) = payload.as_object_mut()
-        {
-            obj.insert(
-                "storage_uri".to_string(),
-                serde_json::Value::String(new_uri.clone()),
-            );
-            let updated = serde_json::to_string(&payload)
-                .unwrap_or_else(|e| panic!("Failed to serialize event {event_id}: {e}"));
-
-            sqlx::query("UPDATE events SET payload = $1::jsonb WHERE event_id = $2::uuid")
-                .bind(&updated)
-                .bind(event_id)
-                .execute(pool)
-                .await
-                .unwrap_or_else(|e| panic!("Failed to update event {event_id}: {e}"));
-
-            rewritten += 1;
-        }
-    }
-
-    info!("  Rewrote {rewritten} event payload URIs");
 }

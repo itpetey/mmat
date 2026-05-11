@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
 
 use mmat_event_stream::{
     event::{RoleId, SemanticEvent, StoredArtefactRef, stable_content_hash},
@@ -12,18 +12,18 @@ use uuid::Uuid;
 use crate::error::Result;
 
 /// Artefact storage backend that stores artefact payloads in Postgres
-/// (when `database_url` is configured) or falls back to file-based storage.
+/// (when `database_url` is configured) or falls back to an in-memory store.
 pub struct ArtefactStore {
     pool: Option<PgPool>,
-    file_lock: Mutex<()>,
+    memory: Mutex<HashMap<String, String>>,
 }
 
 impl ArtefactStore {
-    /// Creates a file-based artefact store (legacy fallback).
+    /// Creates an in-memory artefact store (no persistence).
     pub fn new() -> Self {
         Self {
             pool: None,
-            file_lock: Mutex::new(()),
+            memory: Mutex::new(HashMap::new()),
         }
     }
 
@@ -34,7 +34,7 @@ impl ArtefactStore {
             .connect_lazy(database_url)?;
         let store = Self {
             pool: Some(pool),
-            file_lock: Mutex::new(()),
+            memory: Mutex::new(HashMap::new()),
         };
         store.migrate()?;
         Ok(store)
@@ -77,21 +77,21 @@ impl ArtefactStore {
         Ok(())
     }
 
-    /// Stores an artefact payload and returns a reference with a `db://` or `file://` URI.
+    /// Stores an artefact payload and returns a reference with a `db://` URI.
     pub async fn store(&self, artefact_type: &str, payload: &str) -> Result<StoredArtefactRef> {
         match &self.pool {
             Some(pool) => self.store_postgres(pool, artefact_type, payload).await,
-            None => self.store_file(artefact_type, payload),
+            None => self.store_memory(artefact_type, payload),
         }
     }
 
     /// Retrieves the payload for a given storage URI.
     ///
-    /// Supports both `db://artefacts/<id>` and `file://` URIs for backward compatibility.
+    /// Supports `db://artefacts/<id>` URIs and legacy inline `type|payload` URIs.
     pub async fn get_payload(&self, storage_uri: &str) -> Result<Option<String>> {
         match &self.pool {
             Some(pool) => self.get_payload_postgres(pool, storage_uri).await,
-            None => Self::get_payload_file(storage_uri),
+            None => self.get_payload_memory(storage_uri),
         }
     }
 
@@ -124,21 +124,17 @@ impl ArtefactStore {
         })
     }
 
-    fn store_file(&self, artefact_type: &str, payload: &str) -> Result<StoredArtefactRef> {
-        let _lock = self.file_lock.lock();
+    fn store_memory(&self, artefact_type: &str, payload: &str) -> Result<StoredArtefactRef> {
         let artefact_id = format!("{}-{}", artefact_type, Uuid::new_v4());
         let content_hash = stable_content_hash(payload);
-        let directory = PathBuf::from(".mmat").join("artefacts");
-        std::fs::create_dir_all(&directory)
-            .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-
-        let path = directory.join(format!("{artefact_id}.json"));
-        std::fs::write(&path, payload).map_err(|e| crate::error::Error::Store(e.to_string()))?;
-
+        let storage_uri = format!("db://artefacts/{artefact_id}");
+        self.memory
+            .lock()
+            .insert(artefact_id.clone(), payload.to_string());
         Ok(StoredArtefactRef {
             artefact_id,
             content_hash,
-            storage_uri: format!("file://{}", path.display()),
+            storage_uri,
         })
     }
 
@@ -156,17 +152,12 @@ impl ArtefactStore {
             return Ok(row.map(|r| r.0));
         }
 
-        // Fallback: try file-based URI
-        Self::get_payload_file(storage_uri)
+        Ok(None)
     }
 
-    fn get_payload_file(storage_uri: &str) -> Result<Option<String>> {
-        if let Some(path) = storage_uri.strip_prefix("file://") {
-            return match std::fs::read_to_string(path) {
-                Ok(content) => Ok(Some(content)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(crate::error::Error::Store(e.to_string())),
-            };
+    fn get_payload_memory(&self, storage_uri: &str) -> Result<Option<String>> {
+        if let Some(artefact_id) = storage_uri.strip_prefix("db://artefacts/") {
+            return Ok(self.memory.lock().get(artefact_id).cloned());
         }
 
         // Legacy inline payload format: "uri|payload"

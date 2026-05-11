@@ -3,13 +3,9 @@
 use std::{any::Any, collections::HashMap, fmt, sync::Arc};
 
 use async_trait::async_trait;
-use std::path::PathBuf;
 
 use mmat_event_stream::{
-    event::{
-        EscalationSeverity, EventType, RoleId, SemanticEvent, StoredArtefactRef,
-        stable_content_hash,
-    },
+    event::{EscalationSeverity, EventType, RoleId, SemanticEvent, StoredArtefactRef},
     event_bus::{EventBus, EventReceiver},
 };
 use mmat_memory::artefact_store::ArtefactStore;
@@ -388,7 +384,7 @@ impl RoleContext {
 
     /// Stores an artefact payload, returning a [`StoredArtefactRef`].
     ///
-    /// Uses the configured Postgres store, or falls back to file-based storage.
+    /// Requires a configured artefact store.
     pub async fn store_artefact(
         &self,
         artefact_type: &str,
@@ -399,27 +395,15 @@ impl RoleContext {
                 .store(artefact_type, payload)
                 .await
                 .map_err(|e| RoleError::Internal(e.to_string())),
-            None => {
-                let artefact_id = format!("{}-{}", artefact_type, uuid::Uuid::new_v4());
-                let content_hash = stable_content_hash(payload);
-                let directory = PathBuf::from(".mmat").join("artefacts");
-                std::fs::create_dir_all(&directory)
-                    .map_err(|e| RoleError::Internal(e.to_string()))?;
-                let path = directory.join(format!("{artefact_id}.json"));
-                std::fs::write(&path, payload).map_err(|e| RoleError::Internal(e.to_string()))?;
-                Ok(StoredArtefactRef {
-                    artefact_id,
-                    content_hash,
-                    storage_uri: format!("file://{}", path.display()),
-                })
-            }
+            None => Err(RoleError::Internal(
+                "artefact store not configured".to_string(),
+            )),
         }
     }
 
     /// Stores an artefact and publishes the corresponding [`ArtefactProduced`](SemanticEvent::ArtefactProduced) event.
     ///
     /// Postgres-backed stores persist the artefact and event row in one transaction before broadcasting.
-    /// File-backed fallback stores the artefact first, then publishes through the event bus.
     pub async fn store_and_publish_artefact(
         &self,
         artefact_type: &str,
@@ -459,7 +443,7 @@ impl RoleContext {
 
     /// Retrieves an artefact payload by its storage URI.
     ///
-    /// Supports `db://`, `file://`, and legacy inline `type|payload` URIs.
+    /// Supports `db://` and legacy inline `type|payload` URIs.
     pub async fn get_artefact_payload(
         &self,
         storage_uri: &str,
@@ -469,20 +453,9 @@ impl RoleContext {
                 .get_payload(storage_uri)
                 .await
                 .map_err(|e| RoleError::Internal(e.to_string())),
-            None => {
-                // Legacy fallback: file:// URI or inline "uri|payload" format
-                if let Some(path) = storage_uri.strip_prefix("file://") {
-                    match std::fs::read_to_string(path) {
-                        Ok(content) => Ok(Some(content)),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                        Err(e) => Err(RoleError::Internal(e.to_string())),
-                    }
-                } else {
-                    Ok(storage_uri
-                        .split_once('|')
-                        .map(|(_, payload)| payload.to_string()))
-                }
-            }
+            None => Err(RoleError::Internal(
+                "artefact store not configured".to_string(),
+            )),
         }
     }
 }

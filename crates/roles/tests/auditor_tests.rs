@@ -121,7 +121,7 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -192,7 +192,7 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -250,7 +250,7 @@ async fn test_auditor_detects_hallucinated_api_endpoint() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -312,7 +312,7 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
         receiver,
         memory_store: memory_store.clone(),
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -396,7 +396,7 @@ async fn test_auditor_detects_process_skipped_when_tests_not_run() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -451,7 +451,7 @@ async fn test_auditor_does_not_accept_uncited_stale_test_run() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -511,7 +511,7 @@ async fn test_auditor_does_not_flag_valid_claim() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -580,7 +580,7 @@ async fn test_auditor_flags_authority_violation() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -635,7 +635,7 @@ async fn test_auditor_flags_unjustified_confidence() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -694,7 +694,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
         receiver: bus.subscribe(&[EventType::OrganisationStarted]),
         memory_store: memory_store.clone(),
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
 
@@ -781,7 +781,7 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -843,7 +843,7 @@ async fn test_auditor_verifies_scholar_web_sources() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -901,7 +901,7 @@ async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -969,12 +969,13 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
     let mut reports = bus.subscribe(&[EventType::ArtefactProduced]);
     let mut violations = bus.subscribe(&[EventType::PolicyViolationDetected]);
 
+    let artefact_store = Arc::new(ArtefactStore::new());
     let ctx = RoleContext {
         bus: bus.clone(),
         receiver,
         memory_store,
         coordinator,
-        artefact_store: None,
+        artefact_store: Some(Arc::clone(&artefact_store)),
         tools: Box::new(()),
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -1008,11 +1009,11 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
     .unwrap();
     bus.publish(SemanticEvent::new_task_completed(
         EventRoleId("worker-001".to_string()),
-        "task-low-confidence",
-        "contract-low-confidence",
+        "T-003",
+        "C-003",
         ArtefactRef {
-            artefact_type: "implementation_patch".to_string(),
-            reference: "patch".to_string(),
+            artefact_type: "prd".to_string(),
+            reference: "implementation|impl".to_string(),
         },
     ))
     .unwrap();
@@ -1029,8 +1030,7 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
             } = event.as_ref()
             && artefact_type == "audit_report"
         {
-            let store = ArtefactStore::new();
-            let report_json = store
+            let report_json = artefact_store
                 .get_payload(storage_uri)
                 .await
                 .unwrap()

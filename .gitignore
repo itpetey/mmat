@@ -1,3 +1,4 @@
 /target
 **/.mmat/
+**/.mmat-worktree-*/
 .DS_Store

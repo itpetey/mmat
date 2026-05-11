@@ -112,6 +112,11 @@ impl WorktreeHandle {
         &self.worktree_path
     }
 
+    /// Return the repository path used to create this worktree.
+    pub fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+
     /// Return the git branch name associated with this worktree.
     pub fn branch_name(&self) -> &str {
         &self.branch_name

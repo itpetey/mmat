@@ -17,7 +17,7 @@ mod common;
 
 #[tokio::test]
 async fn state_endpoint_returns_json_projection() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let resp = reqwest::get(&format!("{base_url}/api/state"))
@@ -42,7 +42,7 @@ async fn state_endpoint_returns_json_projection() {
 
 #[tokio::test]
 async fn post_message_returns_accepted() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -58,7 +58,7 @@ async fn post_message_returns_accepted() {
 
 #[tokio::test]
 async fn post_empty_message_returns_bad_request() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -74,7 +74,7 @@ async fn post_empty_message_returns_bad_request() {
 
 #[tokio::test]
 async fn post_message_updates_state() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -115,7 +115,7 @@ async fn acknowledge_existing_notification_returns_no_content() {
         "test",
     );
     let events = vec![event];
-    let state = common::test_app_state_with_events(&events);
+    let state = common::test_app_state_with_events(&events).await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -139,7 +139,7 @@ async fn acknowledge_existing_notification_returns_no_content() {
 
 #[tokio::test]
 async fn acknowledge_missing_notification_returns_not_found() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -157,7 +157,7 @@ async fn acknowledge_missing_notification_returns_not_found() {
 
 #[tokio::test]
 async fn sse_returns_initial_state_event() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -189,7 +189,7 @@ async fn sse_returns_initial_state_event() {
 async fn sse_delivers_live_event_after_publish() {
     let bus = EventBus::new(16);
     let store = Arc::new(ArtefactStore::new());
-    let state = AppState::with_events(bus.clone(), &[], store);
+    let state = AppState::with_events(bus.clone(), &[], store).await;
     let base_url = common::spawn_test_server(state).await;
 
     let client = reqwest::Client::new();
@@ -242,7 +242,7 @@ async fn sse_delivers_live_event_after_publish() {
 
 #[tokio::test]
 async fn index_returns_html() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let resp = reqwest::get(&format!("{base_url}/")).await.unwrap();
@@ -268,7 +268,7 @@ async fn index_returns_html() {
 
 #[tokio::test]
 async fn style_css_returns_css() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let resp = reqwest::get(&format!("{base_url}/style.css"))
@@ -293,7 +293,7 @@ async fn style_css_returns_css() {
 
 #[tokio::test]
 async fn app_js_returns_javascript() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
 
     let resp = reqwest::get(&format!("{base_url}/app.js")).await.unwrap();
@@ -420,7 +420,7 @@ async fn replay_restores_full_projection_through_api() {
             "replayed events should include ArtefactProduced",
         );
 
-        let state = AppState::with_events(runtime.bus().clone(), &events, artefact_store);
+        let state = AppState::with_events(runtime.bus().clone(), &events, artefact_store).await;
         let base_url = common::spawn_test_server(state).await;
 
         let resp = reqwest::get(&format!("{base_url}/api/state"))
@@ -468,7 +468,7 @@ async fn replay_restores_full_projection_through_api() {
 
 #[tokio::test]
 async fn smoke_check_all_routes_respond() {
-    let state = common::test_app_state();
+    let state = common::test_app_state().await;
     let base_url = common::spawn_test_server(state).await;
     let client = reqwest::Client::new();
 

@@ -10,7 +10,7 @@ use axum::{
 use futures_util::{Stream, StreamExt, stream};
 use mmat_coordinator::{OrganisationConfig, OrganisationRuntime, Role, RoleRegistry, Scheduler};
 use mmat_event_stream::{
-    event::{RoleId, SemanticEvent, TaskContract},
+    event::{ArtefactStorageKind, RepositoryOutputRef, RoleId, SemanticEvent, TaskContract},
     event_bus::{EventBus, RecvError},
 };
 use mmat_memory::artefact_store::ArtefactStore;
@@ -154,11 +154,14 @@ pub struct MessageView {
 pub struct ArtefactView {
     pub(crate) id: String,
     pub(crate) artefact_type: String,
+    pub(crate) storage_kind: String,
+    pub(crate) storage_uri: String,
     pub(crate) title: String,
     pub(crate) producer_role: String,
     pub(crate) content_hash: String,
     pub(crate) content: serde_json::Value,
     pub(crate) evidence_refs: Vec<String>,
+    pub(crate) repository_output: Option<RepositoryOutputRef>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -230,17 +233,16 @@ pub fn build_app_router(state: AppState) -> Router {
 }
 
 impl AppState {
-    pub fn with_events(
+    pub async fn with_events(
         bus: EventBus,
         events: &[SemanticEvent],
         artefact_store: Arc<ArtefactStore>,
     ) -> Self {
         Self {
             bus,
-            projection: Arc::new(RwLock::new(WorkbenchProjection::from_events(
-                events,
-                &artefact_store,
-            ))),
+            projection: Arc::new(RwLock::new(
+                WorkbenchProjection::from_events(events, &artefact_store).await,
+            )),
             artefact_store,
             scheduler: None,
         }
@@ -291,7 +293,7 @@ fn require_database_url() -> Result<String, WorkbenchError> {
     })
 }
 
-pub fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
+pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
     let database_url = require_database_url()?;
 
     let intent_lead = IntentLead::new();
@@ -353,6 +355,7 @@ pub fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError
         &replayed_events,
         runtime.artefact_store().clone(),
     )
+    .await
     .with_scheduler(runtime.scheduler().clone());
 
     runtime.add_role(intent_lead);
@@ -438,10 +441,10 @@ impl WorkbenchProjection {
         }
     }
 
-    pub fn from_events(events: &[SemanticEvent], artefact_store: &ArtefactStore) -> Self {
+    pub async fn from_events(events: &[SemanticEvent], artefact_store: &ArtefactStore) -> Self {
         let mut projection = Self::new();
         for event in events {
-            projection.apply_event(event, artefact_store);
+            projection.apply_event(event, artefact_store).await;
         }
         projection
     }
@@ -476,7 +479,7 @@ impl WorkbenchProjection {
             .collect()
     }
 
-    fn apply_event(&mut self, event: &SemanticEvent, artefact_store: &ArtefactStore) {
+    async fn apply_event(&mut self, event: &SemanticEvent, artefact_store: &ArtefactStore) {
         self.events.push(EventView::from_event(event));
         if self.events.len() > 200 {
             let overflow = self.events.len().saturating_sub(200);
@@ -772,6 +775,8 @@ impl WorkbenchProjection {
                 storage_uri,
                 producer_role,
                 evidence_refs,
+                storage_kind,
+                repository_output,
                 timestamp_ns,
                 ..
             } => {
@@ -783,14 +788,23 @@ impl WorkbenchProjection {
                     self.artefacts.push(ArtefactView {
                         id: artefact_id.clone(),
                         artefact_type: artefact_type.clone(),
+                        storage_kind: storage_kind_label(storage_kind),
+                        storage_uri: storage_uri.clone(),
                         title: label_for_artefact(artefact_type),
                         producer_role: producer_role.0.clone(),
                         content_hash: content_hash.clone(),
-                        content: load_artefact_content(storage_uri, artefact_store),
+                        content: artefact_content(
+                            storage_kind,
+                            storage_uri,
+                            repository_output,
+                            artefact_store,
+                        )
+                        .await,
                         evidence_refs: evidence_refs
                             .iter()
                             .map(|evidence| evidence.event_id.to_string())
                             .collect(),
+                        repository_output: repository_output.clone(),
                     });
                     self.active_artefact_id = Some(artefact_id.clone());
                 }
@@ -1137,7 +1151,9 @@ pub fn spawn_projection_task(state: AppState) {
             match receiver.recv().await {
                 Ok(event) => {
                     let mut projection = state.projection.write().await;
-                    projection.apply_event(event.as_ref(), &state.artefact_store);
+                    projection
+                        .apply_event(event.as_ref(), &state.artefact_store)
+                        .await;
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     error!("workbench projection lagged by {} events", skipped);
@@ -1413,38 +1429,91 @@ fn extract_constraints(answer: &str) -> Vec<String> {
     }
 }
 
-fn load_artefact_content(storage_uri: &str, artefact_store: &ArtefactStore) -> serde_json::Value {
-    if storage_uri.starts_with("db://") {
-        let handle = tokio::runtime::Handle::try_current();
-        if let Ok(handle) = handle {
-            return tokio::task::block_in_place(|| {
-                match handle.block_on(artefact_store.get_payload(storage_uri)) {
-                    Ok(Some(content)) => serde_json::from_str(&content)
-                        .unwrap_or_else(|_| serde_json::json!({ "content": content })),
-                    Ok(None) => {
-                        serde_json::json!({ "storage_uri": storage_uri, "error": "not found" })
-                    }
-                    Err(err) => serde_json::json!({
-                        "storage_uri": storage_uri,
-                        "error": format!("failed to load artefact: {err}")
-                    }),
-                }
-            });
+async fn artefact_content(
+    storage_kind: &ArtefactStorageKind,
+    storage_uri: &str,
+    repository_output: &Option<RepositoryOutputRef>,
+    artefact_store: &ArtefactStore,
+) -> serde_json::Value {
+    match storage_kind {
+        ArtefactStorageKind::Blob => load_blob_artefact_content(storage_uri, artefact_store).await,
+        ArtefactStorageKind::Code => code_output_content(storage_uri, repository_output.as_ref()),
+    }
+}
+
+async fn load_blob_artefact_content(
+    storage_uri: &str,
+    artefact_store: &ArtefactStore,
+) -> serde_json::Value {
+    if storage_uri.starts_with("db://artefacts/") {
+        match artefact_store.get_payload(storage_uri).await {
+            Ok(Some(content)) => {
+                return serde_json::from_str(&content)
+                    .unwrap_or_else(|_| serde_json::json!({ "content": content }));
+            }
+            Ok(None) => {
+                return serde_json::json!({ "storage_uri": storage_uri, "error": "not found" });
+            }
+            Err(err) => {
+                return serde_json::json!({
+                    "storage_uri": storage_uri,
+                    "error": format!("failed to load artefact: {err}")
+                });
+            }
         }
     }
 
     if let Some(path) = storage_uri.strip_prefix("file://") {
-        return match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content)
-                .unwrap_or_else(|_| serde_json::json!({ "content": content })),
-            Err(err) => serde_json::json!({
-                "storage_uri": storage_uri,
-                "error": format!("failed to read artefact payload: {err}")
-            }),
-        };
+        return serde_json::json!({
+            "storage_uri": storage_uri,
+            "path": path,
+            "error": "file-backed artefact payloads are not loaded by the workbench; use db://artefacts/{id}"
+        });
     }
 
     serde_json::json!({ "storage_uri": storage_uri })
+}
+
+fn code_output_content(
+    storage_uri: &str,
+    repository_output: Option<&RepositoryOutputRef>,
+) -> serde_json::Value {
+    let Some(output) = repository_output else {
+        return serde_json::json!({
+            "storage_uri": storage_uri,
+            "error": "missing repository output metadata"
+        });
+    };
+
+    let missing_paths = output
+        .paths
+        .iter()
+        .filter(|path| {
+            !std::path::Path::new(&output.worktree_path)
+                .join(path)
+                .exists()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "storage_uri": storage_uri,
+        "repository_path": output.repository_path,
+        "worktree_path": output.worktree_path,
+        "worktree_branch": output.worktree_branch,
+        "paths": output.paths,
+        "diff_summary": output.diff_summary,
+        "validation_summary": output.validation_summary,
+        "revision": output.revision,
+        "missing_paths": missing_paths,
+        "error": (!missing_paths.is_empty()).then_some("one or more repository paths are missing"),
+    })
+}
+
+fn storage_kind_label(storage_kind: &ArtefactStorageKind) -> String {
+    match storage_kind {
+        ArtefactStorageKind::Blob => "blob".to_string(),
+        ArtefactStorageKind::Code => "code".to_string(),
+    }
 }
 
 fn infer_audience(answer: &str) -> String {
@@ -1824,7 +1893,7 @@ mod tests {
             ),
         ];
 
-        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store);
+        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store).await;
         projection.active_artefact_id = Some(artefact_id.clone());
 
         let state = AppState {
@@ -1905,7 +1974,7 @@ mod tests {
             ));
         }
 
-        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store);
+        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store).await;
         projection.active_artefact_id = Some(artefact_id);
         assert!(
             !projection
@@ -1991,15 +2060,7 @@ mod tests {
                 },
             ),
         ];
-        let state = AppState {
-            bus: bus.clone(),
-            projection: Arc::new(RwLock::new(WorkbenchProjection::from_events(
-                &events,
-                &artefact_store,
-            ))),
-            artefact_store,
-            scheduler: None,
-        };
+        let state = AppState::with_events(bus.clone(), &events, artefact_store).await;
 
         let mut receiver = bus.subscribe(&[]);
         publish_mentions(
@@ -2050,7 +2111,7 @@ mod tests {
                 Vec::new(),
             ),
         ];
-        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store);
+        let mut projection = WorkbenchProjection::from_events(&events, &artefact_store).await;
         projection.active_artefact_id = Some(artefact_id);
         let state = AppState {
             bus: bus.clone(),
@@ -2078,7 +2139,7 @@ mod tests {
     async fn reviewer_mention_without_artefact_asks_for_context() {
         let bus = EventBus::new(16);
         let artefact_store = Arc::new(ArtefactStore::new());
-        let projection = WorkbenchProjection::from_events(&[], &artefact_store);
+        let projection = WorkbenchProjection::from_events(&[], &artefact_store).await;
 
         let state = AppState {
             bus: bus.clone(),
@@ -2102,14 +2163,15 @@ mod tests {
             "should ask about review context: {summary}"
         );
         let projection =
-            WorkbenchProjection::from_events(&[received.as_ref().clone()], &ArtefactStore::new());
+            WorkbenchProjection::from_events(&[received.as_ref().clone()], &ArtefactStore::new())
+                .await;
         assert_eq!(projection.messages[0].speaker, "Reviewer");
         assert_eq!(projection.roles["reviewer-001"].state, "Waiting");
         assert_ne!(projection.roles["intent-lead-001"].state, "Waiting");
     }
 
-    #[test]
-    fn projection_hydrates_conversation_history_from_events() {
+    #[tokio::test]
+    async fn projection_hydrates_conversation_history_from_events() {
         let events = vec![
             SemanticEvent::new_human_feedback_requested(
                 RoleId::new("intent-lead-001"),
@@ -2120,7 +2182,7 @@ mod tests {
         ];
 
         let store = ArtefactStore::new();
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
 
         assert!(projection.has_conversation_history());
         assert_eq!(projection.messages.len(), 2);
@@ -2128,15 +2190,16 @@ mod tests {
         assert_eq!(projection.messages[1].speaker, "You");
     }
 
-    #[test]
-    fn organisation_events_do_not_count_as_conversation_history() {
+    #[tokio::test]
+    async fn organisation_events_do_not_count_as_conversation_history() {
         let store = ArtefactStore::new();
         let projection = WorkbenchProjection::from_events(
             &[SemanticEvent::new_organisation_started(RoleId::new(
                 "coordinator",
             ))],
             &store,
-        );
+        )
+        .await;
 
         assert!(!projection.has_conversation_history());
     }
@@ -2279,7 +2342,7 @@ mod tests {
             assert_eq!(events[2].variant_name(), "TaskAssigned");
 
             // Verify projection hydrates messages and DAG steps from Postgres events
-            let projection = WorkbenchProjection::from_events(&events, &artefact_store);
+            let projection = WorkbenchProjection::from_events(&events, &artefact_store).await;
 
             assert!(projection.has_conversation_history());
             assert_eq!(projection.messages.len(), 2, "should have 2 chat messages");
@@ -2330,8 +2393,8 @@ mod tests {
         assert_eq!(classify_event_lane(&system_event), Lane::System);
     }
 
-    #[test]
-    fn lane_filter_excludes_unrelated_events() {
+    #[tokio::test]
+    async fn lane_filter_excludes_unrelated_events() {
         let store = Arc::new(ArtefactStore::new());
         let events: Vec<SemanticEvent> = vec![
             SemanticEvent::new_human_feedback_requested(
@@ -2358,7 +2421,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         assert_eq!(projection.events.len(), 4);
 
         // Discovery lane should only contain discovery events
@@ -2386,8 +2449,8 @@ mod tests {
     // 3.3 Action request resolution
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn task_assignment_creates_dag_step() {
+    #[tokio::test]
+    async fn task_assignment_creates_dag_step() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
 
@@ -2402,7 +2465,7 @@ mod tests {
             Vec::new(),
         )];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         assert!(!projection.has_conversation_history());
 
         let worker_step = projection.dag_steps.iter().find(|s| s.id == task_id);
@@ -2414,8 +2477,8 @@ mod tests {
         assert_eq!(worker_step.unwrap().state, "Running");
     }
 
-    #[test]
-    fn review_completed_updates_dag_step() {
+    #[tokio::test]
+    async fn review_completed_updates_dag_step() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
 
@@ -2438,7 +2501,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let review_step = projection
             .dag_steps
             .iter()
@@ -2447,8 +2510,8 @@ mod tests {
         assert_eq!(review_step.unwrap().state, "Accepted");
     }
 
-    #[test]
-    fn rework_review_shows_needs_rework_state() {
+    #[tokio::test]
+    async fn rework_review_shows_needs_rework_state() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
 
@@ -2471,7 +2534,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let review_step = projection
             .dag_steps
             .iter()
@@ -2484,8 +2547,8 @@ mod tests {
     // 3.4 Artefact loading and DAG construction
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn artefact_produced_populates_artefact_list() {
+    #[tokio::test]
+    async fn artefact_produced_populates_artefact_list() {
         let store = Arc::new(ArtefactStore::new());
         let artefact_id = Uuid::new_v4().to_string();
 
@@ -2499,14 +2562,14 @@ mod tests {
             Vec::new(),
         )];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let artefact = projection.artefacts.iter().find(|a| a.id == artefact_id);
         assert!(artefact.is_some(), "should contain the produced artefact");
         assert_eq!(artefact.unwrap().artefact_type, "prd");
     }
 
-    #[test]
-    fn artefact_load_failure_produces_error_state() {
+    #[tokio::test]
+    async fn artefact_load_failure_produces_error_state() {
         let store = Arc::new(ArtefactStore::new());
         let artefact_id = Uuid::new_v4().to_string();
 
@@ -2520,7 +2583,7 @@ mod tests {
             Vec::new(),
         )];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let artefact = projection.artefacts.iter().find(|a| a.id == artefact_id);
         assert!(artefact.is_some(), "artefact should be in the projection");
 
@@ -2531,8 +2594,109 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dag_steps_constructed_from_multiple_events() {
+    #[tokio::test]
+    async fn postgres_blob_artefact_projection_loads_payload() {
+        let base_url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                println!(
+                    "[SKIP] postgres_blob_artefact_projection_loads_payload requires DATABASE_URL"
+                );
+                return;
+            }
+        };
+        let schema = format!("workbench_blob_{}", Uuid::new_v4().simple());
+        let admin_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&base_url)
+            .await
+            .unwrap();
+        sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+
+        let store = Arc::new(ArtefactStore::new_postgres(&database_url).unwrap());
+        let stored = store
+            .store("adr", r#"{"title":"Keep blobs in Postgres"}"#)
+            .await
+            .unwrap();
+        let events = vec![SemanticEvent::new_artefact_produced_ref(
+            RoleId::new("architect-001"),
+            stored.artefact_id.clone(),
+            "adr",
+            stored.content_hash.clone(),
+            stored.storage_uri.clone(),
+            RoleId::new("architect-001"),
+            Vec::new(),
+        )];
+
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let artefact = projection
+            .artefacts
+            .iter()
+            .find(|a| a.id == stored.artefact_id)
+            .expect("stored blob artefact should be projected");
+        assert_eq!(artefact.storage_kind, "blob");
+        assert_eq!(artefact.content["title"], "Keep blobs in Postgres");
+
+        sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn code_output_projection_includes_repository_metadata() {
+        let store = Arc::new(ArtefactStore::new());
+        let temp = tempfile::tempdir().unwrap();
+        let worktree_path = temp.path().join("worktree");
+        std::fs::create_dir_all(worktree_path.join("src")).unwrap();
+        std::fs::write(worktree_path.join("src/lib.rs"), "pub fn changed() {}\n").unwrap();
+        let output = RepositoryOutputRef {
+            repository_path: temp.path().display().to_string(),
+            worktree_path: worktree_path.display().to_string(),
+            worktree_branch: "task-123".to_string(),
+            paths: vec!["src/lib.rs".to_string()],
+            diff_summary: "1 file changed: src/lib.rs".to_string(),
+            validation_summary: Some("validation passed".to_string()),
+            revision: Some("working-tree".to_string()),
+        };
+        let event = SemanticEvent::new_code_output_ref(
+            RoleId::new("worker-001"),
+            "implementation_patch",
+            mmat_event_stream::event::StoredArtefactRef {
+                artefact_id: "code-1".to_string(),
+                content_hash: "hash123".to_string(),
+                storage_uri: "repo://worktrees/task-123/code-1".to_string(),
+            },
+            RoleId::new("worker-001"),
+            vec![mmat_event_stream::event::EvidenceRef {
+                event_id: mmat_event_stream::event::EventId::new(),
+                description: "validation".to_string(),
+            }],
+            output,
+        );
+
+        let projection = WorkbenchProjection::from_events(&[event], &store).await;
+        let artefact = projection.artefacts.first().expect("code artefact");
+        assert_eq!(artefact.storage_kind, "code");
+        assert_eq!(artefact.storage_uri, "repo://worktrees/task-123/code-1");
+        assert_eq!(
+            artefact.repository_output.as_ref().unwrap().paths,
+            ["src/lib.rs"]
+        );
+        assert_eq!(
+            artefact.content["missing_paths"].as_array().unwrap().len(),
+            0
+        );
+        assert_eq!(artefact.evidence_refs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dag_steps_constructed_from_multiple_events() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
         let artefact_id = Uuid::new_v4().to_string();
@@ -2571,7 +2735,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
 
         assert_eq!(projection.messages.len(), 2, "should have 2 messages");
         assert!(!projection.artefacts.is_empty(), "should have artefacts");
@@ -2591,8 +2755,8 @@ mod tests {
     // 2.3 Librarian-visible memory lifecycle events
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn memory_proposed_creates_memory_view() {
+    #[tokio::test]
+    async fn memory_proposed_creates_memory_view() {
         let store = Arc::new(ArtefactStore::new());
         let events = vec![SemanticEvent::new_memory_proposed(
             RoleId::new("scholar-001"),
@@ -2604,15 +2768,15 @@ mod tests {
             0.85,
         )];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         assert_eq!(projection.memories.len(), 1);
         assert_eq!(projection.memories[0].status, "Proposed");
         assert_eq!(projection.memories[0].memory_type, "pattern");
         assert!(projection.memories[0].content.contains("dark mode"));
     }
 
-    #[test]
-    fn memory_accepted_updates_status_and_authority() {
+    #[tokio::test]
+    async fn memory_accepted_updates_status_and_authority() {
         let store = Arc::new(ArtefactStore::new());
         let proposal_event = SemanticEvent::new_memory_proposed(
             RoleId::new("scholar-001"),
@@ -2636,7 +2800,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         assert_eq!(projection.memories.len(), 1);
         assert_eq!(projection.memories[0].status, "Accepted");
         assert_eq!(projection.memories[0].id, memory_uuid.to_string());
@@ -2650,8 +2814,8 @@ mod tests {
         assert_eq!(librarian_step.event_ids.len(), 2);
     }
 
-    #[test]
-    fn memory_rejected_shows_gate_and_reason() {
+    #[tokio::test]
+    async fn memory_rejected_shows_gate_and_reason() {
         let store = Arc::new(ArtefactStore::new());
         let events = vec![SemanticEvent::new_memory_rejected(
             RoleId::new("librarian"),
@@ -2661,7 +2825,7 @@ mod tests {
             "content too short and lacks substance",
         )];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         assert_eq!(projection.memories.len(), 1);
         assert!(projection.memories[0].status.contains("Rejected"));
         assert!(projection.memories[0].status.contains("durability"));
@@ -2674,8 +2838,8 @@ mod tests {
         assert!(librarian_step.summary.contains("durability"));
     }
 
-    #[test]
-    fn memory_superseded_marks_old_memory() {
+    #[tokio::test]
+    async fn memory_superseded_marks_old_memory() {
         let store = Arc::new(ArtefactStore::new());
         let proposal_event = SemanticEvent::new_memory_proposed(
             RoleId::new("scholar-001"),
@@ -2706,7 +2870,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let old_memory = projection
             .memories
             .iter()
@@ -2719,8 +2883,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn memory_accepted_sets_librarian_role() {
+    #[tokio::test]
+    async fn memory_accepted_sets_librarian_role() {
         let store = Arc::new(ArtefactStore::new());
         let proposal_event = SemanticEvent::new_memory_proposed(
             RoleId::new("scholar-001"),
@@ -2744,7 +2908,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let librarian = projection.roles.get("librarian");
         assert!(librarian.is_some(), "librarian role should exist");
         assert_eq!(librarian.unwrap().state, "Completed");
@@ -2755,8 +2919,8 @@ mod tests {
     //     EscalationRequested
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn task_started_updates_dag_step_state() {
+    #[tokio::test]
+    async fn task_started_updates_dag_step_state() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
 
@@ -2778,14 +2942,14 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let step = projection.dag_steps.iter().find(|s| s.id == task_id);
         assert!(step.is_some(), "task step should exist");
         assert_eq!(step.unwrap().state, "Running");
     }
 
-    #[test]
-    fn task_failed_marks_dag_step_as_failed() {
+    #[tokio::test]
+    async fn task_failed_marks_dag_step_as_failed() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
 
@@ -2807,15 +2971,15 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let step = projection.dag_steps.iter().find(|s| s.id == task_id);
         assert!(step.is_some(), "task step should exist");
         assert_eq!(step.unwrap().state, "Failed");
         assert!(step.unwrap().summary.contains("dependency"));
     }
 
-    #[test]
-    fn review_requested_creates_pending_review_step() {
+    #[tokio::test]
+    async fn review_requested_creates_pending_review_step() {
         let store = Arc::new(ArtefactStore::new());
         let task_id = Uuid::new_v4().to_string();
 
@@ -2837,7 +3001,7 @@ mod tests {
             ),
         ];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let review_step = projection
             .dag_steps
             .iter()
@@ -2847,8 +3011,8 @@ mod tests {
         assert_eq!(review_step.unwrap().role, "reviewer-001");
     }
 
-    #[test]
-    fn escalation_requested_creates_escalation_step() {
+    #[tokio::test]
+    async fn escalation_requested_creates_escalation_step() {
         let store = Arc::new(ArtefactStore::new());
 
         let events = vec![SemanticEvent::new_escalation_requested(
@@ -2859,7 +3023,7 @@ mod tests {
             mmat_event_stream::event::EscalationSeverity::Medium,
         )];
 
-        let projection = WorkbenchProjection::from_events(&events, &store);
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
         let esc_step = projection
             .dag_steps
             .iter()
@@ -2999,7 +3163,7 @@ mod tests {
                 "should include ArtefactProduced in replay"
             );
 
-            let projection = WorkbenchProjection::from_events(&events, &artefact_store);
+            let projection = WorkbenchProjection::from_events(&events, &artefact_store).await;
 
             assert!(projection.has_conversation_history());
             assert_eq!(projection.messages.len(), 2, "should have 2 chat messages");
@@ -3033,7 +3197,7 @@ mod tests {
     async fn scholar_mention_publishes_task_assigned_with_research_description() {
         let bus = EventBus::new(16);
         let store = Arc::new(ArtefactStore::new());
-        let state = AppState::with_events(bus.clone(), &[], store);
+        let state = AppState::with_events(bus.clone(), &[], store).await;
 
         let mut receiver = bus.subscribe(&[]);
         publish_mentions(
@@ -3069,7 +3233,7 @@ mod tests {
     async fn inline_research_action_publishes_scholar_task() {
         let bus = EventBus::new(16);
         let store = Arc::new(ArtefactStore::new());
-        let state = AppState::with_events(bus.clone(), &[], store);
+        let state = AppState::with_events(bus.clone(), &[], store).await;
 
         let mut receiver = bus.subscribe(&[]);
         publish_mentions(&state, "/research compare options", empty_review_context()).await;
@@ -3090,7 +3254,7 @@ mod tests {
     async fn multiple_mentions_publish_multiple_task_assigned_events() {
         let bus = EventBus::new(16);
         let store = Arc::new(ArtefactStore::new());
-        let state = AppState::with_events(bus.clone(), &[], store);
+        let state = AppState::with_events(bus.clone(), &[], store).await;
 
         let mut receiver = bus.subscribe(&[]);
         publish_mentions(

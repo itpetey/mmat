@@ -86,6 +86,36 @@ pub struct ArtefactRef {
     pub reference: String,
 }
 
+/// Where a produced artefact is materialised.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtefactStorageKind {
+    /// Payload is stored in the artefact blob store.
+    #[default]
+    Blob,
+    /// Output is materialised in a project repository or worktree.
+    Code,
+}
+
+/// Repository/worktree metadata for generated code outputs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryOutputRef {
+    /// Path to the project repository root used to create the worktree.
+    pub repository_path: String,
+    /// Path to the worktree where generated code was written.
+    pub worktree_path: String,
+    /// Branch associated with the worktree.
+    pub worktree_branch: String,
+    /// Repository-relative paths changed by the implementation.
+    pub paths: Vec<String>,
+    /// Human-readable summary of the generated diff or patch.
+    pub diff_summary: String,
+    /// Summary of validation checks, when available.
+    pub validation_summary: Option<String>,
+    /// Repository revision, commit, or tree state when available.
+    pub revision: Option<String>,
+}
+
 /// Reference to an artefact blob stored outside the event stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredArtefactRef {
@@ -359,6 +389,10 @@ pub enum SemanticEvent {
         storage_uri: String,
         producer_role: RoleId,
         evidence_refs: Vec<EvidenceRef>,
+        #[serde(default)]
+        storage_kind: ArtefactStorageKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository_output: Option<RepositoryOutputRef>,
     },
     BudgetWarning {
         event_id: EventId,
@@ -918,6 +952,8 @@ impl SemanticEvent {
             storage_uri,
             producer_role,
             evidence_refs: Vec::new(),
+            storage_kind: ArtefactStorageKind::Blob,
+            repository_output: None,
         }
     }
 
@@ -943,6 +979,34 @@ impl SemanticEvent {
             storage_uri: storage_uri.into(),
             producer_role,
             evidence_refs,
+            storage_kind: ArtefactStorageKind::Blob,
+            repository_output: None,
+        }
+    }
+
+    /// Constructs an [`ArtefactProduced`](SemanticEvent::ArtefactProduced) event
+    /// for code materialised in a repository or worktree.
+    pub fn new_code_output_ref(
+        source_agent: RoleId,
+        artefact_type: impl Into<String>,
+        stored: StoredArtefactRef,
+        producer_role: RoleId,
+        evidence_refs: Vec<EvidenceRef>,
+        repository_output: RepositoryOutputRef,
+    ) -> Self {
+        Self::ArtefactProduced {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            artefact_id: stored.artefact_id,
+            artefact_type: artefact_type.into(),
+            content_hash: stored.content_hash,
+            storage_uri: stored.storage_uri,
+            producer_role,
+            evidence_refs,
+            storage_kind: ArtefactStorageKind::Code,
+            repository_output: Some(repository_output),
         }
     }
 
