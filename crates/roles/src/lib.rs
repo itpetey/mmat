@@ -17,4 +17,5 @@ pub mod project_manager;
 pub mod reviewer;
 pub mod scholar;
 pub mod tooling;
+pub mod tools;
 pub mod worker;

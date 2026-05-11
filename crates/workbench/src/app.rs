@@ -2,7 +2,7 @@ use std::{cmp::Reverse, collections::BTreeMap, convert::Infallible, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Sse, sse::Event},
     routing::{get, post},
@@ -63,11 +63,14 @@ pub struct WorkbenchProjection {
     pub(crate) artefacts: Vec<ArtefactView>,
     pub(crate) memories: Vec<MemoryView>,
     pub(crate) notifications: Vec<NotificationView>,
+    pub(crate) action_requests: Vec<ActionRequestView>,
     pub(crate) dag_steps: Vec<DagStepView>,
+    pub(crate) lanes: Vec<LaneView>,
     pub(crate) completed_task_ids: Vec<String>,
     pub(crate) pending_question: Option<String>,
     pub(crate) active_artefact_id: Option<String>,
     pub(crate) active_step_id: Option<String>,
+    pub(crate) active_lane_ids: Vec<String>,
     pub(crate) has_conversation: bool,
 }
 
@@ -108,6 +111,7 @@ pub struct EventView {
     pub(crate) detail: serde_json::Value,
 }
 
+/// Classification of semantic events into activity lanes (system-level grouping).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Lane {
     Conversation,
@@ -144,14 +148,103 @@ pub fn classify_event_lane(event: &SemanticEvent) -> Lane {
         | SemanticEvent::PolicyViolationDetected { .. }
         | SemanticEvent::EvidenceChainBroken { .. }
         | SemanticEvent::ProcessSkipped { .. } => Lane::System,
+        SemanticEvent::LaneCreated { .. }
+        | SemanticEvent::LaneArchived { .. }
+        | SemanticEvent::LanePaused { .. } => Lane::Conversation,
+        SemanticEvent::ActionRequestCreated { .. }
+        | SemanticEvent::ActionRequestResolved { .. }
+        | SemanticEvent::ActionRequestCancelled { .. } => Lane::Conversation,
+    }
+}
+
+/// Kind of a user-created conversation lane (scopes attention, not memory).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaneKind {
+    Conversation,
+    Discovery,
+    Delivery,
+    System,
+}
+
+impl LaneKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LaneKind::Conversation => "conversation",
+            LaneKind::Discovery => "discovery",
+            LaneKind::Delivery => "delivery",
+            LaneKind::System => "system",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "discovery" => LaneKind::Discovery,
+            "delivery" => LaneKind::Delivery,
+            "system" => LaneKind::System,
+            _ => LaneKind::Conversation,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaneStatus {
+    Active,
+    Archived,
+    Paused,
+}
+
+impl LaneStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LaneStatus::Active => "Active",
+            LaneStatus::Archived => "Archived",
+            LaneStatus::Paused => "Paused",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionRequestStatus {
+    Pending,
+    Resolved,
+    Cancelled,
+}
+
+impl ActionRequestStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ActionRequestStatus::Pending => "Pending",
+            ActionRequestStatus::Resolved => "Resolved",
+            ActionRequestStatus::Cancelled => "Cancelled",
+        }
     }
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct LaneView {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) kind: LaneKind,
+    pub(crate) colour: String,
+    pub(crate) purpose: String,
+    pub(crate) status: LaneStatus,
+    pub(crate) creator: String,
+    pub(crate) parent_lane_id: Option<String>,
+    pub(crate) related_lane_ids: Vec<String>,
+    pub(crate) source_message_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct MessageView {
+    pub(crate) message_id: String,
     pub(crate) speaker: String,
     pub(crate) content: String,
     pub(crate) timestamp_ns: u64,
+    pub(crate) primary_lane_id: Option<String>,
+    pub(crate) related_lane_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -189,6 +282,21 @@ pub struct NotificationView {
     pub(crate) target: String,
     pub(crate) acknowledged: bool,
     pub(crate) timestamp_ns: u64,
+    pub(crate) message_id: Option<String>,
+    pub(crate) lane_id: Option<String>,
+    pub(crate) dag_node_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ActionRequestView {
+    pub(crate) id: String,
+    pub(crate) request_kind: String,
+    pub(crate) prompt: String,
+    pub(crate) choices: Vec<String>,
+    pub(crate) status: ActionRequestStatus,
+    pub(crate) source_agent: String,
+    pub(crate) lane_id: Option<String>,
+    pub(crate) timestamp_ns: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -208,6 +316,10 @@ struct MessageRequest {
     message: String,
     active_step_id: Option<String>,
     active_artefact_id: Option<String>,
+    #[serde(default)]
+    active_lane_ids: Vec<String>,
+    #[serde(default)]
+    action_request_id: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -231,7 +343,8 @@ pub fn build_app_router(state: AppState) -> Router {
         .route("/app.js", get(app_js))
         .route("/events", get(events))
         .route("/api/state", get(snapshot))
-        .route("/api/messages", post(post_message))
+        .route("/api/messages", get(get_messages).post(post_message))
+        .route("/api/lanes", get(get_lanes))
         .route("/api/notifications/{id}/ack", post(ack_notification))
         .with_state(state)
 }
@@ -301,12 +414,12 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
     let database_url = require_database_url()?;
 
     let intent_lead = IntentLead::new();
-    let scholar = Scholar::new();
-    let ops_manager = OpsManager::new();
-    let architect = Architect::new();
-    let project_manager = ProjectManager::new();
-    let worker = Worker::new().with_fallback_worktree(true);
-    let reviewer = Reviewer::new();
+    let mut scholar = Scholar::new();
+    let mut ops_manager = OpsManager::new();
+    let mut architect = Architect::new();
+    let mut project_manager = ProjectManager::new();
+    let mut worker = Worker::new().with_fallback_worktree(true);
+    let mut reviewer = Reviewer::new();
     let auditor = Auditor::new();
 
     let mut readiness: Vec<(String, RoleReadiness)> = vec![
@@ -398,6 +511,27 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
         .await
         .set_role_readiness(&readiness);
 
+    let tool_bus = runtime.bus().clone();
+    scholar.set_tool_bus(tool_bus.clone());
+    ops_manager.set_tool_bus(tool_bus.clone());
+    architect.set_tool_bus(tool_bus.clone());
+    project_manager.set_tool_bus(tool_bus.clone());
+    worker.set_tool_bus(tool_bus.clone());
+    reviewer.set_tool_bus(tool_bus.clone());
+
+    let create_lane = Box::new(mmat_roles::tools::CreateLaneTool);
+    let _ = scholar.register_tool(create_lane);
+    let create_lane = Box::new(mmat_roles::tools::CreateLaneTool);
+    let _ = ops_manager.register_tool(create_lane);
+    let create_lane = Box::new(mmat_roles::tools::CreateLaneTool);
+    let _ = architect.register_tool(create_lane);
+    let create_lane = Box::new(mmat_roles::tools::CreateLaneTool);
+    let _ = project_manager.register_tool(create_lane);
+    let create_lane = Box::new(mmat_roles::tools::CreateLaneTool);
+    let _ = worker.register_tool(create_lane);
+    let create_lane = Box::new(mmat_roles::tools::CreateLaneTool);
+    let _ = reviewer.register_tool(create_lane);
+
     runtime.add_role(intent_lead);
     runtime.add_role(scholar);
     runtime.add_role(ops_manager);
@@ -464,6 +598,7 @@ impl WorkbenchProjection {
             artefacts: Vec::new(),
             memories: Vec::new(),
             notifications: Vec::new(),
+            action_requests: Vec::new(),
             dag_steps: vec![DagStepView {
                 id: "intent".to_string(),
                 label: "Understand intent".to_string(),
@@ -474,10 +609,12 @@ impl WorkbenchProjection {
                 artefact_ids: Vec::new(),
                 event_ids: Vec::new(),
             }],
+            lanes: Vec::new(),
             completed_task_ids: Vec::new(),
             pending_question: None,
             active_artefact_id: None,
             active_step_id: Some("intent".to_string()),
+            active_lane_ids: Vec::new(),
             has_conversation: false,
         }
     }
@@ -532,6 +669,52 @@ impl WorkbenchProjection {
             .collect()
     }
 
+    pub(crate) fn messages_for_lane_ids(&self, lane_ids: &[String]) -> Vec<&MessageView> {
+        if lane_ids.is_empty() {
+            return self.messages.iter().collect();
+        }
+        self.messages
+            .iter()
+            .filter(|msg| {
+                let has_lane = msg
+                    .primary_lane_id
+                    .as_deref()
+                    .is_some_and(|id| lane_ids.iter().any(|lid| lid == id))
+                    || msg
+                        .related_lane_ids
+                        .iter()
+                        .any(|id| lane_ids.iter().any(|lid| lid == id));
+                let is_untagged_system = msg.primary_lane_id.is_none()
+                    && msg.related_lane_ids.is_empty()
+                    && (msg.speaker.starts_with("System") || msg.speaker == "Librarian");
+                has_lane || (!is_untagged_system && msg.primary_lane_id.is_none())
+            })
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn notifications_for_lane_ids(&self, lane_ids: &[String]) -> Vec<&NotificationView> {
+        if lane_ids.is_empty() {
+            return self.notifications.iter().collect();
+        }
+        self.notifications
+            .iter()
+            .filter(|n| {
+                n.lane_id
+                    .as_deref()
+                    .is_some_and(|id| lane_ids.iter().any(|lid| lid == id))
+            })
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    fn active_lanes(&self) -> Vec<&LaneView> {
+        self.lanes
+            .iter()
+            .filter(|l| l.status == LaneStatus::Active)
+            .collect()
+    }
+
     async fn apply_event(&mut self, event: &SemanticEvent, artefact_store: &ArtefactStore) {
         self.events.push(EventView::from_event(event));
         if self.events.len() > 200 {
@@ -549,17 +732,44 @@ impl WorkbenchProjection {
             } => {
                 let speaker = label_for_role(&source_agent.0);
                 self.has_conversation = true;
-                self.pending_question = Some(question.clone());
-                self.messages.push(MessageView {
-                    speaker: speaker.clone(),
-                    content: question.clone(),
-                    timestamp_ns: *timestamp_ns,
-                });
-                self.set_role(
-                    &source_agent.0,
-                    "Waiting",
-                    format!("{speaker} is waiting for human input"),
-                );
+                let is_me_question = contains_mention(&question.to_lowercase(), "@me");
+
+                if is_me_question {
+                    let action_request_id = Uuid::new_v4().to_string();
+                    self.action_requests.push(ActionRequestView {
+                        id: action_request_id.clone(),
+                        request_kind: "clarification".to_string(),
+                        prompt: question.clone(),
+                        choices: Vec::new(),
+                        status: ActionRequestStatus::Pending,
+                        source_agent: source_agent.0.clone(),
+                        lane_id: self.active_lane_ids.first().cloned(),
+                        timestamp_ns: *timestamp_ns,
+                    });
+                    self.messages.push(MessageView {
+                        message_id: event_id.to_string(),
+                        speaker: speaker.clone(),
+                        content: format!("[Action: clarification] {question}"),
+                        timestamp_ns: *timestamp_ns,
+                        primary_lane_id: self.active_lane_ids.first().cloned(),
+                        related_lane_ids: Vec::new(),
+                    });
+                } else {
+                    self.pending_question = Some(question.clone());
+                    self.messages.push(MessageView {
+                        message_id: event_id.to_string(),
+                        speaker: speaker.clone(),
+                        content: question.clone(),
+                        timestamp_ns: *timestamp_ns,
+                        primary_lane_id: self.active_lane_ids.first().cloned(),
+                        related_lane_ids: Vec::new(),
+                    });
+                    self.set_role(
+                        &source_agent.0,
+                        "Waiting",
+                        format!("{speaker} is waiting for human input"),
+                    );
+                }
                 let step_id = if source_agent.0 == "intent-lead-001" {
                     "intent"
                 } else {
@@ -568,12 +778,20 @@ impl WorkbenchProjection {
                 self.add_step_event(step_id, event_id.to_string());
                 self.add_notification(NotificationView {
                     id: event_id.to_string(),
-                    kind: "Question".to_string(),
+                    kind: if is_me_question {
+                        "ActionRequest"
+                    } else {
+                        "Question"
+                    }
+                    .to_string(),
                     title: format!("{speaker} question"),
                     summary: question.clone(),
                     target: "chat".to_string(),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: Some(event_id.to_string()),
+                    lane_id: self.active_lane_ids.first().cloned(),
+                    dag_node_id: None,
                 });
             }
             SemanticEvent::HumanFeedbackReceived {
@@ -584,11 +802,15 @@ impl WorkbenchProjection {
             } => {
                 self.has_conversation = true;
                 self.acknowledge_kind("Question");
+                self.acknowledge_kind("ActionRequest");
                 self.pending_question = None;
                 self.messages.push(MessageView {
+                    message_id: event_id.to_string(),
                     speaker: "You".to_string(),
                     content: answer.clone(),
                     timestamp_ns: *timestamp_ns,
+                    primary_lane_id: self.active_lane_ids.first().cloned(),
+                    related_lane_ids: Vec::new(),
                 });
                 self.set_role("intent-lead-001", "Running", "Updating the intent model");
                 self.update_understanding_from_human(answer);
@@ -660,6 +882,9 @@ impl WorkbenchProjection {
                     target: "memories".to_string(),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: None,
                 });
             }
             SemanticEvent::MemoryRejected {
@@ -701,6 +926,9 @@ impl WorkbenchProjection {
                     target: "memories".to_string(),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: None,
                 });
             }
             SemanticEvent::MemorySuperseded {
@@ -737,6 +965,9 @@ impl WorkbenchProjection {
                     target: "memories".to_string(),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: None,
                 });
             }
             SemanticEvent::TaskAssigned {
@@ -768,15 +999,19 @@ impl WorkbenchProjection {
                     let from_label = label_for_role(&source_agent.0);
                     let to_label = label_for_role(&worker_id.0);
                     self.messages.push(MessageView {
+                        message_id: Uuid::new_v4().to_string(),
                         speaker: format!("System ({from_label})"),
                         content: format!("Dispatched {to_label}: {}", contract_ref.description,),
                         timestamp_ns: *timestamp_ns,
+                        primary_lane_id: None,
+                        related_lane_ids: Vec::new(),
                     });
                 }
                 if let Some(role) = self.roles.get(&worker_id.0)
                     && role.readiness.capability != CapabilityStatus::Configured
                 {
                     self.messages.push(MessageView {
+                        message_id: Uuid::new_v4().to_string(),
                         speaker: "System (Capability)".to_string(),
                         content: format!(
                             "{} running in {} mode: {}",
@@ -785,6 +1020,8 @@ impl WorkbenchProjection {
                             role.readiness.summary,
                         ),
                         timestamp_ns: *timestamp_ns,
+                        primary_lane_id: None,
+                        related_lane_ids: Vec::new(),
                     });
                 }
             }
@@ -832,6 +1069,9 @@ impl WorkbenchProjection {
                     target: format!("step:review-{task_id}"),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: Some(format!("review-{task_id}")),
                 });
             }
             SemanticEvent::ArtefactProduced {
@@ -889,11 +1129,15 @@ impl WorkbenchProjection {
                     target: format!("artefact:{artefact_id}"),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: None,
                 });
                 if let Some(role) = self.roles.get(&producer_role.0)
                     && role.readiness.capability != CapabilityStatus::Configured
                 {
                     self.messages.push(MessageView {
+                        message_id: Uuid::new_v4().to_string(),
                         speaker: "System (Capability)".to_string(),
                         content: format!(
                             "{} produced {} in {} mode (output may be deterministic fallback)",
@@ -902,6 +1146,8 @@ impl WorkbenchProjection {
                             role.readiness.capability,
                         ),
                         timestamp_ns: *timestamp_ns,
+                        primary_lane_id: None,
+                        related_lane_ids: Vec::new(),
                     });
                 }
             }
@@ -947,12 +1193,15 @@ impl WorkbenchProjection {
                     && role.readiness.capability != CapabilityStatus::Configured
                 {
                     self.messages.push(MessageView {
+                        message_id: Uuid::new_v4().to_string(),
                         speaker: "System (Capability)".to_string(),
                         content: format!(
                             "{} completed task in {} mode (output may be deterministic fallback)",
                             role.label, role.readiness.capability,
                         ),
                         timestamp_ns: *timestamp_ns,
+                        primary_lane_id: None,
+                        related_lane_ids: Vec::new(),
                     });
                 }
             }
@@ -972,6 +1221,9 @@ impl WorkbenchProjection {
                     target: format!("contract:{contract_id}"),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: None,
                 });
             }
             SemanticEvent::TaskFailed {
@@ -999,6 +1251,9 @@ impl WorkbenchProjection {
                     target: format!("step:{task_id}"),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: Some(task_id.clone()),
                 });
             }
             SemanticEvent::ReviewRequested {
@@ -1046,6 +1301,9 @@ impl WorkbenchProjection {
                     target: format!("role:{}", to_role),
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
+                    message_id: None,
+                    lane_id: None,
+                    dag_node_id: None,
                 });
             }
             SemanticEvent::ClaimMade {
@@ -1057,14 +1315,180 @@ impl WorkbenchProjection {
                     && role.readiness.capability != CapabilityStatus::Configured
                 {
                     self.messages.push(MessageView {
+                        message_id: Uuid::new_v4().to_string(),
                         speaker: "System (Capability)".to_string(),
                         content: format!(
                             "{} made a claim in {} mode (output may be deterministic fallback)",
                             role.label, role.readiness.capability,
                         ),
                         timestamp_ns: *timestamp_ns,
+                        primary_lane_id: None,
+                        related_lane_ids: Vec::new(),
                     });
                 }
+            }
+            SemanticEvent::LaneCreated {
+                lane_id,
+                name,
+                kind,
+                colour,
+                purpose,
+                source_agent,
+                parent_lane_id,
+                related_lane_ids,
+                source_message_id,
+                timestamp_ns,
+                ..
+            } => {
+                self.lanes.push(LaneView {
+                    id: lane_id.clone(),
+                    name: name.clone(),
+                    kind: LaneKind::parse(kind),
+                    colour: colour.clone(),
+                    purpose: purpose.clone(),
+                    status: LaneStatus::Active,
+                    creator: source_agent.0.clone(),
+                    parent_lane_id: parent_lane_id.clone(),
+                    related_lane_ids: related_lane_ids.clone(),
+                    source_message_id: source_message_id.clone(),
+                });
+                if let Some(src_msg_id) = source_message_id
+                    && let Some(src_msg) = self
+                        .messages
+                        .iter_mut()
+                        .find(|m| m.message_id == *src_msg_id)
+                    && !src_msg.related_lane_ids.contains(lane_id)
+                {
+                    src_msg.related_lane_ids.push(lane_id.clone());
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: label_for_role(&source_agent.0),
+                    content: format!("Created lane \"{name}\": {purpose}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: Some(lane_id.clone()),
+                    related_lane_ids: related_lane_ids.clone(),
+                });
+            }
+            SemanticEvent::LaneArchived {
+                lane_id,
+                timestamp_ns,
+                ..
+            } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.id == *lane_id) {
+                    lane.status = LaneStatus::Archived;
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Lane archived: {lane_id}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
+            }
+            SemanticEvent::LanePaused {
+                lane_id,
+                timestamp_ns,
+                ..
+            } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.id == *lane_id) {
+                    lane.status = LaneStatus::Paused;
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Lane paused: {lane_id}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
+            }
+            SemanticEvent::ActionRequestCreated {
+                event_id,
+                source_agent,
+                request_id,
+                request_kind,
+                prompt,
+                choices,
+                lane_id,
+                timestamp_ns,
+                ..
+            } => {
+                self.action_requests.push(ActionRequestView {
+                    id: request_id.clone(),
+                    request_kind: request_kind.clone(),
+                    prompt: prompt.clone(),
+                    choices: choices.clone(),
+                    status: ActionRequestStatus::Pending,
+                    source_agent: source_agent.0.clone(),
+                    lane_id: lane_id.clone(),
+                    timestamp_ns: *timestamp_ns,
+                });
+                self.messages.push(MessageView {
+                    message_id: event_id.to_string(),
+                    speaker: label_for_role(&source_agent.0),
+                    content: format!("[Action: {request_kind}] {prompt}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: lane_id.clone(),
+                    related_lane_ids: Vec::new(),
+                });
+                self.add_notification(NotificationView {
+                    id: event_id.to_string(),
+                    kind: "ActionRequest".to_string(),
+                    title: format!("{}: {request_kind}", label_for_role(&source_agent.0)),
+                    summary: prompt.clone(),
+                    target: "chat".to_string(),
+                    acknowledged: false,
+                    timestamp_ns: *timestamp_ns,
+                    message_id: Some(event_id.to_string()),
+                    lane_id: lane_id.clone(),
+                    dag_node_id: None,
+                });
+            }
+            SemanticEvent::ActionRequestResolved {
+                request_id,
+                choice,
+                timestamp_ns,
+                ..
+            } => {
+                if let Some(req) = self
+                    .action_requests
+                    .iter_mut()
+                    .find(|r| r.id == *request_id)
+                {
+                    req.status = ActionRequestStatus::Resolved;
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "You".to_string(),
+                    content: choice.clone(),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: self.active_lane_ids.first().cloned(),
+                    related_lane_ids: Vec::new(),
+                });
+            }
+            SemanticEvent::ActionRequestCancelled {
+                request_id,
+                reason,
+                timestamp_ns,
+                ..
+            } => {
+                if let Some(req) = self
+                    .action_requests
+                    .iter_mut()
+                    .find(|r| r.id == *request_id)
+                {
+                    req.status = ActionRequestStatus::Cancelled;
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Action request cancelled: {reason}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
             }
             _ => {}
         }
@@ -1342,6 +1766,59 @@ async fn post_message(
         return (StatusCode::BAD_REQUEST, "message must not be empty").into_response();
     }
 
+    {
+        let mut projection = state.projection.write().await;
+        projection.active_lane_ids = request.active_lane_ids.clone();
+    }
+
+    if let Some(action_request_id) = request.action_request_id
+        && let Some(label) = message
+            .strip_prefix('/')
+            .and_then(|s| s.split_whitespace().next())
+    {
+        state.publish(SemanticEvent::new_action_request_resolved(
+            RoleId::new("human"),
+            &action_request_id,
+            label,
+        ));
+        state.publish(SemanticEvent::new_human_feedback_received(
+            RoleId::new("human"),
+            &message,
+        ));
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    if message.starts_with("/lane ")
+        && let Some(args) = message.strip_prefix("/lane ")
+    {
+        handle_lane_creation(&state, args).await;
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    if message.starts_with("/archive ")
+        && let Some(lane_id) = message
+            .strip_prefix("/archive ")
+            .map(|s| s.trim().to_string())
+    {
+        state.publish(SemanticEvent::new_lane_archived(
+            RoleId::new("human"),
+            &lane_id,
+        ));
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    if message.starts_with("/pause ")
+        && let Some(lane_id) = message
+            .strip_prefix("/pause ")
+            .map(|s| s.trim().to_string())
+    {
+        state.publish(SemanticEvent::new_lane_paused(
+            RoleId::new("human"),
+            &lane_id,
+        ));
+        return StatusCode::ACCEPTED.into_response();
+    }
+
     let human_event = SemanticEvent::new_human_feedback_received(RoleId::new("human"), &message);
     state.publish(human_event);
     publish_mentions(
@@ -1355,6 +1832,107 @@ async fn post_message(
     .await;
 
     StatusCode::ACCEPTED.into_response()
+}
+
+async fn handle_lane_creation(state: &AppState, args: &str) {
+    let mut explicit_msg_id: Option<String> = None;
+    let args_str = if let Some(rest) = args.strip_prefix("msg=") {
+        if let Some((msg_id, rest)) = rest.split_once(' ') {
+            explicit_msg_id = Some(msg_id.to_string());
+            rest
+        } else {
+            explicit_msg_id = Some(rest.to_string());
+            ""
+        }
+    } else {
+        args
+    };
+
+    let parts: Vec<&str> = args_str.splitn(3, ' ').collect();
+    let name = parts.first().map(|s| s.trim()).unwrap_or("New Lane");
+    let purpose = parts
+        .get(1)
+        .map(|s| s.trim())
+        .unwrap_or("No purpose specified");
+    let kind = parts.get(2).map(|s| s.trim()).unwrap_or("conversation");
+
+    let colour = match kind {
+        "delivery" => "#14b8a6",
+        "discovery" => "#6366f1",
+        "system" => "#f59e0b",
+        _ => "#ec4899",
+    };
+
+    let lane_id = format!("lane-{kind}-{}", uuid::Uuid::new_v4());
+
+    let projection = state.projection.read().await;
+    let source_message_id =
+        explicit_msg_id.or_else(|| projection.messages.last().map(|m| m.message_id.clone()));
+    drop(projection);
+
+    state.publish(SemanticEvent::new_lane_created(
+        RoleId::new("human"),
+        &lane_id,
+        name,
+        kind,
+        colour,
+        purpose,
+        None,
+        Vec::new(),
+        source_message_id,
+    ));
+}
+
+#[derive(Deserialize)]
+struct MessagesQuery {
+    #[serde(default)]
+    lane_ids: String,
+}
+
+async fn get_messages(
+    State(state): State<AppState>,
+    Query(query): Query<MessagesQuery>,
+) -> Json<Vec<MessageView>> {
+    let projection = state.projection.read().await;
+    let lane_ids: Vec<String> = if query.lane_ids.is_empty() {
+        Vec::new()
+    } else {
+        query
+            .lane_ids
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    };
+    let msgs: Vec<MessageView> = projection
+        .messages_for_lane_ids(&lane_ids)
+        .into_iter()
+        .cloned()
+        .collect();
+    Json(msgs)
+}
+
+#[derive(Deserialize)]
+struct LanesQuery {
+    #[serde(default)]
+    status: String,
+}
+
+async fn get_lanes(
+    State(state): State<AppState>,
+    Query(query): Query<LanesQuery>,
+) -> Json<Vec<LaneView>> {
+    let projection = state.projection.read().await;
+    let lanes: Vec<LaneView> = if query.status.is_empty() {
+        projection.lanes.clone()
+    } else {
+        projection
+            .lanes
+            .iter()
+            .filter(|l| l.status.as_str().eq_ignore_ascii_case(&query.status))
+            .cloned()
+            .collect()
+    };
+    Json(lanes)
 }
 
 async fn ack_notification(
@@ -1774,6 +2352,12 @@ pub(crate) fn classify_event_variant_lane(variant: &str) -> Lane {
         | "ToolExecuted" | "ClaimMade" | "DecisionRecorded" => Lane::Discovery,
         "TaskAssigned" | "TaskStarted" | "TaskCompleted" | "TaskFailed" | "ReviewRequested"
         | "ReviewCompleted" | "ArtefactProduced" => Lane::Delivery,
+        "LaneCreated"
+        | "LaneArchived"
+        | "LanePaused"
+        | "ActionRequestCreated"
+        | "ActionRequestResolved"
+        | "ActionRequestCancelled" => Lane::Conversation,
         _ => Lane::System,
     }
 }
@@ -1861,7 +2445,13 @@ fn source_agent(event: &SemanticEvent) -> String {
         | SemanticEvent::RoleStateChanged { source_agent, .. }
         | SemanticEvent::OrganisationStarted { source_agent, .. }
         | SemanticEvent::OrganisationStopped { source_agent, .. }
-        | SemanticEvent::Heartbeat { source_agent, .. } => source_agent.0.clone(),
+        | SemanticEvent::Heartbeat { source_agent, .. }
+        | SemanticEvent::LaneCreated { source_agent, .. }
+        | SemanticEvent::LaneArchived { source_agent, .. }
+        | SemanticEvent::LanePaused { source_agent, .. }
+        | SemanticEvent::ActionRequestCreated { source_agent, .. }
+        | SemanticEvent::ActionRequestResolved { source_agent, .. }
+        | SemanticEvent::ActionRequestCancelled { source_agent, .. } => source_agent.0.clone(),
     }
 }
 
@@ -1892,7 +2482,13 @@ fn timestamp_ns(event: &SemanticEvent) -> u64 {
         | SemanticEvent::RoleStateChanged { timestamp_ns, .. }
         | SemanticEvent::OrganisationStarted { timestamp_ns, .. }
         | SemanticEvent::OrganisationStopped { timestamp_ns, .. }
-        | SemanticEvent::Heartbeat { timestamp_ns, .. } => *timestamp_ns,
+        | SemanticEvent::Heartbeat { timestamp_ns, .. }
+        | SemanticEvent::LaneCreated { timestamp_ns, .. }
+        | SemanticEvent::LaneArchived { timestamp_ns, .. }
+        | SemanticEvent::LanePaused { timestamp_ns, .. }
+        | SemanticEvent::ActionRequestCreated { timestamp_ns, .. }
+        | SemanticEvent::ActionRequestResolved { timestamp_ns, .. }
+        | SemanticEvent::ActionRequestCancelled { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 
@@ -1983,6 +2579,26 @@ fn event_summary(event: &SemanticEvent) -> String {
         } => format!(
             "Heartbeat: {active_roles} active, {completed_roles} completed, {failed_roles} failed"
         ),
+        SemanticEvent::LaneCreated { name, kind, .. } => {
+            format!("Created lane \"{name}\" ({kind})")
+        }
+        SemanticEvent::LaneArchived { lane_id, .. } => {
+            format!("Archived lane {lane_id}")
+        }
+        SemanticEvent::LanePaused { lane_id, .. } => {
+            format!("Paused lane {lane_id}")
+        }
+        SemanticEvent::ActionRequestCreated {
+            request_kind,
+            prompt,
+            ..
+        } => {
+            format!("[{request_kind}] {prompt}")
+        }
+        SemanticEvent::ActionRequestResolved { choice, .. } => choice.clone(),
+        SemanticEvent::ActionRequestCancelled { reason, .. } => {
+            format!("Action request cancelled: {reason}")
+        }
     }
 }
 
@@ -3811,5 +4427,386 @@ mod tests {
         assert_eq!(readiness.capability, CapabilityStatus::Unavailable);
         assert!(!readiness.fallback_worktree);
         assert!(!readiness.has_llm_client);
+    }
+
+    // -----------------------------------------------------------------------
+    // 5.1 Lane filtering and global aggregation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn lane_creation_populates_lane_in_projection() {
+        let store = Arc::new(ArtefactStore::new());
+        let lane_id = Uuid::new_v4().to_string();
+        let event = SemanticEvent::new_lane_created(
+            RoleId::new("human"),
+            &lane_id,
+            "UX thread",
+            "conversation",
+            "#ec4899",
+            "Discuss notification UX",
+            None,
+            Vec::new(),
+            None,
+        );
+        let projection = WorkbenchProjection::from_events(&[event], &store).await;
+        assert_eq!(projection.lanes.len(), 1);
+        let lane = &projection.lanes[0];
+        assert_eq!(lane.id, lane_id);
+        assert_eq!(lane.name, "UX thread");
+        assert_eq!(lane.colour, "#ec4899");
+        assert_eq!(lane.status, LaneStatus::Active);
+        assert_eq!(lane.creator, "human");
+    }
+
+    #[tokio::test]
+    async fn lane_created_event_also_produces_message() {
+        let store = Arc::new(ArtefactStore::new());
+        let event = SemanticEvent::new_lane_created(
+            RoleId::new("human"),
+            "lane-conversation-abc",
+            "UX thread",
+            "conversation",
+            "#ec4899",
+            "Discuss notification UX",
+            None,
+            Vec::new(),
+            None,
+        );
+        let projection = WorkbenchProjection::from_events(&[event], &store).await;
+        assert!(
+            projection
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Created lane")),
+            "should have a lane creation message"
+        );
+    }
+
+    #[tokio::test]
+    async fn lane_archived_marks_lane_status() {
+        let store = Arc::new(ArtefactStore::new());
+        let lane_id = "lane-conversation-abc".to_string();
+        let events = vec![
+            SemanticEvent::new_lane_created(
+                RoleId::new("human"),
+                &lane_id,
+                "Test lane",
+                "conversation",
+                "#ec4899",
+                "test",
+                None,
+                Vec::new(),
+                None,
+            ),
+            SemanticEvent::new_lane_archived(RoleId::new("human"), &lane_id),
+        ];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let lane = projection
+            .lanes
+            .iter()
+            .find(|l| l.id == lane_id)
+            .expect("lane should exist");
+        assert_eq!(lane.status, LaneStatus::Archived);
+    }
+
+    #[tokio::test]
+    async fn messages_lane_tagged_from_active_lane() {
+        let store = Arc::new(ArtefactStore::new());
+        let lane_id = "lane-conversation-xyz".to_string();
+
+        let mut projection = WorkbenchProjection::from_events(
+            &[SemanticEvent::new_lane_created(
+                RoleId::new("human"),
+                &lane_id,
+                "Test lane",
+                "conversation",
+                "#ec4899",
+                "test",
+                None,
+                Vec::new(),
+                None,
+            )],
+            &store,
+        )
+        .await;
+
+        projection.active_lane_ids = vec![lane_id.clone()];
+
+        projection
+            .apply_event(
+                &SemanticEvent::new_human_feedback_requested(
+                    RoleId::new("intent-lead-001"),
+                    "What are we making?",
+                    "test",
+                ),
+                &store,
+            )
+            .await;
+
+        let last_msg = projection.messages.last().expect("should have a message");
+        assert_eq!(last_msg.primary_lane_id, Some(lane_id));
+    }
+
+    #[tokio::test]
+    async fn global_view_shows_all_messages() {
+        let store = Arc::new(ArtefactStore::new());
+        let events = vec![
+            SemanticEvent::new_human_feedback_requested(
+                RoleId::new("intent-lead-001"),
+                "hello",
+                "test",
+            ),
+            SemanticEvent::new_human_feedback_received(RoleId::new("human"), "hi"),
+            SemanticEvent::new_task_assigned(
+                RoleId::new("human"),
+                "task-1",
+                RoleId::new("worker-001"),
+                TaskContract {
+                    contract_id: Uuid::new_v4().to_string(),
+                    description: "build".to_string(),
+                },
+                Vec::new(),
+            ),
+        ];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let all_msgs = projection.messages_for_lane_ids(&[]);
+        assert_eq!(all_msgs.len(), projection.messages.len());
+    }
+
+    #[tokio::test]
+    async fn lane_filter_shows_only_matching_messages() {
+        let store = Arc::new(ArtefactStore::new());
+        let lane_a = "lane-a".to_string();
+        let lane_b = "lane-b".to_string();
+
+        let mut projection = WorkbenchProjection::from_events(
+            &[SemanticEvent::new_lane_created(
+                RoleId::new("human"),
+                &lane_a,
+                "Lane A",
+                "conversation",
+                "#6366f1",
+                "a",
+                None,
+                Vec::new(),
+                None,
+            )],
+            &store,
+        )
+        .await;
+
+        projection.active_lane_ids = vec![lane_a.clone()];
+        projection
+            .apply_event(
+                &SemanticEvent::new_human_feedback_requested(
+                    RoleId::new("intent-lead-001"),
+                    "msg A",
+                    "test",
+                ),
+                &store,
+            )
+            .await;
+
+        projection.active_lane_ids = vec![];
+        projection
+            .apply_event(
+                &SemanticEvent::new_human_feedback_received(RoleId::new("human"), "msg B"),
+                &store,
+            )
+            .await;
+
+        let lane_a_msgs = projection.messages_for_lane_ids(&[lane_a.clone()]);
+        let lane_b_msgs = projection.messages_for_lane_ids(&[lane_b.clone()]);
+        let lane_a_tagged: Vec<_> = lane_a_msgs
+            .iter()
+            .filter(|m| m.primary_lane_id.as_deref() == Some(&lane_a))
+            .collect();
+        assert!(
+            !lane_a_tagged.is_empty(),
+            "lane A filter should include messages tagged with lane A"
+        );
+        let lane_b_tagged: Vec<_> = lane_b_msgs
+            .iter()
+            .filter(|m| m.primary_lane_id.as_deref() == Some(&*lane_b))
+            .collect();
+        assert!(
+            lane_b_tagged.is_empty(),
+            "no messages are tagged with lane B"
+        );
+        let global_msgs = projection.messages_for_lane_ids(&[]);
+        assert!(global_msgs.len() >= lane_a_msgs.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // 5.2 Tool-created lane provenance
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn lane_creation_records_provenance() {
+        let store = Arc::new(ArtefactStore::new());
+        let source_msg_id = Uuid::new_v4().to_string();
+        let lane_id = "lane-delivery-abc".to_string();
+
+        let events = vec![SemanticEvent::new_lane_created(
+            RoleId::new("pm-001"),
+            &lane_id,
+            "Feature build",
+            "delivery",
+            "#14b8a6",
+            "Track delivery of the new feature",
+            None,
+            Vec::new(),
+            Some(source_msg_id.clone()),
+        )];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+
+        let lane = &projection.lanes[0];
+        assert_eq!(lane.creator, "pm-001");
+        assert_eq!(lane.source_message_id, Some(source_msg_id));
+        assert_eq!(lane.kind, LaneKind::Delivery);
+        assert_eq!(lane.colour, "#14b8a6");
+    }
+
+    #[tokio::test]
+    async fn lane_creation_publishes_lane_chip_source_message() {
+        let bus = EventBus::new(16);
+        let artefact_store = Arc::new(ArtefactStore::new());
+
+        let source_msg_id = Uuid::new_v4().to_string();
+        let lane_id = "lane-delivery-xyz".to_string();
+
+        let state = AppState {
+            bus: bus.clone(),
+            projection: Arc::new(RwLock::new(
+                WorkbenchProjection::from_events(
+                    &[SemanticEvent::new_lane_created(
+                        RoleId::new("pm-001"),
+                        &lane_id,
+                        "Feature",
+                        "delivery",
+                        "#14b8a6",
+                        "track it",
+                        None,
+                        Vec::new(),
+                        Some(source_msg_id.clone()),
+                    )],
+                    &artefact_store,
+                )
+                .await,
+            )),
+            artefact_store,
+            scheduler: None,
+        };
+
+        let projection = state.projection.read().await;
+        let lane = projection
+            .lanes
+            .iter()
+            .find(|l| l.id == lane_id)
+            .expect("lane should exist");
+        assert_eq!(lane.source_message_id, Some(source_msg_id));
+    }
+
+    // -----------------------------------------------------------------------
+    // 5.3 Action request resolution
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn action_request_created_is_pending() {
+        let store = Arc::new(ArtefactStore::new());
+        let request_id = Uuid::new_v4().to_string();
+        let events = vec![SemanticEvent::new_action_request_created(
+            RoleId::new("intent-lead-001"),
+            &request_id,
+            "clarification",
+            "Do you want dark or light theme?",
+            vec!["dark".to_string(), "light".to_string()],
+            None,
+        )];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        assert_eq!(projection.action_requests.len(), 1);
+        let req = &projection.action_requests[0];
+        assert_eq!(req.status, ActionRequestStatus::Pending);
+        assert_eq!(req.request_kind, "clarification");
+        assert_eq!(req.choices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn action_request_resolution_marks_resolved() {
+        let store = Arc::new(ArtefactStore::new());
+        let request_id = Uuid::new_v4().to_string();
+        let events = vec![
+            SemanticEvent::new_action_request_created(
+                RoleId::new("intent-lead-001"),
+                &request_id,
+                "clarification",
+                "Choose one",
+                vec!["A".to_string(), "B".to_string()],
+                None,
+            ),
+            SemanticEvent::new_action_request_resolved(RoleId::new("human"), &request_id, "A"),
+        ];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let req = projection
+            .action_requests
+            .iter()
+            .find(|r| r.id == request_id)
+            .expect("action request should exist");
+        assert_eq!(req.status, ActionRequestStatus::Resolved);
+        let user_msg = projection
+            .messages
+            .iter()
+            .find(|m| m.speaker == "You")
+            .expect("should have a user reply");
+        assert_eq!(user_msg.content, "A");
+    }
+
+    #[tokio::test]
+    async fn action_request_cancelled_marks_cancelled() {
+        let store = Arc::new(ArtefactStore::new());
+        let request_id = Uuid::new_v4().to_string();
+        let events = vec![
+            SemanticEvent::new_action_request_created(
+                RoleId::new("intent-lead-001"),
+                &request_id,
+                "approval",
+                "Approve?",
+                Vec::new(),
+                None,
+            ),
+            SemanticEvent::new_action_request_cancelled(
+                RoleId::new("intent-lead-001"),
+                &request_id,
+                "no longer relevant",
+            ),
+        ];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let req = projection
+            .action_requests
+            .iter()
+            .find(|r| r.id == request_id)
+            .expect("action request should exist");
+        assert_eq!(req.status, ActionRequestStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn action_request_displays_inline_in_chat() {
+        let store = Arc::new(ArtefactStore::new());
+        let events = vec![SemanticEvent::new_action_request_created(
+            RoleId::new("worker-001"),
+            "req-1",
+            "clarification",
+            "Should we use async or sync?",
+            vec!["async".to_string(), "sync".to_string()],
+            None,
+        )];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        let msg = projection
+            .messages
+            .iter()
+            .find(|m| m.content.contains("[Action"))
+            .expect("should have action request message");
+        assert!(msg.content.contains("clarification"), "{}", msg.content);
+        assert!(msg.content.contains("async"), "{}", msg.content);
     }
 }

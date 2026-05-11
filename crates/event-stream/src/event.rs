@@ -449,6 +449,75 @@ pub enum SemanticEvent {
         completed_roles: u32,
         failed_roles: u32,
     },
+    LaneCreated {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        lane_id: String,
+        name: String,
+        #[serde(default)]
+        kind: String,
+        #[serde(default)]
+        colour: String,
+        #[serde(default)]
+        purpose: String,
+        #[serde(default)]
+        parent_lane_id: Option<String>,
+        #[serde(default)]
+        related_lane_ids: Vec<String>,
+        #[serde(default)]
+        source_message_id: Option<String>,
+    },
+    LaneArchived {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        lane_id: String,
+    },
+    LanePaused {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        lane_id: String,
+    },
+    ActionRequestCreated {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        request_id: String,
+        request_kind: String,
+        prompt: String,
+        #[serde(default)]
+        choices: Vec<String>,
+        #[serde(default)]
+        lane_id: Option<String>,
+    },
+    ActionRequestResolved {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        request_id: String,
+        choice: String,
+    },
+    ActionRequestCancelled {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        request_id: String,
+        reason: String,
+    },
 }
 
 /// The set of known semantic event types, used for filtering.
@@ -506,6 +575,18 @@ pub enum EventType {
     OrganisationStopped,
     /// A heartbeat signal was emitted.
     Heartbeat,
+    /// A conversation lane was created.
+    LaneCreated,
+    /// A conversation lane was archived.
+    LaneArchived,
+    /// A conversation lane was paused.
+    LanePaused,
+    /// An action request was created for human input.
+    ActionRequestCreated,
+    /// An action request was resolved by human input.
+    ActionRequestResolved,
+    /// An action request was cancelled.
+    ActionRequestCancelled,
 }
 
 impl EventId {
@@ -1103,6 +1184,111 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`LaneCreated`](SemanticEvent::LaneCreated) event.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_lane_created(
+        source_agent: RoleId,
+        lane_id: impl Into<String>,
+        name: impl Into<String>,
+        kind: impl Into<String>,
+        colour: impl Into<String>,
+        purpose: impl Into<String>,
+        parent_lane_id: Option<String>,
+        related_lane_ids: Vec<String>,
+        source_message_id: Option<String>,
+    ) -> Self {
+        Self::LaneCreated {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            lane_id: lane_id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            colour: colour.into(),
+            purpose: purpose.into(),
+            parent_lane_id,
+            related_lane_ids,
+            source_message_id,
+        }
+    }
+
+    /// Constructs a new [`LaneArchived`](SemanticEvent::LaneArchived) event.
+    pub fn new_lane_archived(source_agent: RoleId, lane_id: impl Into<String>) -> Self {
+        Self::LaneArchived {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            lane_id: lane_id.into(),
+        }
+    }
+
+    /// Constructs a new [`LanePaused`](SemanticEvent::LanePaused) event.
+    pub fn new_lane_paused(source_agent: RoleId, lane_id: impl Into<String>) -> Self {
+        Self::LanePaused {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            lane_id: lane_id.into(),
+        }
+    }
+
+    /// Constructs a new [`ActionRequestCreated`](SemanticEvent::ActionRequestCreated) event.
+    pub fn new_action_request_created(
+        source_agent: RoleId,
+        request_id: impl Into<String>,
+        request_kind: impl Into<String>,
+        prompt: impl Into<String>,
+        choices: Vec<String>,
+        lane_id: Option<String>,
+    ) -> Self {
+        Self::ActionRequestCreated {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            request_id: request_id.into(),
+            request_kind: request_kind.into(),
+            prompt: prompt.into(),
+            choices,
+            lane_id,
+        }
+    }
+
+    /// Constructs a new [`ActionRequestResolved`](SemanticEvent::ActionRequestResolved) event.
+    pub fn new_action_request_resolved(
+        source_agent: RoleId,
+        request_id: impl Into<String>,
+        choice: impl Into<String>,
+    ) -> Self {
+        Self::ActionRequestResolved {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            request_id: request_id.into(),
+            choice: choice.into(),
+        }
+    }
+
+    /// Constructs a new [`ActionRequestCancelled`](SemanticEvent::ActionRequestCancelled) event.
+    pub fn new_action_request_cancelled(
+        source_agent: RoleId,
+        request_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::ActionRequestCancelled {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            request_id: request_id.into(),
+            reason: reason.into(),
+        }
+    }
+
     /// Returns the [`EventId`] of this event.
     pub fn event_id(&self) -> EventId {
         match self {
@@ -1132,6 +1318,12 @@ impl SemanticEvent {
             Self::OrganisationStarted { event_id, .. } => *event_id,
             Self::OrganisationStopped { event_id, .. } => *event_id,
             Self::Heartbeat { event_id, .. } => *event_id,
+            Self::LaneCreated { event_id, .. } => *event_id,
+            Self::LaneArchived { event_id, .. } => *event_id,
+            Self::LanePaused { event_id, .. } => *event_id,
+            Self::ActionRequestCreated { event_id, .. } => *event_id,
+            Self::ActionRequestResolved { event_id, .. } => *event_id,
+            Self::ActionRequestCancelled { event_id, .. } => *event_id,
         }
     }
 
@@ -1164,6 +1356,12 @@ impl SemanticEvent {
             Self::OrganisationStarted { .. } => "OrganisationStarted",
             Self::OrganisationStopped { .. } => "OrganisationStopped",
             Self::Heartbeat { .. } => "Heartbeat",
+            Self::LaneCreated { .. } => "LaneCreated",
+            Self::LaneArchived { .. } => "LaneArchived",
+            Self::LanePaused { .. } => "LanePaused",
+            Self::ActionRequestCreated { .. } => "ActionRequestCreated",
+            Self::ActionRequestResolved { .. } => "ActionRequestResolved",
+            Self::ActionRequestCancelled { .. } => "ActionRequestCancelled",
         }
     }
 
@@ -1196,6 +1394,12 @@ impl SemanticEvent {
             Self::OrganisationStarted { .. } => EventType::OrganisationStarted,
             Self::OrganisationStopped { .. } => EventType::OrganisationStopped,
             Self::Heartbeat { .. } => EventType::Heartbeat,
+            Self::LaneCreated { .. } => EventType::LaneCreated,
+            Self::LaneArchived { .. } => EventType::LaneArchived,
+            Self::LanePaused { .. } => EventType::LanePaused,
+            Self::ActionRequestCreated { .. } => EventType::ActionRequestCreated,
+            Self::ActionRequestResolved { .. } => EventType::ActionRequestResolved,
+            Self::ActionRequestCancelled { .. } => EventType::ActionRequestCancelled,
         }
     }
 
@@ -1227,7 +1431,13 @@ impl SemanticEvent {
             | Self::RoleStateChanged { context, .. }
             | Self::OrganisationStarted { context, .. }
             | Self::OrganisationStopped { context, .. }
-            | Self::Heartbeat { context, .. } => context,
+            | Self::Heartbeat { context, .. }
+            | Self::LaneCreated { context, .. }
+            | Self::LaneArchived { context, .. }
+            | Self::LanePaused { context, .. }
+            | Self::ActionRequestCreated { context, .. }
+            | Self::ActionRequestResolved { context, .. }
+            | Self::ActionRequestCancelled { context, .. } => context,
         }
     }
 }
@@ -1262,6 +1472,12 @@ impl EventType {
             Self::OrganisationStarted => "OrganisationStarted",
             Self::OrganisationStopped => "OrganisationStopped",
             Self::Heartbeat => "Heartbeat",
+            Self::LaneCreated => "LaneCreated",
+            Self::LaneArchived => "LaneArchived",
+            Self::LanePaused => "LanePaused",
+            Self::ActionRequestCreated => "ActionRequestCreated",
+            Self::ActionRequestResolved => "ActionRequestResolved",
+            Self::ActionRequestCancelled => "ActionRequestCancelled",
         }
     }
 }
@@ -1342,6 +1558,12 @@ mod tests {
             EventType::OrganisationStarted.name(),
             EventType::OrganisationStopped.name(),
             EventType::Heartbeat.name(),
+            EventType::LaneCreated.name(),
+            EventType::LaneArchived.name(),
+            EventType::LanePaused.name(),
+            EventType::ActionRequestCreated.name(),
+            EventType::ActionRequestResolved.name(),
+            EventType::ActionRequestCancelled.name(),
         ];
         let unique: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(names.len(), unique.len());

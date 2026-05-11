@@ -7,7 +7,7 @@ repository.workspace = true
 license-file.workspace = true
 
 [dependencies]
-axum = { workspace = true, features = ["form", "http1", "json", "tokio"] }
+axum = { workspace = true, features = ["form", "http1", "json", "query", "tokio"] }
 futures-util.workspace = true
 mmat-coordinator = { path = "../coordinator" }
 mmat-event-stream = { path = "../event-stream" }

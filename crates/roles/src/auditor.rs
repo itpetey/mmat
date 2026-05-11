@@ -992,6 +992,12 @@ impl Auditor {
             SemanticEvent::OrganisationStarted { source_agent, .. } => source_agent.clone(),
             SemanticEvent::OrganisationStopped { source_agent, .. } => source_agent.clone(),
             SemanticEvent::Heartbeat { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::LaneCreated { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::LaneArchived { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::LanePaused { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::ActionRequestCreated { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::ActionRequestResolved { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::ActionRequestCancelled { source_agent, .. } => source_agent.clone(),
         };
 
         self.check_authority(ctx, &source_agent, &event.event_type(), event.event_id())

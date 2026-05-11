@@ -541,6 +541,12 @@ fn event_source_agent(event: &SemanticEvent) -> String {
         SemanticEvent::OrganisationStarted { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::OrganisationStopped { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::Heartbeat { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::LaneCreated { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::LaneArchived { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::LanePaused { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::ActionRequestCreated { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::ActionRequestResolved { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::ActionRequestCancelled { source_agent, .. } => source_agent.to_string(),
     }
 }
 
@@ -572,6 +578,12 @@ fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
         SemanticEvent::OrganisationStarted { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::OrganisationStopped { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::Heartbeat { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::LaneCreated { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::LaneArchived { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::LanePaused { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ActionRequestCreated { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ActionRequestResolved { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ActionRequestCancelled { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 

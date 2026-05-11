@@ -50,7 +50,7 @@ impl Worker {
             llm_client: None,
             executor: Executor,
             tool_registry: RoleToolRegistry::new(),
-            tool_runtime: RoleToolRuntime,
+            tool_runtime: RoleToolRuntime::new(),
             validation_commands: vec![
                 "cargo fmt --all -- --check".to_string(),
                 "cargo test".to_string(),
@@ -69,6 +69,19 @@ impl Worker {
     pub fn with_tool_registry(mut self, tool_registry: RoleToolRegistry) -> Self {
         self.tool_registry = tool_registry;
         self
+    }
+
+    /// Sets the event bus on the tool runtime so tools can publish events.
+    pub fn set_tool_bus(&mut self, bus: mmat_event_stream::event_bus::EventBus) {
+        self.tool_runtime.bus = Some(bus);
+    }
+
+    /// Registers a tool in this role's tool registry.
+    pub fn register_tool(
+        &mut self,
+        tool: Box<dyn mmat_llm::tool::Tool<RoleToolRuntime, crate::tooling::RoleToolError>>,
+    ) -> Result<(), mmat_llm::tool::RegistryError> {
+        self.tool_registry.register(tool)
     }
 
     /// Sets the validation commands to run after implementation.
