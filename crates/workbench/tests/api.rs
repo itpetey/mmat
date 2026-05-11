@@ -714,3 +714,59 @@ async fn reset_project_with_confirmation_clears_state() {
         "should have a fresh active run after reset"
     );
 }
+
+#[tokio::test]
+async fn state_endpoint_contains_action_requests_array() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let resp = reqwest::get(&format!("{base_url}/api/state"))
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body.get("action_requests").is_some(),
+        "projection should contain action_requests",
+    );
+}
+
+#[tokio::test]
+async fn sse_endpoint_sends_state_event_on_connect() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let resp = reqwest::get(&format!("{base_url}/events")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap())
+            .unwrap_or("")
+            .starts_with("text/event-stream"),
+        "SSE endpoint should return text/event-stream"
+    );
+}
+
+#[tokio::test]
+async fn new_project_has_no_conversation_history() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let resp = reqwest::get(&format!("{base_url}/api/state"))
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        body.get("has_conversation").unwrap().as_bool().unwrap(),
+        false,
+        "fresh project should have no conversation history",
+    );
+    assert!(
+        body.get("action_requests")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "fresh project should have no action requests",
+    );
+}

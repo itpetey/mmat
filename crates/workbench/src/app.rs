@@ -3294,14 +3294,31 @@ mod tests {
         assert!(html.contains("makemeathing"));
         assert!(html.contains("href=\"/style.css\""));
         assert!(html.contains("src=\"/app.js\""));
+        assert!(html.contains("id=\"next-action\""));
+        assert!(html.contains("id=\"connection-status\""));
+        assert!(html.contains("aria-label=\"Compose a message\""));
+        assert!(html.contains("aria-label=\"Select active run\""));
+        assert!(html.contains("role=\"log\""));
 
         let css = include_str!("../static/style.css");
         assert!(css.contains(":root"));
+        assert!(css.contains("connection-status"));
+        assert!(css.contains("next-action"));
+        assert!(css.contains("pulse-dot"));
+        assert!(css.contains("code-block"));
+        assert!(css.contains("focus-visible"));
+        assert!(css.contains("raw-payload"));
 
         let js = include_str!("../static/app.js");
         assert!(js.contains("loadState"));
         assert!(js.contains("active_step_id"));
         assert!(js.contains("#event-"));
+        assert!(js.contains("renderNextAction"));
+        assert!(js.contains("setConnectionStatus"));
+        assert!(js.contains("renderCodeBlocks"));
+        assert!(js.contains("dagStateClass"));
+        assert!(js.contains("roleStateClass"));
+        assert!(js.contains("roleActivity"));
     }
 
     #[tokio::test]

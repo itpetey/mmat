@@ -8,15 +8,16 @@
 </head>
 <body>
   <div class="app-shell">
+    <div id="connection-status" class="connection-status connected" role="status" aria-live="polite">Connected</div>
     <header class="topbar">
       <div id="project-chip" class="project-mark">SELIUM</div>
       <div class="run-controls">
         <div id="run-label" class="run-label">Run 1</div>
         <div class="run-actions">
-          <select id="run-selector" class="run-selector"></select>
-          <button id="new-run-button" class="mini-button" type="button" title="Start a new delivery run">+ Run</button>
-          <button id="archive-run-button" class="mini-button" type="button" title="Archive the active run">Archive</button>
-          <button id="reset-project-button" class="mini-button danger" type="button" title="Destructive reset of all project state">Reset</button>
+          <select id="run-selector" class="run-selector" aria-label="Select active run"></select>
+          <button id="new-run-button" class="mini-button" type="button" title="Start a new delivery run" aria-label="Start a new delivery run">+ Run</button>
+          <button id="archive-run-button" class="mini-button" type="button" title="Archive the active run" aria-label="Archive the active run">Archive</button>
+          <button id="reset-project-button" class="mini-button danger" type="button" title="Destructive reset of all project state" aria-label="Destructive reset of all project state">Reset</button>
         </div>
       </div>
       <div class="wordmark">makemeathing</div>
@@ -29,34 +30,35 @@
         </button>
         <button id="chat-view-button" class="icon-button active" type="button" aria-label="Show chat">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H9l-4 3v-12z"/><path d="M8 9.5h8M8 12.5h5"/></svg>
-          <span id="notification-count" class="count-badge" hidden>0</span>
+          <span id="notification-count" class="count-badge" hidden tabindex="0" role="button" aria-label="Toggle notification panel">0</span>
         </button>
-        <div id="notification-panel" class="notification-panel"></div>
+        <div id="notification-panel" class="notification-panel" role="dialog" aria-label="Notifications" aria-modal="false"></div>
       </div>
     </header>
     <main class="workspace">
       <section id="chat-view" class="view active">
-        <div id="conversation" class="channel"></div>
+        <div id="next-action" class="next-action" role="status" aria-live="polite"></div>
+        <div id="conversation" class="channel" role="log" aria-label="Conversation"></div>
       </section>
       <section id="dag-view" class="view">
         <div class="dag-layout">
           <div class="dag-column">
             <div id="role-readiness" class="role-readiness"></div>
-            <div id="dag" class="dag-canvas"></div>
+             <div id="dag" class="dag-canvas" role="list" aria-label="Delivery plan"></div>
           </div>
-          <aside id="step-detail" class="side-panel"></aside>
+          <aside id="step-detail" class="side-panel" aria-label="Step details"></aside>
         </div>
       </section>
       <section id="events-view" class="view">
         <div class="events-layout">
-          <div class="events-list" id="events-list"></div>
-          <aside class="side-panel" id="event-detail-panel"></aside>
+           <div class="events-list" id="events-list" role="feed" aria-label="Events"></div>
+          <aside class="side-panel" id="event-detail-panel" aria-label="Event details"></aside>
         </div>
       </section>
     </main>
     <div class="composer-wrap">
       <form id="message-form">
-        <textarea id="message" placeholder="Message SELIUM. Mention @intent, @scholar, @ops, @architect, @pm, @worker, @reviewer or @auditor to summon attention."></textarea>
+        <textarea id="message" placeholder="Message SELIUM. Mention @intent, @scholar, @ops, @architect, @pm, @worker, @reviewer or @auditor to summon attention." aria-label="Compose a message"></textarea>
         <div class="submit-hint"><strong>Press</strong> <code>⌘ + Return</code> <strong>to submit</strong></div>
       </form>
     </div>

@@ -15,19 +15,43 @@ async function loadState() {
 
 function connectEvents() {
   const source = new EventSource('/events');
-  source.onmessage = (message) => {
-    const update = JSON.parse(message.data);
-    if (update.type === 'State') state = update.payload;
-    if (update.type === 'Event') state.events.push(update.payload);
-    if (update.type === 'Notice') console.warn(update.payload);
-    if (state.events.length > 200) state.events = state.events.slice(-200);
+  source.onopen = () => {
+    setConnectionStatus('connected', 'Connected');
     loadState();
   };
+  source.onerror = () => {
+    if (source.readyState === EventSource.CONNECTING) {
+      setConnectionStatus('reconnecting', 'Reconnecting…');
+    } else {
+      setConnectionStatus('disconnected', 'Disconnected. Refresh to reconnect.');
+    }
+  };
+  source.onmessage = (message) => {
+    const update = JSON.parse(message.data);
+    if (update.type === 'State') {
+      state = update.payload;
+      render();
+    }
+    if (update.type === 'Event') {
+      state.events.push(update.payload);
+      if (state.events.length > 200) state.events = state.events.slice(-200);
+      loadState();
+    }
+    if (update.type === 'Notice') console.warn(update.payload);
+  };
+}
+
+function setConnectionStatus(cls, text) {
+  const el = document.getElementById('connection-status');
+  if (!el) return;
+  el.className = 'connection-status ' + cls;
+  el.textContent = text;
 }
 
 function render() {
   renderHeader();
   renderRunControls();
+  renderNextAction();
   renderConversation();
   renderRoleReadiness();
   renderDag();
@@ -56,6 +80,46 @@ function renderRunControls() {
   if (selector) {
     selector.innerHTML = runs.map(run => `<option value="${escapeHtml(run.id)}"${run.id === state.active_run_id ? ' selected' : ''}>${escapeHtml(run.label || run.id)} · ${escapeHtml(run.status)}</option>`).join('');
   }
+}
+
+function renderNextAction() {
+  const root = document.getElementById('next-action');
+  if (!root) return;
+  const events = state.events || [];
+  const steps = state.dag_steps || [];
+  const pendingReqs = (state.action_requests || []).filter(r => r.status === 'pending');
+  const pendingNotifs = (state.notifications || []).filter(n => !n.acknowledged);
+  const runningSteps = steps.filter(s => s.state === 'Running');
+  const failedSteps = steps.filter(s => s.state === 'Failed' || s.state === 'Needs rework');
+  const hasConversation = state.has_conversation || events.length > 0;
+
+  if (!hasConversation) {
+    root.innerHTML = '<strong>Welcome to MMAT.</strong> Ask a question or describe a project goal to begin. Mention <span class="action-hint">@intent</span> to refine direction, <span class="action-hint">@scholar</span> to research, or <span class="action-hint">@architect</span> to design.';
+    return;
+  }
+
+  if (pendingReqs.length > 0) {
+    const req = pendingReqs[0];
+    root.innerHTML = `<strong>Action needed</strong> — <span class="action-count">${pendingReqs.length} pending</span>${req.prompt ? `: ${escapeHtml(req.prompt)}` : ''}. Reply inline or type in the composer below.`;
+    return;
+  }
+
+  if (failedSteps.length > 0) {
+    root.innerHTML = `<strong>Attention required</strong> — ${failedSteps.length} step${failedSteps.length > 1 ? 's' : ''} ${failedSteps.map(s => escapeHtml(s.label)).join(', ')} ${failedSteps.length > 1 ? 'need' : 'needs'} attention. Check the <a href="#" onclick="activeView='dag';renderHeader();renderDag();renderStepDetail();return false;">DAG view</a> for details.`;
+    return;
+  }
+
+  if (runningSteps.length > 0) {
+    root.innerHTML = `<strong>In progress</strong> — <span class="action-count">${runningSteps.length} step${runningSteps.length > 1 ? 's' : ''}</span> running: ${runningSteps.map(s => escapeHtml(s.label)).join(', ')}. Check the <a href="#" onclick="activeView='dag';renderHeader();renderDag();renderStepDetail();return false;">DAG view</a> for progress.`;
+    return;
+  }
+
+  if (pendingNotifs.length > 0) {
+    root.innerHTML = `<strong>Notifications</strong> — <span class="action-count">${pendingNotifs.length}</span> item${pendingNotifs.length > 1 ? 's' : ''} waiting. Click the notification badge to review.`;
+    return;
+  }
+
+  root.innerHTML = '<strong>No pending actions.</strong> Everything is up to date. Start a new message or check the <a href="#" onclick="activeView=\'dag\';renderHeader();renderDag();renderStepDetail();return false;">DAG</a> for delivery status.';
 }
 
 function renderConversation() {
@@ -121,7 +185,7 @@ function renderRoleReadiness() {
     badge.type = 'button';
     badge.className = `role-badge${selectedRoleId === roleId ? ' active' : ''}`;
     badge.onclick = () => { selectedRoleId = roleId; selectedStepId = null; renderRoleReadiness(); renderRoleDetail(); };
-    badge.innerHTML = `<span class="status-dot ${escapeHtml(capability)}" title="${escapeHtml(capability)}"></span><span class="role-name">${escapeHtml(label)}</span><span class="role-status">${escapeHtml(role.state || 'idle')}</span>`;
+    badge.innerHTML = `<span class="status-dot ${escapeHtml(capability)}" title="${escapeHtml(capability)}"></span><span class="role-name">${escapeHtml(label)}</span><span class="role-state ${roleStateClass(role.state)}">${escapeHtml(role.state || 'idle')}</span>${roleActivity(role.state)}`;
     root.appendChild(badge);
   }
   if (selectedRoleId) renderRoleDetail();
@@ -137,7 +201,7 @@ function renderDag() {
     button.type = 'button';
     button.className = `dag-step ${step.id === activeId ? 'active' : ''}`;
     button.onclick = () => { selectedStepId = step.id; selectedRoleId = null; renderRoleReadiness(); renderDag(); renderStepDetail(); };
-    button.innerHTML = `<strong>${escapeHtml(step.label)}</strong><div class="state">${escapeHtml(step.state)} · ${escapeHtml(step.role)}</div><div>${escapeHtml(step.summary)}</div>`;
+    button.innerHTML = `<strong>${escapeHtml(step.label)}</strong><div class="state ${dagStateClass(step.state)}"><span class="step-status ${dagStateClass(step.state)}"></span>${escapeHtml(step.state)} · ${escapeHtml(step.role)}</div><div>${escapeHtml(step.summary)}</div>`;
     root.appendChild(button);
   }
 }
@@ -156,8 +220,13 @@ function renderStepDetail() {
   }
   const artefacts = (state.artefacts || []).filter(a => (step.artefact_ids || []).includes(a.id));
   const events = (state.events || []).filter(e => (step.event_ids || []).includes(e.id));
+  const stateLower = String(step.state || '').toLowerCase();
+  const stateBanner = stateLower === 'failed' || stateLower.includes('rework')
+    ? `<div class="error-banner">Step is <strong>${escapeHtml(step.state)}</strong>. Inspect related events and artefacts for details.</div>`
+    : '';
   root.innerHTML = `
-    <div class="detail-card"><h3>${escapeHtml(step.label)}</h3><div>${escapeHtml(step.summary)}</div><div class="empty">Role: ${escapeHtml(step.role)} · State: ${escapeHtml(step.state)}</div></div>
+    ${stateBanner}
+    <div class="detail-card"><h3>${escapeHtml(step.label)}</h3><div>${escapeHtml(step.summary)}</div><div class="empty">Role: ${escapeHtml(step.role)} · State: <strong class="${dagStateClass(step.state)}">${escapeHtml(step.state)}</strong></div></div>
     <div class="detail-grid">
       <div class="detail-card"><h3>Artefacts</h3>${artefactsHtml(artefacts)}</div>
       <div class="detail-card"><h3>Logs</h3>${eventsHtml(events)}</div>
@@ -178,17 +247,23 @@ function renderRoleDetail() {
   const r = role.readiness || {};
   const capability = r.capability || 'unknown';
   const roleState = role.state || 'Idle';
+  const roleStateLower = String(roleState).toLowerCase();
   const relatedSteps = (state.dag_steps || []).filter(s => s.role === selectedRoleId);
   const relatedEvents = (state.events || []).filter(e => {
     const eventIds = relatedSteps.flatMap(s => s.event_ids || []);
     return eventIds.includes(e.id);
   });
 
+  const stateBanner = roleStateLower === 'failed' || roleStateLower === 'error'
+    ? `<div class="error-banner">Role is in a <strong>${escapeHtml(roleState)}</strong> state. Check DAG steps for related failures.</div>`
+    : '';
+
   root.innerHTML = `
+    ${stateBanner}
     <div class="detail-card"><h3>${escapeHtml(role.label || selectedRoleId)} — Readiness</h3></div>
     <div class="detail-grid">
       <div class="detail-card">
-        <div class="meta">Operational State: <strong>${escapeHtml(roleState)}</strong></div>
+        <div class="meta">Operational State: <strong class="${roleStateClass(roleState)}">${escapeHtml(roleState)}</strong></div>
         <div class="meta">Capability: <span class="status-dot ${escapeHtml(capability)}" style="display:inline-block;vertical-align:middle;margin-right:4px;"></span>${escapeHtml(capability)}</div>
         <div>${escapeHtml(role.summary || '')}</div>
       </div>
@@ -196,7 +271,7 @@ function renderRoleDetail() {
       <div class="detail-card">
         <h3>Related DAG Steps</h3>
         <ul class="compact-list">${relatedSteps.map(s => `<li><a href="#" onclick="selectedStepId='${escapeHtml(s.id)}';selectedRoleId=null;renderDag();renderStepDetail();renderRoleReadiness();return false;">${escapeHtml(s.label)} (${escapeHtml(s.state)})</a></li>`).join('')}</ul>
-      </div>` : ''}
+      </div>` : '<div class="detail-card"><h3>Related DAG Steps</h3><p class="empty">No DAG steps for this role.</p></div>'}
       ${relatedEvents.length ? `
       <div class="detail-card">
         <h3>Related Events</h3>
@@ -236,7 +311,11 @@ function renderEvents() {
     for (const event of events) {
       const row = document.createElement('div');
       row.className = `event-row${event.id === selectedEventId ? ' active' : ''}`;
+      row.tabIndex = 0;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', event.id === selectedEventId ? 'true' : 'false');
       row.onclick = () => { selectedEventId = event.id; renderEvents(); };
+      row.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedEventId = event.id; renderEvents(); } };
       row.innerHTML = `<div class="event-variant">${escapeHtml(event.variant)}</div><div class="event-meta"><span>${escapeHtml(event.source_agent)}</span><span class="event-time">${new Date(Number(event.timestamp_ns / 1000000n)).toLocaleTimeString()}</span></div><div class="event-summary">${escapeHtml(event.summary)}</div>`;
       listRoot.appendChild(row);
     }
@@ -332,6 +411,28 @@ function renderNotifications() {
   }
 }
 
+function dagStateClass(state) {
+  const s = String(state).toLowerCase();
+  if (s === 'running') return 'running';
+  if (s === 'failed' || s.includes('rework')) return 'failed';
+  if (s === 'done' || s === 'completed' || s === 'accepted') return 'complete';
+  return 'waiting';
+}
+
+function roleStateClass(state) {
+  const s = String(state).toLowerCase();
+  if (s === 'running') return 'running';
+  if (s === 'failed' || s === 'error') return 'failed';
+  return '';
+}
+
+function roleActivity(state) {
+  const s = String(state).toLowerCase();
+  if (s === 'running') return '<span class="role-activity running" aria-hidden="true"></span>';
+  if (s === 'failed' || s === 'error') return '<span class="role-activity failed" aria-hidden="true"></span>';
+  return '';
+}
+
 function roleName(role) {
   return ({
     human: 'ME',
@@ -373,9 +474,42 @@ function toolText(detail) {
 }
 
 function formatMessage(value) {
-  return escapeHtml(value)
+  const escaped = escapeHtml(value);
+  const withInline = escaped
     .replace(/(@[a-zA-Z][a-zA-Z0-9_-]*)/g, '<span class="mention">$1</span>')
     .replace(/(`[^`]+`)/g, '<span class="code-token">$1</span>');
+  return renderCodeBlocks(withInline);
+}
+
+function renderCodeBlocks(html) {
+  const lines = html.split('\n');
+  const result = [];
+  let inCodeBlock = false;
+  let codeLang = '';
+  let codeContent = [];
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (!inCodeBlock && trimmed.startsWith('```')) {
+      inCodeBlock = true;
+      codeLang = escapeHtml(trimmed.slice(3).trim());
+      continue;
+    }
+    if (inCodeBlock && trimmed.startsWith('```')) {
+      inCodeBlock = false;
+      result.push(`<pre class="code-block"${codeLang ? ` data-lang="${codeLang}"` : ''}><code>${codeContent.join('\n')}</code></pre>`);
+      codeContent = [];
+      continue;
+    }
+    if (inCodeBlock) {
+      codeContent.push(line);
+    } else {
+      result.push(line);
+    }
+  }
+  if (inCodeBlock && codeContent.length) {
+    result.push(`<pre class="code-block"${codeLang ? ` data-lang="${codeLang}"` : ''}><code>${codeContent.join('\n')}</code></pre>`);
+  }
+  return result.join('\n');
 }
 
 document.getElementById('message-form').addEventListener('submit', async (event) => {
@@ -411,9 +545,17 @@ document.getElementById('events-view-button').addEventListener('click', () => {
   renderHeader();
 });
 
-document.getElementById('notification-count').addEventListener('click', (event) => {
+const notifBadge = document.getElementById('notification-count');
+notifBadge.addEventListener('click', (event) => {
   event.stopPropagation();
   document.getElementById('notification-panel').classList.toggle('open');
+});
+notifBadge.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    event.stopPropagation();
+    document.getElementById('notification-panel').classList.toggle('open');
+  }
 });
 
 document.getElementById('message').addEventListener('keydown', (event) => {
@@ -436,7 +578,9 @@ function artefactsHtml(artefacts) {
 function blobArtefactHtml(artefact) {
   const content = artefact.content || {};
   const error = content.error ? `<div class="empty">${escapeHtml(content.error)}</div>` : '';
-  return `<div class="memory"><div class="meta">Blob · ${escapeHtml(artefact.title)} · ${escapeHtml(artefact.producer_role)} · ${escapeHtml(artefact.content_hash || '')}</div>${error}<pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre>${evidenceHtml(artefact.evidence_refs || [])}</div>`;
+  const title = content.title ? `<div class="artefact-title">${escapeHtml(content.title)}</div>` : '';
+  const description = content.description || content.summary ? `<div class="artefact-description">${escapeHtml(content.description || content.summary || '')}</div>` : '';
+  return `<div class="memory"><div class="meta">Blob · ${escapeHtml(artefact.title || content.title || 'Untitled')} · ${escapeHtml(artefact.producer_role)} · ${escapeHtml(artefact.content_hash || '')}</div>${error}${title}${description}<details class="raw-payload"><summary>Show raw payload</summary><pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre></details>${evidenceHtml(artefact.evidence_refs || [])}</div>`;
 }
 
 function codeArtefactHtml(artefact) {
@@ -445,7 +589,9 @@ function codeArtefactHtml(artefact) {
   const paths = output.paths || content.paths || [];
   const missing = content.missing_paths || [];
   const error = content.error ? `<div class="empty">${escapeHtml(content.error)}${missing.length ? `: ${escapeHtml(missing.join(', '))}` : ''}</div>` : '';
-  return `<div class="memory"><div class="meta">Code · ${escapeHtml(artefact.title)} · ${escapeHtml(artefact.producer_role)}</div>${error}<ul class="compact-list"><li>Repository: ${escapeHtml(output.repository_path || content.repository_path || 'unknown')}</li><li>Worktree: ${escapeHtml(output.worktree_path || content.worktree_path || 'unknown')}</li><li>Branch: ${escapeHtml(output.worktree_branch || content.worktree_branch || 'unknown')}</li><li>Diff: ${escapeHtml(output.diff_summary || content.diff_summary || 'No diff summary')}</li><li>Validation: ${escapeHtml(output.validation_summary || content.validation_summary || 'Not run')}</li></ul>${listHtml(paths)}${evidenceHtml(artefact.evidence_refs || [])}</div>`;
+  const diffSummary = output.diff_summary || content.diff_summary || '';
+  const validationSummary = output.validation_summary || content.validation_summary || '';
+  return `<div class="memory"><div class="meta">Code · ${escapeHtml(artefact.title || output.title || 'Untitled')} · ${escapeHtml(artefact.producer_role)}</div>${error}<ul class="compact-list"><li>Repository: ${escapeHtml(output.repository_path || content.repository_path || 'unknown')}</li><li>Worktree: ${escapeHtml(output.worktree_path || content.worktree_path || 'unknown')}</li><li>Branch: ${escapeHtml(output.worktree_branch || content.worktree_branch || 'unknown')}</li>${diffSummary ? `<li><details class="raw-payload"><summary>Diff: ${escapeHtml(diffSummary.slice(0, 80))}${diffSummary.length > 80 ? '…' : ''}</summary><pre>${escapeHtml(diffSummary)}</pre></details></li>` : '<li>Diff: No diff summary</li>'}${validationSummary ? `<li>Validation: ${escapeHtml(validationSummary)}</li>` : '<li>Validation: Not run</li>'}</ul>${listHtml(paths)}${evidenceHtml(artefact.evidence_refs || [])}</div>`;
 }
 
 function evidenceHtml(refs) {
@@ -508,7 +654,7 @@ document.addEventListener('change', (event) => {
   const select = event.target;
   if (!select.closest('#event-filters')) return;
   const filter = select.dataset.filter;
-  if (filter && eventFilters.hasOwnProperty(filter)) {
+  if (filter && Object.hasOwn(eventFilters, filter)) {
     eventFilters[filter] = select.value;
     renderEvents();
   }
