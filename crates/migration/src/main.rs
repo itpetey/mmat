@@ -62,13 +62,19 @@ async fn run_schema_migration(pool: &PgPool) {
             payload JSONB NOT NULL,
             timestamp_ns BIGINT NOT NULL,
             source_agent TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid);
-        CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant);",
+        )",
     )
     .execute(pool)
     .await
     .expect("Failed to create events table");
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_events_rowid");
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_events_variant");
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS memories (
@@ -85,16 +91,33 @@ async fn run_schema_migration(pool: &PgPool) {
             created_at TEXT NOT NULL,
             last_accessed_at TEXT NOT NULL,
             source_agent TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
-        CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
-        CREATE INDEX IF NOT EXISTS idx_memories_authority ON memories(authority);
-        CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by);
-        CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_policy, created_at);",
+        )",
     )
     .execute(pool)
     .await
     .expect("Failed to create memories table");
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_memories_type");
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_memories_scope");
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_authority ON memories(authority)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_memories_authority");
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_memories_superseded_by");
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_policy, created_at)",
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to create idx_memories_decay");
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS artefacts (
@@ -104,12 +127,15 @@ async fn run_schema_migration(pool: &PgPool) {
             payload JSONB NOT NULL,
             producer_role TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_artefacts_type ON artefacts(artefact_type);",
+        )",
     )
     .execute(pool)
     .await
     .expect("Failed to create artefacts table");
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_artefacts_type ON artefacts(artefact_type)")
+        .execute(pool)
+        .await
+        .expect("Failed to create idx_artefacts_type");
 
     info!("Schema migration complete");
 }

@@ -1,0 +1,9 @@
+target/
+.git/
+docker-compose.yml
+Dockerfile
+.dockerignore
+README.md
+AGENTS.md
+.env.example
+.github/

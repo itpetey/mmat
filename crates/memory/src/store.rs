@@ -563,12 +563,26 @@ impl PgMemoryStore {
                 created_at TEXT NOT NULL,
                 last_accessed_at TEXT NOT NULL,
                 source_agent TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
-            CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
-            CREATE INDEX IF NOT EXISTS idx_memories_authority ON memories(authority);
-            CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by);
-            CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_policy, created_at);",
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_authority ON memories(authority)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_policy, created_at)",
         )
         .execute(&self.pool)
         .await?;

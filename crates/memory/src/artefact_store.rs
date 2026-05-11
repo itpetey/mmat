@@ -55,21 +55,33 @@ impl ArtefactStore {
                         payload JSONB NOT NULL,
                         producer_role TEXT NOT NULL DEFAULT '',
                         created_at TEXT NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_artefacts_type ON artefacts(artefact_type);
-                    CREATE TABLE IF NOT EXISTS events (
+                    )",
+                )
+                .execute(&pool)
+                .await?;
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_artefacts_type ON artefacts(artefact_type)",
+                )
+                .execute(&pool)
+                .await?;
+                sqlx::query(
+                    "CREATE TABLE IF NOT EXISTS events (
                         event_id UUID PRIMARY KEY,
                         rowid BIGSERIAL NOT NULL,
                         variant TEXT NOT NULL,
                         payload JSONB NOT NULL,
                         timestamp_ns BIGINT NOT NULL,
                         source_agent TEXT NOT NULL
-                    );
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid);
-                    CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant);",
+                    )",
                 )
                 .execute(&pool)
-                .await
+                .await?;
+                sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid)")
+                    .execute(&pool)
+                    .await?;
+                sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant)")
+                    .execute(&pool)
+                    .await
             })
             .map_err(crate::error::Error::Postgres)?;
             Ok(())

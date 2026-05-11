@@ -99,12 +99,16 @@ impl PgEventStore {
                 payload JSONB NOT NULL,
                 timestamp_ns BIGINT NOT NULL,
                 source_agent TEXT NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid);
-            CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant);",
+            )",
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant)")
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

@@ -68,6 +68,10 @@ impl Auditor {
     pub fn new() -> Self {
         let mut authority_registry = HashMap::new();
         authority_registry.insert(
+            EventRoleId("coordinator".to_string()),
+            AuthorityScope::FullAccess,
+        );
+        authority_registry.insert(
             EventRoleId("intent-lead-001".to_string()),
             AuthorityScope::IntentOnly,
         );
