@@ -5,7 +5,8 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use mmat_coordinator::{
-    AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
+    AuthorityScope, Budget, CapabilityStatus, Role, RoleContext, RoleError, RoleLifecycleState,
+    RoleReadiness, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{
     EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
@@ -1105,6 +1106,35 @@ impl Role for Auditor {
             EventType::OrganisationStopped,
             EventType::Heartbeat,
         ]
+    }
+
+    fn role_readiness(&self) -> RoleReadiness {
+        let has_llm = self.llm_client.is_some();
+        let has_semantic_checks = self.llm_config.enabled && has_llm;
+        let capability = if has_semantic_checks {
+            CapabilityStatus::Configured
+        } else {
+            CapabilityStatus::Fallback
+        };
+        RoleReadiness {
+            capability,
+            has_llm_client: has_llm,
+            has_tools: false,
+            tool_count: 0,
+            fallback_worktree: false,
+            requires_llm: false,
+            has_artefact_store: false,
+            summary: format!(
+                "LLM: {}, Semantic checks: {} — {}",
+                if has_llm { "configured" } else { "missing" },
+                if has_semantic_checks {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                capability,
+            ),
+        }
     }
 
     async fn run(self: Arc<Self>, ctx: RoleContext) -> Result<(), RoleError> {

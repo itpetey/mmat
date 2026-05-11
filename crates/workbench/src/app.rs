@@ -8,7 +8,10 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{Stream, StreamExt, stream};
-use mmat_coordinator::{OrganisationConfig, OrganisationRuntime, Role, RoleRegistry, Scheduler};
+use mmat_coordinator::{
+    CapabilityStatus, OrganisationConfig, OrganisationRuntime, Role, RoleReadiness, RoleRegistry,
+    Scheduler,
+};
 use mmat_event_stream::{
     event::{ArtefactStorageKind, RepositoryOutputRef, RoleId, SemanticEvent, TaskContract},
     event_bus::{EventBus, RecvError},
@@ -92,6 +95,7 @@ pub struct RoleView {
     pub(crate) label: String,
     pub(crate) state: String,
     pub(crate) summary: String,
+    pub(crate) readiness: RoleReadiness,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -305,6 +309,36 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
     let reviewer = Reviewer::new();
     let auditor = Auditor::new();
 
+    let mut readiness: Vec<(String, RoleReadiness)> = vec![
+        (intent_lead.id().0.clone(), intent_lead.role_readiness()),
+        (scholar.id().0.clone(), scholar.role_readiness()),
+        (ops_manager.id().0.clone(), ops_manager.role_readiness()),
+        (architect.id().0.clone(), architect.role_readiness()),
+        (
+            project_manager.id().0.clone(),
+            project_manager.role_readiness(),
+        ),
+        (worker.id().0.clone(), worker.role_readiness()),
+        (reviewer.id().0.clone(), reviewer.role_readiness()),
+        (auditor.id().0.clone(), auditor.role_readiness()),
+        (
+            "librarian".to_string(),
+            RoleReadiness {
+                capability: CapabilityStatus::Configured,
+                has_llm_client: false,
+                has_tools: false,
+                tool_count: 0,
+                fallback_worktree: false,
+                requires_llm: false,
+                has_artefact_store: true,
+                summary: "Built-in memory curator, always available".to_string(),
+            },
+        ),
+    ];
+    for (_, r) in &mut readiness {
+        r.has_artefact_store = true;
+    }
+
     let mut registry = RoleRegistry::new();
     registry.register(intent_lead.spec()).map_err(|err| {
         WorkbenchError::Init(format!("role registration (intent lead) failed: {err}"))
@@ -358,6 +392,12 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
     .await
     .with_scheduler(runtime.scheduler().clone());
 
+    state
+        .projection
+        .write()
+        .await
+        .set_role_readiness(&readiness);
+
     runtime.add_role(intent_lead);
     runtime.add_role(scholar);
     runtime.add_role(ops_manager);
@@ -398,6 +438,7 @@ impl WorkbenchProjection {
                     label: label.to_string(),
                     state: "Idle".to_string(),
                     summary: "Waiting for relevant events".to_string(),
+                    readiness: RoleReadiness::default(),
                 },
             )
         })
@@ -451,6 +492,18 @@ impl WorkbenchProjection {
 
     pub fn has_conversation_history(&self) -> bool {
         self.has_conversation
+    }
+
+    pub fn set_role_readiness(&mut self, readiness: &[(String, RoleReadiness)]) {
+        for (role_id, r) in readiness {
+            if let Some(role) = self.roles.get_mut(role_id) {
+                role.readiness = r.clone();
+            } else {
+                tracing::warn!(
+                    "set_role_readiness: role id {role_id} not found in projection, readiness skipped"
+                );
+            }
+        }
     }
 
     fn reviewable_task_id(&self, context: ReviewContext<'_>) -> Option<String> {
@@ -720,6 +773,20 @@ impl WorkbenchProjection {
                         timestamp_ns: *timestamp_ns,
                     });
                 }
+                if let Some(role) = self.roles.get(&worker_id.0)
+                    && role.readiness.capability != CapabilityStatus::Configured
+                {
+                    self.messages.push(MessageView {
+                        speaker: "System (Capability)".to_string(),
+                        content: format!(
+                            "{} running in {} mode: {}",
+                            label_for_role(&worker_id.0),
+                            role.readiness.capability,
+                            role.readiness.summary,
+                        ),
+                        timestamp_ns: *timestamp_ns,
+                    });
+                }
             }
             SemanticEvent::ReviewCompleted {
                 event_id,
@@ -823,6 +890,20 @@ impl WorkbenchProjection {
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
                 });
+                if let Some(role) = self.roles.get(&producer_role.0)
+                    && role.readiness.capability != CapabilityStatus::Configured
+                {
+                    self.messages.push(MessageView {
+                        speaker: "System (Capability)".to_string(),
+                        content: format!(
+                            "{} produced {} in {} mode (output may be deterministic fallback)",
+                            role.label,
+                            label_for_artefact(artefact_type),
+                            role.readiness.capability,
+                        ),
+                        timestamp_ns: *timestamp_ns,
+                    });
+                }
             }
             SemanticEvent::PolicyViolationDetected { .. }
             | SemanticEvent::EvidenceChainBroken { .. } => {
@@ -847,13 +928,33 @@ impl WorkbenchProjection {
                 self.add_step_event(task_id, event_id.to_string());
             }
             SemanticEvent::TaskCompleted {
-                event_id, task_id, ..
+                event_id,
+                task_id,
+                timestamp_ns,
+                ..
             } => {
                 if !self.completed_task_ids.contains(task_id) {
                     self.completed_task_ids.push(task_id.clone());
                 }
                 self.update_step(task_id, "Completed", "Task completed successfully");
                 self.add_step_event(task_id, event_id.to_string());
+                let worker_role = self
+                    .dag_steps
+                    .iter()
+                    .find(|step| step.id == *task_id)
+                    .and_then(|step| self.roles.get(&step.role));
+                if let Some(role) = worker_role
+                    && role.readiness.capability != CapabilityStatus::Configured
+                {
+                    self.messages.push(MessageView {
+                        speaker: "System (Capability)".to_string(),
+                        content: format!(
+                            "{} completed task in {} mode (output may be deterministic fallback)",
+                            role.label, role.readiness.capability,
+                        ),
+                        timestamp_ns: *timestamp_ns,
+                    });
+                }
             }
             SemanticEvent::BudgetWarning {
                 event_id,
@@ -946,6 +1047,24 @@ impl WorkbenchProjection {
                     acknowledged: false,
                     timestamp_ns: *timestamp_ns,
                 });
+            }
+            SemanticEvent::ClaimMade {
+                source_agent,
+                timestamp_ns,
+                ..
+            } => {
+                if let Some(role) = self.roles.get(&source_agent.0)
+                    && role.readiness.capability != CapabilityStatus::Configured
+                {
+                    self.messages.push(MessageView {
+                        speaker: "System (Capability)".to_string(),
+                        content: format!(
+                            "{} made a claim in {} mode (output may be deterministic fallback)",
+                            role.label, role.readiness.capability,
+                        ),
+                        timestamp_ns: *timestamp_ns,
+                    });
+                }
             }
             _ => {}
         }
@@ -1119,8 +1238,9 @@ impl WorkbenchProjection {
             .or_insert_with(|| RoleView {
                 id: role_id.to_string(),
                 label: label_for_role(role_id),
-                state,
-                summary,
+                state: state.clone(),
+                summary: summary.clone(),
+                readiness: RoleReadiness::default(),
             });
     }
 }
@@ -1299,10 +1419,135 @@ fn publish_role_task(state: &AppState, role_id: &str, message: &str) {
         RoleId::new(role_id),
         TaskContract {
             contract_id: Uuid::new_v4().to_string(),
-            description: format!("{}: {message}", role_specific_task_description(role_id)),
+            description: role_contract(role_id, message),
         },
         Vec::new(),
     ));
+}
+
+fn role_contract(role_id: &str, message: &str) -> String {
+    match role_id {
+        "intent-lead-001" => intent_lead_contract(message),
+        "scholar-001" => scholar_contract(message),
+        "ops-manager-001" => ops_manager_contract(message),
+        "architect-001" => architect_contract(message),
+        "pm-001" => pm_contract(message),
+        "worker-001" => worker_contract(message),
+        "reviewer-001" => reviewer_contract(message),
+        "auditor-001" => auditor_contract(message),
+        _ => format!("{}: {message}", role_specific_task_description(role_id)),
+    }
+}
+
+fn intent_lead_contract(message: &str) -> String {
+    format!(
+        "Intent elicitation and goal clarification: {message}\n\
+         Expected outputs:\n\
+         - Explicit goals with success criteria\n\
+         - Constraints and preferences captured\n\
+         - Open questions about scope and audience\n\
+         Acceptance criteria:\n\
+         - Intent brief MUST state what, who, and why\n\
+         - Assumptions MUST be explicitly listed"
+    )
+}
+
+fn ops_manager_contract(message: &str) -> String {
+    format!(
+        "Process guardrail selection and operation design: {message}\n\
+         Expected outputs:\n\
+         - Validation policy with concrete steps\n\
+         - Escalation rules with severity mapping\n\
+         - Delivery standards and review rubric\n\
+         Acceptance criteria:\n\
+         - Each SOP MUST cite a specific project need\n\
+         - Rubric dimensions MUST be independently assessable"
+    )
+}
+
+fn architect_contract(message: &str) -> String {
+    format!(
+        "Architectural design and technical planning: {message}\n\
+         Expected outputs:\n\
+         - Architecture Decision Record (ADR) with rationale\n\
+         - Interface specifications with contracts\n\
+         - Dependency rules and constraints\n\
+         Acceptance criteria:\n\
+         - Each decision MUST list alternatives considered\n\
+         - Tradeoffs MUST be explicitly stated"
+    )
+}
+
+fn pm_contract(message: &str) -> String {
+    format!(
+        "Work decomposition and task planning: {message}\n\
+         Expected outputs:\n\
+         - Task cards with clear boundaries\n\
+         - Delivery graph with dependency ordering\n\
+         - Assignment mapping to available workers\n\
+         Acceptance criteria:\n\
+         - Each task MUST have a single clear outcome\n\
+         - Dependencies MUST form a valid DAG (no cycles)"
+    )
+}
+
+fn reviewer_contract(message: &str) -> String {
+    format!(
+        "Quality review and acceptance: {message}\n\
+         Expected outputs:\n\
+         - Rubric assessment across all dimensions\n\
+         - Architectural compliance check against ADRs\n\
+         - Pass/fail/needs-rework determination\n\
+         Acceptance criteria:\n\
+         - Review MUST reference specific code or artefacts\n\
+         - Failure classifications MUST cite concrete findings"
+    )
+}
+
+fn auditor_contract(message: &str) -> String {
+    format!(
+        "Process and evidence auditing: {message}\n\
+         Expected outputs:\n\
+         - Evidence chain integrity assessment\n\
+         - Policy violation detection with severity\n\
+         - Process adherence verification\n\
+         Acceptance criteria:\n\
+         - Each finding MUST reference specific events\n\
+         - Violations MUST map to authoritative rules"
+    )
+}
+
+fn scholar_contract(message: &str) -> String {
+    format!(
+        "Research and evidence gathering: {message}\n\
+         Expected outputs:\n\
+         - Evidence findings with source references\n\
+         - Open questions with confidence levels\n\
+         - Architectural recommendations filtered out (scope boundary)\n\
+         Acceptance criteria:\n\
+         - Each claim MUST reference at least one evidence source\n\
+         - Confidence MUST be stated for every finding"
+    )
+}
+
+fn worker_contract(message: &str) -> String {
+    format!(
+        "Implementation and execution: {message}\n\
+         Expected outputs:\n\
+         - Code changes scoped to the assigned task\n\
+         - Validation results\n\
+         - Implementation patch with diff summary\n\
+         Rules:\n\
+         - Write only within the target repository/worktree (path traversal is prohibited)\n\
+         - Run validation commands before claiming completion:\n\
+           • cargo fmt --all -- --check\n\
+           • cargo test\n\
+         - Produce a TaskCompleted event with artefact references\n\
+         Safety:\n\
+         - This Worker writes to an isolated git worktree (or local fallback directory)\n\
+         - The target is the project repository at the configured worktree root\n\
+         - Changes are isolated from the main repository until validated"
+    )
 }
 
 fn inline_action_role_id(message: &str) -> Option<&'static str> {
@@ -1325,16 +1570,8 @@ fn inline_action_role_id(message: &str) -> Option<&'static str> {
 }
 
 fn role_specific_task_description(role_id: &str) -> &'static str {
-    match role_id {
-        "scholar-001" => "Research and evidence gathering",
-        "intent-lead-001" => "Intent elicitation and goal clarification",
-        "ops-manager-001" => "Process guardrail selection and operation design",
-        "architect-001" => "Architectural design and technical planning",
-        "pm-001" => "Work decomposition and task planning",
-        "worker-001" => "Implementation and execution",
-        "auditor-001" => "Process and evidence auditing",
-        _ => "General task",
-    }
+    let _ = role_id;
+    "General task"
 }
 
 fn mentioned_role_ids(message: &str) -> Vec<&'static str> {
@@ -1824,28 +2061,24 @@ mod tests {
     }
 
     #[test]
-    fn role_specific_task_descriptions_are_distinct() {
-        let descriptions: Vec<&str> = [
-            "scholar-001",
+    fn role_contract_covers_all_known_role_ids() {
+        // Every known role ID should get its own contract builder, not the fallback
+        for role_id in [
             "intent-lead-001",
+            "scholar-001",
             "ops-manager-001",
             "architect-001",
             "pm-001",
             "worker-001",
+            "reviewer-001",
             "auditor-001",
-        ]
-        .into_iter()
-        .map(role_specific_task_description)
-        .collect();
-
-        let mut unique = descriptions.clone();
-        unique.sort();
-        unique.dedup();
-        assert_eq!(
-            descriptions.len(),
-            unique.len(),
-            "each role should have a unique description"
-        );
+        ] {
+            let contract = role_contract(role_id, "test message");
+            assert!(
+                !contract.starts_with("General task:"),
+                "role {role_id} should have a specific contract, got fallback",
+            );
+        }
     }
 
     #[test]
@@ -2737,7 +2970,11 @@ mod tests {
 
         let projection = WorkbenchProjection::from_events(&events, &store).await;
 
-        assert_eq!(projection.messages.len(), 2, "should have 2 messages");
+        assert_eq!(
+            projection.messages.len(),
+            4,
+            "should have 4 messages (2 conversation + 2 capability)"
+        );
         assert!(!projection.artefacts.is_empty(), "should have artefacts");
         assert!(!projection.dag_steps.is_empty(), "should have DAG steps");
 
@@ -3389,5 +3626,190 @@ mod tests {
             redact_database_url("/var/run/postgres.sock"),
             "/var/run/postgres.sock",
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Role capability readiness tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn projection_has_readiness_on_role_views() {
+        let projection = WorkbenchProjection::new();
+
+        let scholar = projection
+            .roles
+            .get("scholar-001")
+            .expect("should have scholar");
+        assert_eq!(scholar.readiness.capability, CapabilityStatus::Fallback);
+        assert!(!scholar.readiness.has_llm_client);
+
+        let worker = projection
+            .roles
+            .get("worker-001")
+            .expect("should have worker");
+        assert_eq!(worker.readiness.capability, CapabilityStatus::Fallback);
+
+        let librarian = projection
+            .roles
+            .get("librarian")
+            .expect("should have librarian");
+        assert_eq!(librarian.readiness.capability, CapabilityStatus::Fallback);
+        assert!(!librarian.readiness.requires_llm);
+    }
+
+    #[tokio::test]
+    async fn fallback_role_task_assignment_produces_capability_warning() {
+        let store = Arc::new(ArtefactStore::new());
+        let mut projection = WorkbenchProjection::new();
+
+        // Set up fallback readiness for worker
+        if let Some(role) = projection.roles.get_mut("worker-001") {
+            role.readiness = RoleReadiness {
+                capability: CapabilityStatus::Fallback,
+                has_llm_client: false,
+                has_tools: false,
+                tool_count: 0,
+                fallback_worktree: true,
+                requires_llm: true,
+                has_artefact_store: false,
+                summary: "Worker in fallback mode".to_string(),
+            };
+        }
+
+        let task_id = Uuid::new_v4().to_string();
+        let event = SemanticEvent::new_task_assigned(
+            RoleId::new("human"),
+            &task_id,
+            RoleId::new("worker-001"),
+            TaskContract {
+                contract_id: Uuid::new_v4().to_string(),
+                description: "build feature".to_string(),
+            },
+            Vec::new(),
+        );
+
+        projection.apply_event(&event, &store).await;
+
+        let capability_msg = projection
+            .messages
+            .iter()
+            .find(|m| m.speaker.contains("Capability"));
+        assert!(
+            capability_msg.is_some(),
+            "should have a capability warning message when dispatching to a fallback role"
+        );
+        assert!(
+            capability_msg.unwrap().content.contains("fallback mode"),
+            "capability message should mention fallback: {}",
+            capability_msg.unwrap().content
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_role_task_assignment_does_not_produce_warning() {
+        let store = Arc::new(ArtefactStore::new());
+        let mut projection = WorkbenchProjection::new();
+
+        // Set up configured readiness
+        if let Some(role) = projection.roles.get_mut("worker-001") {
+            role.readiness = RoleReadiness {
+                capability: CapabilityStatus::Configured,
+                has_llm_client: true,
+                has_tools: true,
+                tool_count: 3,
+                fallback_worktree: false,
+                requires_llm: true,
+                has_artefact_store: false,
+                summary: "Fully configured".to_string(),
+            };
+        }
+
+        let task_id = Uuid::new_v4().to_string();
+        let event = SemanticEvent::new_task_assigned(
+            RoleId::new("human"),
+            &task_id,
+            RoleId::new("worker-001"),
+            TaskContract {
+                contract_id: Uuid::new_v4().to_string(),
+                description: "build feature".to_string(),
+            },
+            Vec::new(),
+        );
+
+        projection.apply_event(&event, &store).await;
+
+        let capability_msg = projection
+            .messages
+            .iter()
+            .find(|m| m.speaker.contains("Capability"));
+        assert!(
+            capability_msg.is_none(),
+            "should not have a capability warning for configured role"
+        );
+    }
+
+    #[test]
+    fn scholar_contract_contains_expected_content() {
+        let contract = scholar_contract("investigate options");
+        assert!(contract.contains("Research and evidence gathering"));
+        assert!(contract.contains("evidence"));
+        assert!(contract.contains("Open questions"));
+        assert!(contract.contains("confidence"));
+        assert!(contract.contains("source references"));
+        assert!(contract.contains("Architectural recommendations filtered out"));
+        assert!(contract.contains("investigate options"));
+    }
+
+    #[test]
+    fn worker_contract_contains_expected_content() {
+        let contract = worker_contract("implement the feature");
+        assert!(contract.contains("Implementation and execution"));
+        assert!(contract.contains("implement the feature"));
+        assert!(contract.contains("cargo fmt"));
+        assert!(contract.contains("cargo test"));
+        assert!(contract.contains("path traversal"));
+        assert!(contract.contains("worktree"));
+        assert!(contract.contains("TaskCompleted"));
+        assert!(contract.contains("Safety"));
+    }
+
+    #[test]
+    fn fallback_role_readiness_exposes_missing_providers() {
+        let scholar = Scholar::new();
+        let readiness = scholar.role_readiness();
+        assert_eq!(readiness.capability, CapabilityStatus::Fallback);
+        assert!(!readiness.has_llm_client);
+        assert!(readiness.requires_llm);
+        assert!(
+            readiness.summary.contains("missing"),
+            "should mention missing LLM: {}",
+            readiness.summary
+        );
+    }
+
+    #[test]
+    fn role_readiness_displays_correct_status_label() {
+        assert_eq!(CapabilityStatus::Configured.to_string(), "configured");
+        assert_eq!(CapabilityStatus::Degraded.to_string(), "degraded");
+        assert_eq!(CapabilityStatus::Fallback.to_string(), "fallback");
+        assert_eq!(CapabilityStatus::Unavailable.to_string(), "unavailable");
+    }
+
+    #[test]
+    fn worker_readiness_includes_fallback_worktree() {
+        let worker = Worker::new().with_fallback_worktree(true);
+        let readiness = worker.role_readiness();
+        assert_eq!(readiness.capability, CapabilityStatus::Fallback);
+        assert!(readiness.fallback_worktree);
+        assert!(readiness.summary.contains("Fallback worktree: yes"));
+    }
+
+    #[test]
+    fn worker_without_llm_or_fallback_returns_unavailable() {
+        let worker = Worker::new();
+        let readiness = worker.role_readiness();
+        assert_eq!(readiness.capability, CapabilityStatus::Unavailable);
+        assert!(!readiness.fallback_worktree);
+        assert!(!readiness.has_llm_client);
     }
 }

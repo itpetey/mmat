@@ -6,7 +6,8 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use chrono::Utc;
 use mmat_coordinator::{
-    AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
+    AuthorityScope, Budget, CapabilityStatus, Role, RoleContext, RoleError, RoleLifecycleState,
+    RoleReadiness, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{
     EventId, EventType, EvidenceRef, ReviewFinding, RoleId as EventRoleId, SemanticEvent,
@@ -685,6 +686,34 @@ impl Role for OpsManager {
 
     fn subscriptions(&self) -> &'static [EventType] {
         &[EventType::TaskAssigned, EventType::ReviewCompleted]
+    }
+
+    fn role_readiness(&self) -> RoleReadiness {
+        let has_llm = self.has_llm_client();
+        let tools = self.tool_count() as u32;
+        let has_tools = tools > 0;
+        let capability = if has_llm && has_tools {
+            CapabilityStatus::Configured
+        } else if has_llm || has_tools {
+            CapabilityStatus::Degraded
+        } else {
+            CapabilityStatus::Fallback
+        };
+        RoleReadiness {
+            capability,
+            has_llm_client: has_llm,
+            has_tools,
+            tool_count: tools,
+            fallback_worktree: false,
+            requires_llm: false,
+            has_artefact_store: false,
+            summary: format!(
+                "LLM: {}, Tools: {} — {}",
+                if has_llm { "configured" } else { "missing" },
+                tools,
+                capability,
+            ),
+        }
     }
 
     async fn run(self: Arc<Self>, ctx: RoleContext) -> Result<(), RoleError> {

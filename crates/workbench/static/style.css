@@ -11,6 +11,10 @@
   --architect: #eace5e;
   --panel: #070a0f;
   --badge: #ff2d55;
+  --ready-configured: #23e09e;
+  --ready-degraded: #f2c572;
+  --ready-fallback: #8b8b8b;
+  --ready-unavailable: #ff2d55;
 }
 * { box-sizing: border-box; }
 body {
@@ -64,6 +68,7 @@ textarea { width: 100%; min-height: 54px; resize: vertical; background: transpar
 .submit-hint strong { color: var(--muted); }
 .submit-hint code { font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; }
 .dag-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 32px; }
+.dag-column { min-width: 0; }
 .dag-canvas { min-height: calc(100vh - 186px); border-top: 1px solid #20242b; padding-top: 40px; display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 34px; align-content: start; }
 .dag-step { color: white; background: transparent; border: 1px solid #30343b; text-align: left; padding: 16px; min-height: 120px; }
 .dag-step.active { border-color: var(--me); box-shadow: 0 0 0 1px var(--me); }
@@ -79,4 +84,15 @@ textarea { width: 100%; min-height: 54px; resize: vertical; background: transpar
 pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--muted); font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace; font-size: 12px; }
 .compact-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .compact-list li, .empty { color: var(--muted); }
+.role-readiness { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #20242b; }
+.role-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid #30343b; background: #080b10; color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.role-badge:hover { border-color: var(--me); }
+.role-badge.active { border-color: var(--me); box-shadow: 0 0 0 1px var(--me); }
+.role-badge .status-dot { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
+.role-badge .status-dot.configured { background: var(--ready-configured); }
+.role-badge .status-dot.degraded { background: var(--ready-degraded); }
+.role-badge .status-dot.fallback { background: var(--ready-fallback); }
+.role-badge .status-dot.unavailable { background: var(--ready-unavailable); }
+.role-badge .role-name { font-weight: 600; }
+.role-badge .role-status { color: var(--muted); font-size: 11px; }
 @media (max-width: 920px) { .app-shell { padding: 22px; } .topbar { grid-template-columns: 1fr auto; gap: 14px; } .wordmark { grid-column: 1 / -1; grid-row: 1; margin-top: 0; } .project-mark { grid-row: 2; } .view-actions { grid-row: 2; } .channel-row { grid-template-columns: 72px minmax(0, 1fr); } .dag-layout { grid-template-columns: 1fr; } .side-panel { border-left: 0; padding-left: 0; } }

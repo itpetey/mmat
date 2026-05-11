@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use mmat_coordinator::{
-    AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
+    AuthorityScope, Budget, CapabilityStatus, Role, RoleContext, RoleError, RoleLifecycleState,
+    RoleReadiness, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
 use mmat_llm::{client::LlmClient, executor::Executor};
@@ -321,6 +322,34 @@ impl Role for IntentLead {
 
     fn subscriptions(&self) -> &'static [EventType] {
         &[EventType::HumanFeedbackReceived, EventType::TaskCompleted]
+    }
+
+    fn role_readiness(&self) -> RoleReadiness {
+        let has_llm = self.has_llm_client();
+        let tools = self.read_tool_count() as u32;
+        let has_tools = tools > 0;
+        let capability = if has_llm && has_tools {
+            CapabilityStatus::Configured
+        } else if has_llm {
+            CapabilityStatus::Degraded
+        } else {
+            CapabilityStatus::Fallback
+        };
+        RoleReadiness {
+            capability,
+            has_llm_client: has_llm,
+            has_tools,
+            tool_count: tools,
+            fallback_worktree: false,
+            requires_llm: false,
+            has_artefact_store: false,
+            summary: format!(
+                "LLM: {}, Read tools: {} — {}",
+                if has_llm { "configured" } else { "missing" },
+                tools,
+                capability,
+            ),
+        }
     }
 
     async fn run(self: Arc<Self>, mut ctx: RoleContext) -> Result<(), RoleError> {

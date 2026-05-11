@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use mmat_coordinator::{
-    AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
+    AuthorityScope, Budget, CapabilityStatus, Role, RoleContext, RoleError, RoleLifecycleState,
+    RoleReadiness, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{
     EscalationSeverity, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent,
@@ -368,6 +369,29 @@ impl Role for Architect {
 
     fn subscriptions(&self) -> &'static [EventType] {
         &[EventType::TaskAssigned]
+    }
+
+    fn role_readiness(&self) -> RoleReadiness {
+        let has_llm = self.has_llm_client();
+        let capability = if has_llm {
+            CapabilityStatus::Configured
+        } else {
+            CapabilityStatus::Fallback
+        };
+        RoleReadiness {
+            capability,
+            has_llm_client: has_llm,
+            has_tools: false,
+            tool_count: 0,
+            fallback_worktree: false,
+            requires_llm: true,
+            has_artefact_store: false,
+            summary: format!(
+                "LLM: {} — {}",
+                if has_llm { "configured" } else { "missing" },
+                capability,
+            ),
+        }
     }
 
     async fn run(self: Arc<Self>, ctx: RoleContext) -> Result<(), RoleError> {

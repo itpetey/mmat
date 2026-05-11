@@ -27,6 +27,12 @@ pub trait Role: Send + Sync + 'static {
 
     /// Runs the role's main event loop with the given context.
     async fn run(self: Arc<Self>, ctx: RoleContext) -> std::result::Result<(), RoleError>;
+
+    /// Returns the capability readiness status for this role.
+    /// Default returns [`RoleReadiness::default`] (fallback, no capability info).
+    fn role_readiness(&self) -> RoleReadiness {
+        RoleReadiness::default()
+    }
 }
 
 #[async_trait]
@@ -91,6 +97,68 @@ pub enum AuthorityScope {
     Audit,
     /// May publish any event type.
     FullAccess,
+}
+
+/// The capability status of a role indicating whether required providers,
+/// tools, and infrastructure are available.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CapabilityStatus {
+    /// All required providers and tools are configured and available.
+    Configured,
+    /// Some providers or tools are missing but the role can still function with limitations.
+    Degraded,
+    /// No external providers are available; the role uses deterministic fallback behaviour.
+    Fallback,
+    /// The role cannot function at all without the missing configuration.
+    Unavailable,
+}
+
+impl std::fmt::Display for CapabilityStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Configured => write!(f, "configured"),
+            Self::Degraded => write!(f, "degraded"),
+            Self::Fallback => write!(f, "fallback"),
+            Self::Unavailable => write!(f, "unavailable"),
+        }
+    }
+}
+
+/// Readiness information for a role indicating which capabilities are present
+/// and which are missing or degraded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleReadiness {
+    /// Overall capability status derived from provider and tool checks.
+    pub capability: CapabilityStatus,
+    /// Whether an LLM client is configured.
+    pub has_llm_client: bool,
+    /// Whether the role's tool registry has at least one registered tool.
+    pub has_tools: bool,
+    /// Count of registered tools for this role.
+    pub tool_count: u32,
+    /// Whether the role is running with fallback worktree support.
+    pub fallback_worktree: bool,
+    /// Whether the role requires an LLM client to be useful.
+    pub requires_llm: bool,
+    /// Whether the artefact store is configured for persistence.
+    pub has_artefact_store: bool,
+    /// Human-readable description of the readiness state.
+    pub summary: String,
+}
+
+impl Default for RoleReadiness {
+    fn default() -> Self {
+        Self {
+            capability: CapabilityStatus::Fallback,
+            has_llm_client: false,
+            has_tools: false,
+            tool_count: 0,
+            fallback_worktree: false,
+            requires_llm: false,
+            has_artefact_store: false,
+            summary: "No capability information available".to_string(),
+        }
+    }
 }
 
 /// Resource budget constraining a role's execution.

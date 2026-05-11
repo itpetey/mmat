@@ -8,7 +8,8 @@ use std::{
 
 use async_trait::async_trait;
 use mmat_coordinator::{
-    AuthorityScope, Budget, Role, RoleContext, RoleError, RoleLifecycleState, RoleSpec, RoleType,
+    AuthorityScope, Budget, CapabilityStatus, Role, RoleContext, RoleError, RoleLifecycleState,
+    RoleReadiness, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{
     ArtefactRef, EventId, EventType, EvidenceRef, RepositoryOutputRef, RoleId as EventRoleId,
@@ -517,6 +518,36 @@ impl Role for Worker {
 
     fn subscriptions(&self) -> &'static [EventType] {
         &[EventType::TaskAssigned]
+    }
+
+    fn role_readiness(&self) -> RoleReadiness {
+        let has_llm = self.has_llm_client();
+        let capability = if has_llm {
+            CapabilityStatus::Configured
+        } else if self.allow_fallback_worktree {
+            CapabilityStatus::Fallback
+        } else {
+            CapabilityStatus::Unavailable
+        };
+        RoleReadiness {
+            capability,
+            has_llm_client: has_llm,
+            has_tools: false,
+            tool_count: 0,
+            fallback_worktree: self.allow_fallback_worktree,
+            requires_llm: true,
+            has_artefact_store: false,
+            summary: format!(
+                "LLM: {}, Fallback worktree: {} — {}",
+                if has_llm { "configured" } else { "missing" },
+                if self.allow_fallback_worktree {
+                    "yes"
+                } else {
+                    "no"
+                },
+                capability,
+            ),
+        }
     }
 
     async fn run(self: Arc<Self>, ctx: RoleContext) -> Result<(), RoleError> {

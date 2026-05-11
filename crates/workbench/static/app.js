@@ -1,6 +1,7 @@
 let state = { project: {}, roles: {}, events: [], messages: [], artefacts: [], memories: [], notifications: [], dag_steps: [], active_artefact_id: null, active_step_id: null };
 let selectedArtefactId = null;
 let selectedStepId = null;
+let selectedRoleId = null;
 let activeView = 'chat';
 
 async function loadState() {
@@ -24,6 +25,7 @@ function connectEvents() {
 function render() {
   renderHeader();
   renderConversation();
+  renderRoleReadiness();
   renderDag();
   renderStepDetail();
   renderNotifications();
@@ -83,6 +85,30 @@ function isChannelEvent(event) {
   return !['OrganisationStarted', 'OrganisationStopped', 'RoleStateChanged', 'Heartbeat'].includes(event.variant);
 }
 
+function renderRoleReadiness() {
+  const root = document.getElementById('role-readiness');
+  if (!root) return;
+  const roles = state.roles || {};
+  const entries = Object.entries(roles);
+  if (!entries.length) {
+    root.innerHTML = '<div class="empty">No role information yet.</div>';
+    return;
+  }
+  root.innerHTML = '';
+  for (const [roleId, role] of entries) {
+    const r = role.readiness || {};
+    const capability = r.capability || 'fallback';
+    const label = role.label || 'Role';
+    const badge = document.createElement('button');
+    badge.type = 'button';
+    badge.className = `role-badge${selectedRoleId === roleId ? ' active' : ''}`;
+    badge.onclick = () => { selectedRoleId = roleId; selectedStepId = null; renderRoleReadiness(); renderRoleDetail(); };
+    badge.innerHTML = `<span class="status-dot ${escapeHtml(capability)}" title="${escapeHtml(capability)}"></span><span class="role-name">${escapeHtml(label)}</span><span class="role-status">${escapeHtml(capability)}</span>`;
+    root.appendChild(badge);
+  }
+  if (selectedRoleId) renderRoleDetail();
+}
+
 function renderDag() {
   const root = document.getElementById('dag');
   const steps = state.dag_steps || [];
@@ -92,13 +118,17 @@ function renderDag() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `dag-step ${step.id === activeId ? 'active' : ''}`;
-    button.onclick = () => { selectedStepId = step.id; renderDag(); renderStepDetail(); };
+    button.onclick = () => { selectedStepId = step.id; selectedRoleId = null; renderRoleReadiness(); renderDag(); renderStepDetail(); };
     button.innerHTML = `<strong>${escapeHtml(step.label)}</strong><div class="state">${escapeHtml(step.state)} · ${escapeHtml(step.role)}</div><div>${escapeHtml(step.summary)}</div>`;
     root.appendChild(button);
   }
 }
 
 function renderStepDetail() {
+  if (selectedRoleId) {
+    renderRoleDetail();
+    return;
+  }
   const root = document.getElementById('step-detail');
   const steps = state.dag_steps || [];
   const step = steps.find(s => s.id === (selectedStepId || state.active_step_id)) || steps[0];
@@ -115,6 +145,38 @@ function renderStepDetail() {
       <div class="detail-card"><h3>Logs</h3>${eventsHtml(events)}</div>
       <div class="detail-card"><h3>Memory</h3>${memoriesHtml(state.memories || [])}</div>
       <div class="detail-card"><h3>CoT</h3><p class="empty">Raw chain-of-thought is intentionally not shown. MMAT exposes consequential semantic events, claims, artefacts and evidence instead.</p></div>
+    </div>
+  `;
+}
+
+function renderRoleDetail() {
+  const root = document.getElementById('step-detail');
+  const roles = state.roles || {};
+  const role = roles[selectedRoleId];
+  if (!role) {
+    root.innerHTML = '<div class="empty">Role not found in current state.</div>';
+    return;
+  }
+  const r = role.readiness || {};
+  const capability = r.capability || 'unknown';
+  const summary = r.summary || 'No readiness information';
+  root.innerHTML = `
+    <div class="detail-card"><h3>${escapeHtml(role.label || selectedRoleId)} — Readiness</h3></div>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <div class="meta">Status: <span class="status-dot ${escapeHtml(capability)}" style="display:inline-block;vertical-align:middle;margin-right:4px;"></span>${escapeHtml(capability)}</div>
+        <div>${escapeHtml(summary)}</div>
+      </div>
+      <div class="detail-card">
+        <h3>Capability Details</h3>
+        <ul class="compact-list">
+          <li>LLM client: ${r.has_llm_client ? 'configured' : 'missing'}</li>
+          <li>Tools: ${r.has_tools ? r.tool_count + ' registered' : 'none'}</li>
+          <li>Fallback worktree: ${r.fallback_worktree ? 'enabled' : 'disabled'}</li>
+          <li>Storage access: ${r.has_artefact_store ? 'available' : 'unavailable'}</li>
+          <li>Requires LLM: ${r.requires_llm ? 'yes' : 'no, operates deterministically'}</li>
+        </ul>
+      </div>
     </div>
   `;
 }
