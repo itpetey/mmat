@@ -5,7 +5,7 @@ The project SHALL document all required and optional environment variables for r
 
 #### Scenario: Developer reads README
 - **WHEN** a developer reads the workbench usage section
-- **THEN** it MUST list `DATABASE_URL` as required
+- **THEN** it MUST list `MMAT_DB_URL` as required
 - **AND** `MMAT_WORKBENCH_ADDR` as optional
 
 ### Requirement: Workbench startup errors are actionable

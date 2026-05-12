@@ -1413,7 +1413,7 @@ mod tests {
     }
 
     async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, String)> {
-        let base_url = std::env::var("DATABASE_URL").ok()?;
+        let base_url = std::env::var("MMAT_DB_URL").ok()?;
         let schema = format!("{}_{}", prefix, now_nanos());
         let admin_pool = PgPoolOptions::new()
             .max_connections(1)

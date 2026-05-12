@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add `host_work_dir: Option<PathBuf>` field to `OrganisationConfig` in `crates/coordinator/src/runtime.rs`
 - [x] 1.2 Add `host_work_dir: None` to the `Default` impl for `OrganisationConfig`
-- [x] 1.3 Read `MMAT_HOST_WORK_DIR` env var in `build_runtime` (`crates/workbench/src/app.rs`) and populate `OrganisationConfig::host_work_dir`
+- [x] 1.3 Read `MMAT_PROJECT_DIR` env var in `build_runtime` (`crates/workbench/src/app.rs`) and populate `OrganisationConfig::host_work_dir`
 - [x] 1.4 Validate that `host_work_dir` exists and is a directory at startup (in `build_runtime`), failing with a clear error if set to a non-existent path
 
 ## 2. RoleContext — thread host work dir to roles

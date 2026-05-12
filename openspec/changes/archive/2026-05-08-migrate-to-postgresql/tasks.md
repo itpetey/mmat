@@ -51,7 +51,7 @@
 
 ## 6. Test Infrastructure
 
-- [x] 6.1 Add Postgres service + `DATABASE_URL` support for CI-backed Postgres tests
+- [x] 6.1 Add Postgres service + `MMAT_DB_URL` support for CI-backed Postgres tests
 - [x] 6.2 Update `event-stream/tests/integration.rs` — add Postgres store tests with unique schema per test
 - [x] 6.3 Update `memory/tests/integration.rs` — add Postgres memory store tests with unique schema per test
 - [x] 6.4 Update `roles/tests/auditor_tests.rs` and `role_flow_tests.rs` — update artefact reads to use new URI format
@@ -63,6 +63,6 @@
 ## 7. CI and Documentation
 
 - [x] 7.1 Update GitHub Actions workflow — add `services.postgres` with `postgres:16` + pgvector image
-- [x] 7.2 Update `.env.example` or equivalent with `DATABASE_URL` connection string
+- [x] 7.2 Update `.env.example` or equivalent with `MMAT_DB_URL` connection string
 - [x] 7.3 Add `**/.mmat/` removal note — directory no longer created (unless running legacy SQLite mode)
 - [x] 7.4 Run `cargo fmt --all`, `cargo clippy -- -D warnings`, `cargo test` — fix any issues

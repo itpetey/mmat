@@ -25,7 +25,7 @@
 
 ## 4. Implement project discovery from filesystem
 
-- [x] 4.1 Add project discovery function in the `project` crate that scans `MMAT_HOST_WORK_DIR` and returns a list of valid project directories
+- [x] 4.1 Add project discovery function in the `project` crate that scans `MMAT_PROJECT_DIR` and returns a list of valid project directories
 - [x] 4.2 Implement validation logic: a directory is a valid project if it contains a recognisable project structure (e.g., `Cargo.toml` for Rust, `package.json` for Node)
 - [x] 4.3 Call discovery during `startup_projection()` in `main.rs`, publishing `ProjectListed` events for each discovered directory not already in the projection
 

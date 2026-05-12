@@ -46,10 +46,10 @@ Start Postgres and Qdrant:
 docker compose up -d
 ```
 
-Set `DATABASE_URL` in your environment using the connection details from `.env.example`:
+Set `MMAT_DB_URL` in your environment using the connection details from `.env.example`:
 
 ```bash
-export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
+export MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat
 ```
 
 ### Workbench Environment Variables
@@ -58,7 +58,7 @@ The `mmat-workbench` binary reads these environment variables at startup:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|---|
-| `DATABASE_URL` | Yes | — | Postgres connection string for event, memory, and artefact stores. |
+| `MMAT_DB_URL` | Yes | — | Postgres connection string for event, memory, and artefact stores. |
 | `MMAT_WORKBENCH_ADDR` | No | `127.0.0.1:8080` | Address and port the HTTP server binds to. |
 | `MMAT_QDRANT_URL` | No | — | Qdrant gRPC URL (e.g. `http://localhost:6334`). When unset, vector operations use a no-op backend. |
 | `MMAT_QDRANT_API_KEY` | No | — | Optional API key for Qdrant authentication. |
@@ -73,10 +73,10 @@ cargo test       # run all workspace tests (unit + integration)
 cargo test -p <crate>  # run tests for a specific crate
 ```
 
-Some integration tests require a running Postgres instance and the `DATABASE_URL` environment variable. Without it, those tests are silently skipped:
+Some integration tests require a running Postgres instance and the `MMAT_DB_URL` environment variable. Without it, those tests are silently skipped:
 
 ```bash
-export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
+export MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat
 cargo test
 ```
 
@@ -141,20 +141,20 @@ docker compose up -d
 Run the workbench frontend during development (no vector backend):
 
 ```bash
-DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run -p mmat-workbench
+MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run -p mmat-workbench
 ```
 
 Run with Qdrant vector search:
 
 ```bash
-DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
+MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat \
   MMAT_QDRANT_URL=http://localhost:6334 cargo run -p mmat-workbench
 ```
 
 Then open `http://127.0.0.1:8080`. Override the bind address with `MMAT_WORKBENCH_ADDR`, for example:
 
 ```bash
-DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
+MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat \
   MMAT_QDRANT_URL=http://localhost:6334 \
   MMAT_WORKBENCH_ADDR=127.0.0.1:8090 cargo run -p mmat-workbench
 ```
@@ -162,17 +162,17 @@ DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
 Run an optimised release build:
 
 ```bash
-DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run --release -p mmat-workbench
+MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run --release -p mmat-workbench
 ```
 
 The release binary can also be run directly from `target/release/mmat-workbench` after a build:
 
 ```bash
 cargo build --release
-DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat ./target/release/mmat-workbench
+MMAT_DB_URL=postgres://mmat:mmat@localhost:5432/mmat ./target/release/mmat-workbench
 ```
 
-The workbench requires a valid Postgres `DATABASE_URL` and will fail at startup with a clear message if one is not set. It hydrates its UI projection by replaying persisted Postgres events, so the browser resumes the previous conversation history instead of starting from a blank projection. Static assets (HTML, CSS, JavaScript) are compiled into the binary at build time via `include_str!()`, so no separate asset directory is needed at runtime.
+The workbench requires a valid Postgres `MMAT_DB_URL` and will fail at startup with a clear message if one is not set. It hydrates its UI projection by replaying persisted Postgres events, so the browser resumes the previous conversation history instead of starting from a blank projection. Static assets (HTML, CSS, JavaScript) are compiled into the binary at build time via `include_str!()`, so no separate asset directory is needed at runtime.
 
 Migrate legacy SQLite stores into Postgres (one-off for existing `.mmat` data):
 
@@ -207,7 +207,7 @@ cargo build --release
 - The workspace uses Rust Edition 2024.
 - Dependencies are centralised in `[workspace.dependencies]` in the root `Cargo.toml`.
 - The event stream is the main integration surface between roles, memory, and coordination.
-- The workbench requires `DATABASE_URL` and uses Postgres-backed event, memory, and artefact stores exclusively. The coordinator runtime still supports SQLite and `.mmat/artefacts/` file-based fallback outside the workbench for backward compatibility; these legacy paths are retained for the migration tool and for non-workbench usage.
+- The workbench requires `MMAT_DB_URL` and uses Postgres-backed event, memory, and artefact stores exclusively. The coordinator runtime still supports SQLite and `.mmat/artefacts/` file-based fallback outside the workbench for backward compatibility; these legacy paths are retained for the migration tool and for non-workbench usage.
 - `**/.mmat/` remains ignored for any remaining legacy data that has not yet been migrated.
 - Memory entries carry metadata such as type, scope, authority, confidence, source role, evidence references, supersession, and decay policy.
 - LLM support is provider-shaped around OpenAI-compatible chat completions rather than hard-wiring higher-level role behaviour to one service.

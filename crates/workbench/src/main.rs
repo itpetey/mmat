@@ -9,6 +9,7 @@ use mmat_workbench::{
     DEFAULT_BIND_ADDR, WorkbenchError, build_app_router, build_runtime, seed_workbench,
     spawn_projection_task, startup_projection,
 };
+use tokio::signal;
 use tracing::{error, info};
 
 #[tokio::main]
@@ -63,8 +64,35 @@ async fn main() -> Result<(), WorkbenchError> {
     info!("MMAT workbench listening on http://{}", socket_addr);
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(WorkbenchError::Server)
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("shutdown signal received, starting graceful shutdown");
 }
 
 async fn build_vector_backend() -> Result<Arc<dyn VectorMemoryBackend>, WorkbenchError> {

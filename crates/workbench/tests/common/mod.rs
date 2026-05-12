@@ -49,9 +49,9 @@ pub async fn spawn_test_server(state: AppState) -> String {
 
 /// Create a temporary Postgres schema for a test and return the
 /// (database_url_with_schema, admin_pool, schema_name).
-/// Returns `None` when `DATABASE_URL` is not set.
+/// Returns `None` when `MMAT_DB_URL` is not set.
 pub async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, String)> {
-    let base_url = std::env::var("DATABASE_URL").ok()?;
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
 
     let schema = format!(
         "{}_{}",

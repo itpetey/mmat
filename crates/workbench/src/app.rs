@@ -454,12 +454,12 @@ fn redact_database_url(url: &str) -> String {
 }
 
 fn require_database_url() -> Result<String, WorkbenchError> {
-    std::env::var("DATABASE_URL").map_err(|_| {
+    std::env::var("MMAT_DB_URL").map_err(|_| {
         WorkbenchError::Init(
-            "DATABASE_URL is not set.\n\
+            "MMAT_DB_URL is not set.\n\
              The workbench requires a Postgres database to store events, memories, and artefacts.\n\
-             Set DATABASE_URL in your environment, for example:\n\
-             export DATABASE_URL=\"postgres://user:password@localhost:5432/mmat\""
+             Set MMAT_DB_URL in your environment, for example:\n\
+             export MMAT_DB_URL=\"postgres://user:password@localhost:5432/mmat\""
                 .to_string(),
         )
     })
@@ -474,13 +474,13 @@ fn parse_host_work_dir_from_env(
             let p = std::path::PathBuf::from(path);
             if !p.exists() {
                 return Err(WorkbenchError::Init(format!(
-                    "MMAT_HOST_WORK_DIR points to a non-existent path: {}",
+                    "MMAT_PROJECT_DIR points to a non-existent path: {}",
                     p.display()
                 )));
             }
             if !p.is_dir() {
                 return Err(WorkbenchError::Init(format!(
-                    "MMAT_HOST_WORK_DIR is not a directory: {}",
+                    "MMAT_PROJECT_DIR is not a directory: {}",
                     p.display()
                 )));
             }
@@ -489,9 +489,9 @@ fn parse_host_work_dir_from_env(
         .transpose()
 }
 
-/// Parses and validates the `MMAT_HOST_WORK_DIR` environment variable.
+/// Parses and validates the `MMAT_PROJECT_DIR` environment variable.
 fn parse_host_work_dir() -> Result<Option<std::path::PathBuf>, WorkbenchError> {
-    parse_host_work_dir_from_env(std::env::var("MMAT_HOST_WORK_DIR").ok())
+    parse_host_work_dir_from_env(std::env::var("MMAT_PROJECT_DIR").ok())
 }
 
 pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
@@ -3910,16 +3910,16 @@ mod tests {
     #[test]
     fn missing_database_url_error_message_is_clear() {
         let err = WorkbenchError::Init(
-            "DATABASE_URL is not set.\n\
+            "MMAT_DB_URL is not set.\n\
              The workbench requires a Postgres database to store events, memories, and artefacts.\n\
-             Set DATABASE_URL in your environment, for example:\n\
-             export DATABASE_URL=\"postgres://user:password@localhost:5432/mmat\""
+             Set MMAT_DB_URL in your environment, for example:\n\
+             export MMAT_DB_URL=\"postgres://user:password@localhost:5432/mmat\""
                 .to_string(),
         );
         let msg = err.to_string();
         assert!(
-            msg.contains("DATABASE_URL"),
-            "should mention DATABASE_URL: {msg}",
+            msg.contains("MMAT_DB_URL"),
+            "should mention MMAT_DB_URL: {msg}",
         );
         assert!(msg.contains("Postgres"), "should mention Postgres: {msg}",);
     }
@@ -3960,11 +3960,11 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_event_replay_preserves_events_across_restart() {
-        let base_url = match std::env::var("DATABASE_URL") {
+        let base_url = match std::env::var("MMAT_DB_URL") {
             Ok(url) => url,
             Err(_) => {
                 println!(
-                    "[SKIP] postgres_event_replay_preserves_events_across_restart requires DATABASE_URL"
+                    "[SKIP] postgres_event_replay_preserves_events_across_restart requires MMAT_DB_URL"
                 );
                 return;
             }
@@ -4316,11 +4316,11 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_blob_artefact_projection_loads_payload() {
-        let base_url = match std::env::var("DATABASE_URL") {
+        let base_url = match std::env::var("MMAT_DB_URL") {
             Ok(url) => url,
             Err(_) => {
                 println!(
-                    "[SKIP] postgres_blob_artefact_projection_loads_payload requires DATABASE_URL"
+                    "[SKIP] postgres_blob_artefact_projection_loads_payload requires MMAT_DB_URL"
                 );
                 return;
             }
@@ -4875,11 +4875,11 @@ mod tests {
 
     #[tokio::test]
     async fn enrich_replay_test_with_memories_and_artefacts() {
-        let base_url = match std::env::var("DATABASE_URL") {
+        let base_url = match std::env::var("MMAT_DB_URL") {
             Ok(url) => url,
             Err(_) => {
                 println!(
-                    "[SKIP] enrich_replay_test_with_memories_and_artefacts requires DATABASE_URL"
+                    "[SKIP] enrich_replay_test_with_memories_and_artefacts requires MMAT_DB_URL"
                 );
                 return;
             }

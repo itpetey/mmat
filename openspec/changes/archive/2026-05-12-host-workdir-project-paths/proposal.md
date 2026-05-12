@@ -4,7 +4,7 @@ The system has no configurable working directory. The Worker hardcodes `Path::ne
 
 ## What Changes
 
-- Introduce a `host_work_dir` configuration on `OrganisationConfig` (with a `MMAT_HOST_WORK_DIR` env var override) that defines the root directory where all projects reside.
+- Introduce a `host_work_dir` configuration on `OrganisationConfig` (with a `MMAT_PROJECT_DIR` env var override) that defines the root directory where all projects reside.
 - Add a `project_path` field to project identity — when a project is created, it specifies a directory name under the host work dir (e.g. `my-app` resolves to `/host/work/dir/my-app`).
 - Update the Worker to resolve working directories from the project path instead of unconditionally using `"."`.
 - Wire the project path through `EventContext` so roles receive it at runtime.

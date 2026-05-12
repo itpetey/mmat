@@ -27,7 +27,7 @@ The system currently has no configurable host-level working directory. The Worke
 
 ### 1. `OrganisationConfig` gains `host_work_dir: Option<PathBuf>`
 
-Set via `MMAT_HOST_WORK_DIR` environment variable. When `None`, the system falls back to the current working directory — preserving backward compatibility for local development.
+Set via `MMAT_PROJECT_DIR` environment variable. When `None`, the system falls back to the current working directory — preserving backward compatibility for local development.
 
 **Alternatives considered:**
 - CLI flag: rejected because the workbench binary has no CLI argument parsing and adding one adds complexity without benefit over env vars
@@ -66,7 +66,7 @@ Accepts `{ "name": "my-app" }`. Validates the name is a valid directory name. Cr
 
 ### 5. Backward compatibility: unconfigured host dir preserves cwd behaviour
 
-When `MMAT_HOST_WORK_DIR` is not set, `OrganisationConfig::host_work_dir` is `None`. The Worker defaults to `Path::new(".")`. The workbench continues to use `"project-workbench-mvp"` as the project ID (which resolves to `./project-workbench-mvp` relative path, or `"."` when no project is selected — maintaining the existing behaviour).
+When `MMAT_PROJECT_DIR` is not set, `OrganisationConfig::host_work_dir` is `None`. The Worker defaults to `Path::new(".")`. The workbench continues to use `"project-workbench-mvp"` as the project ID (which resolves to `./project-workbench-mvp` relative path, or `"."` when no project is selected — maintaining the existing behaviour).
 
 ## Risks / Trade-offs
 

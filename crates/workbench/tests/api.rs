@@ -323,7 +323,7 @@ async fn replay_restores_full_projection_through_api() {
     let Some((database_url, admin_pool, schema)) =
         common::postgres_test_database("workbench_replay_api").await
     else {
-        println!("[SKIP] replay_restores_full_projection_through_api requires DATABASE_URL");
+        println!("[SKIP] replay_restores_full_projection_through_api requires MMAT_DB_URL");
         return;
     };
 

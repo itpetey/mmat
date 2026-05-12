@@ -4,7 +4,7 @@ The workbench currently creates `.mmat/workbench/*.db` SQLite stores even though
 
 ## What Changes
 
-- **BREAKING**: The workbench requires `DATABASE_URL` and will not create or use `.mmat/workbench` SQLite files.
+- **BREAKING**: The workbench requires `MMAT_DB_URL` and will not create or use `.mmat/workbench` SQLite files.
 - Runtime-backed workbench event replay hydrates from Postgres event rows.
 - Workbench memory and artefact access uses the Postgres stores already specified by `event-store`, `memory-store`, and `artefact-store`.
 - Startup errors clearly explain missing or invalid Postgres configuration.

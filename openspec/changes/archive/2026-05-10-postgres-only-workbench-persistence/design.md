@@ -17,8 +17,8 @@ The active specs already define Postgres-backed event, memory, and artefact stor
 
 ## Decisions
 
-- Use `DATABASE_URL` as the workbench persistence source. Alternative: introduce `MMAT_WORKBENCH_DATABASE_URL`; rejected because runtime and stores already use `DATABASE_URL`.
-- Fail fast when `DATABASE_URL` is absent. Alternative: silently fall back to SQLite; rejected because it preserves the confusing split-brain state.
+- Use `MMAT_DB_URL` as the workbench persistence source. Alternative: introduce `MMAT_WORKBENCH_MMAT_DB_URL`; rejected because runtime and stores already use `MMAT_DB_URL`.
+- Fail fast when `MMAT_DB_URL` is absent. Alternative: silently fall back to SQLite; rejected because it preserves the confusing split-brain state.
 - Replay the event store directly into the UI projection before seeding first-run prompts. Alternative: keep projection ephemeral; rejected because restarts must preserve visible project context.
 - Treat `.mmat` as legacy data only. The workbench may document migration/export commands later, but it must not write new `.mmat` state.
 
@@ -30,7 +30,7 @@ The active specs already define Postgres-backed event, memory, and artefact stor
 
 ## Migration Plan
 
-1. Update workbench runtime configuration to require `DATABASE_URL`.
+1. Update workbench runtime configuration to require `MMAT_DB_URL`.
 2. Remove `.mmat/workbench` creation and replay from SQLite.
 3. Update smoke tests and docs.
 4. Leave ignored `.mmat` paths untouched for archived/legacy data until a separate cleanup removes them.

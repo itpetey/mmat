@@ -1,20 +1,20 @@
 ## ADDED Requirements
 
 ### Requirement: Project discovery scans host work directory
-The system SHALL scan the host work directory (`MMAT_HOST_WORK_DIR`) at startup to discover existing project directories and register them as known projects.
+The system SHALL scan the host work directory (`MMAT_PROJECT_DIR`) at startup to discover existing project directories and register them as known projects.
 
 #### Scenario: Directory contains valid projects
-- **WHEN** the workbench starts and `MMAT_HOST_WORK_DIR` contains directories with valid project structures
+- **WHEN** the workbench starts and `MMAT_PROJECT_DIR` contains directories with valid project structures
 - **THEN** a `ProjectListed` event MUST be published for each discovered directory
 - **AND** each discovered project MUST appear in the `GET /api/projects` response
 
 #### Scenario: Directory is empty
-- **WHEN** the workbench starts and `MMAT_HOST_WORK_DIR` is empty
+- **WHEN** the workbench starts and `MMAT_PROJECT_DIR` is empty
 - **THEN** no `ProjectListed` events MUST be published
 - **AND** `GET /api/projects` MUST return an empty array
 
 #### Scenario: Directory contains non-project directories
-- **WHEN** the workbench starts and `MMAT_HOST_WORK_DIR` contains directories that are not valid projects (e.g., no expected structure)
+- **WHEN** the workbench starts and `MMAT_PROJECT_DIR` contains directories that are not valid projects (e.g., no expected structure)
 - **THEN** non-project directories MUST be ignored and no `ProjectListed` event published for them
 
 ### Requirement: Discovery deduplicates against known projects

@@ -4,15 +4,15 @@
 TBD - created by archiving change postgres-only-workbench-persistence. Update Purpose after archive.
 ## Requirements
 ### Requirement: Workbench requires Postgres persistence
-The workbench SHALL require a valid Postgres `DATABASE_URL` before starting runtime or HTTP services.
+The workbench SHALL require a valid Postgres `MMAT_DB_URL` before starting runtime or HTTP services.
 
-#### Scenario: Missing DATABASE_URL fails startup
-- **WHEN** `mmat-workbench` starts without `DATABASE_URL`
+#### Scenario: Missing MMAT_DB_URL fails startup
+- **WHEN** `mmat-workbench` starts without `MMAT_DB_URL`
 - **THEN** startup MUST fail before binding the HTTP listener
 - **AND** the error MUST explain that Postgres configuration is required
 
-#### Scenario: Valid DATABASE_URL starts workbench
-- **WHEN** `mmat-workbench` starts with a reachable Postgres `DATABASE_URL`
+#### Scenario: Valid MMAT_DB_URL starts workbench
+- **WHEN** `mmat-workbench` starts with a reachable Postgres `MMAT_DB_URL`
 - **THEN** it MUST initialise event, memory, and artefact stores from Postgres
 - **AND** it MUST bind the configured HTTP listener
 
@@ -34,4 +34,3 @@ The workbench SHALL NOT create `.mmat/workbench`, `.mmat/workbench/events.db`, `
 - **WHEN** a user starts the workbench and submits messages
 - **THEN** no new `.mmat/workbench` SQLite files MUST be created
 - **AND** events, memories, and artefacts MUST be persisted in Postgres
-

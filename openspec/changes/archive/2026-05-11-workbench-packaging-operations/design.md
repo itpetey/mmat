@@ -16,7 +16,7 @@ The workbench has grown from prototype toward MVP. Its operational contract shou
 
 ## Decisions
 
-- Treat `DATABASE_URL` as required once Postgres-only persistence lands.
+- Treat `MMAT_DB_URL` as required once Postgres-only persistence lands.
 - Keep `MMAT_WORKBENCH_ADDR` for bind override.
 - Add clear diagnostics for port conflicts and missing assets (assets are compile-time embedded — missing files are a build error, not runtime).
 - Promote terminology from prototype to MVP only after static assets and Postgres-only persistence land.

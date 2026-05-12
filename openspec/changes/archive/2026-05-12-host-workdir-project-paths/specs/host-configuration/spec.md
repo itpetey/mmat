@@ -1,20 +1,20 @@
 ## ADDED Requirements
 
 ### Requirement: Host work directory is configurable
-The system SHALL accept a host work directory via the `MMAT_HOST_WORK_DIR` environment variable that defines the root directory under which all project directories reside.
+The system SHALL accept a host work directory via the `MMAT_PROJECT_DIR` environment variable that defines the root directory under which all project directories reside.
 
 #### Scenario: Host work directory set
-- **WHEN** `MMAT_HOST_WORK_DIR` is set to a valid directory path
+- **WHEN** `MMAT_PROJECT_DIR` is set to a valid directory path
 - **THEN** `OrganisationConfig::host_work_dir` MUST contain that path
 - **AND** the system SHALL resolve all project directories relative to it
 
 #### Scenario: Host work directory not set
-- **WHEN** `MMAT_HOST_WORK_DIR` is not set
+- **WHEN** `MMAT_PROJECT_DIR` is not set
 - **THEN** `OrganisationConfig::host_work_dir` MUST be `None`
 - **AND** the system SHALL fall back to the current working directory for all operations
 
 #### Scenario: Host work directory does not exist
-- **WHEN** `MMAT_HOST_WORK_DIR` is set to a path that does not exist on the filesystem
+- **WHEN** `MMAT_PROJECT_DIR` is set to a path that does not exist on the filesystem
 - **THEN** the runtime startup SHALL fail with a clear error message indicating the missing directory
 
 ### Requirement: Worker resolves project path from host work dir

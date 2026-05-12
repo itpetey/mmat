@@ -4,7 +4,7 @@ The MMAT workbench uses event sourcing — every state change flows through `Sem
 
 Currently, the workbench tracks only a single active project (`WorkbenchProjection.project: ProjectView`). The `POST /api/projects` handler creates a directory on disk, publishes `ProjectCreated`, and sets the active project. But there is no way to list, switch, rename, or delete projects.
 
-The host work directory (`MMAT_HOST_WORK_DIR`) may contain multiple project directories from prior sessions or manual creation. These are invisible to the GUI.
+The host work directory (`MMAT_PROJECT_DIR`) may contain multiple project directories from prior sessions or manual creation. These are invisible to the GUI.
 
 ## Goals / Non-Goals
 
@@ -42,7 +42,7 @@ Project identity is the filesystem directory name, derived from the project name
 
 ### 3. Discovery at startup via `startup_projection`
 
-Existing project directories in `MMAT_HOST_WORK_DIR` are discovered at startup during `startup_projection()` in `main.rs`. For each directory that is a valid project (has the expected structure), a `ProjectListed` event is created and applied to the projection. Directories that already match a known project (from a prior `ProjectCreated` event) are skipped as duplicates.
+Existing project directories in `MMAT_PROJECT_DIR` are discovered at startup during `startup_projection()` in `main.rs`. For each directory that is a valid project (has the expected structure), a `ProjectListed` event is created and applied to the projection. Directories that already match a known project (from a prior `ProjectCreated` event) are skipped as duplicates.
 
 **Rationale**: This is the only reliable time to scan the filesystem. Doing it per-request would be slow and racy. Startup discovery ensures the projection always reflects actual disk state.
 
@@ -66,7 +66,7 @@ The frontend addition follows the existing pattern: no framework, no build step.
 
 ## Risks / Trade-offs
 
-**[Risk] Project discovery at startup may be slow with many directories** → Mitigation: `MMAT_HOST_WORK_DIR` typically contains a small number of projects (single-digit). If this becomes a problem, discovery can be made async and non-blocking, populating the projection lazily.
+**[Risk] Project discovery at startup may be slow with many directories** → Mitigation: `MMAT_PROJECT_DIR` typically contains a small number of projects (single-digit). If this becomes a problem, discovery can be made async and non-blocking, populating the projection lazily.
 
 **[Risk] Concurrent project deletion and activation could leave the projection in an inconsistent state** → Mitigation: The projection is guarded by an `Arc<RwLock<>>` (exclusive write access). All mutation handlers run sequentially within the projection update loop. The API handler acquires the write lock before mutating.
 
