@@ -123,6 +123,7 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -194,6 +195,7 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -252,6 +254,7 @@ async fn test_auditor_detects_hallucinated_api_endpoint() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
 
@@ -314,6 +317,7 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -398,6 +402,7 @@ async fn test_auditor_detects_process_skipped_when_tests_not_run() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -453,6 +458,7 @@ async fn test_auditor_does_not_accept_uncited_stale_test_run() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
 
@@ -513,6 +519,7 @@ async fn test_auditor_does_not_flag_valid_claim() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -582,6 +589,7 @@ async fn test_auditor_flags_authority_violation() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -637,6 +645,7 @@ async fn test_auditor_flags_unjustified_confidence() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(auditor.run(ctx));
@@ -696,6 +705,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let auditor_handle = tokio::spawn(auditor.run(auditor_ctx));
@@ -783,6 +793,7 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
 
@@ -845,6 +856,7 @@ async fn test_auditor_verifies_scholar_web_sources() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
 
@@ -903,6 +915,7 @@ async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
 
@@ -977,6 +990,7 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
         coordinator,
         artefact_store: Some(Arc::clone(&artefact_store)),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let run_handle = tokio::spawn(auditor.run(ctx));
 

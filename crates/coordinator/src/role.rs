@@ -1,6 +1,6 @@
 //! Core role types, lifecycle states, coordination primitives, and error types.
 
-use std::{any::Any, collections::HashMap, fmt, sync::Arc};
+use std::{any::Any, collections::HashMap, fmt, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -242,6 +242,7 @@ pub struct RoleContext {
     pub artefact_store: Option<Arc<ArtefactStore>>,
     pub coordinator: CoordinatorHandle,
     pub tools: Box<dyn Any + Send + Sync>,
+    pub host_work_dir: Option<PathBuf>,
 }
 
 /// Errors that a role may return from its run loop.

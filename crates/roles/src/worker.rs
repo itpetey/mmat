@@ -572,7 +572,7 @@ impl Role for Worker {
             .map_err(|e| RoleError::Internal(format!("Failed to report status: {e:?}")))?;
 
         let mut receiver = ctx.bus.subscribe(&[EventType::TaskAssigned]);
-        let (contract_ref, task_id) = loop {
+        let (contract_ref, task_id, project_id) = loop {
             let event = receiver.recv().await.map_err(|e| {
                 RoleError::Internal(format!("Failed to receive task assigned event: {e:?}"))
             })?;
@@ -581,18 +581,28 @@ impl Role for Worker {
                 contract_ref,
                 worker_id,
                 task_id,
+                context,
                 ..
             } = event.as_ref()
             {
                 if worker_id.0 == self.id.0 {
-                    break (contract_ref.clone(), task_id.clone());
+                    break (
+                        contract_ref.clone(),
+                        task_id.clone(),
+                        context.project_id.clone(),
+                    );
                 }
                 warn!("Worker ignoring task assigned to {}", worker_id.0);
             }
         };
 
-        let repo_path = Path::new(".");
-        let worktree = self.create_worktree(repo_path, &task_id).await?;
+        let repo_path: PathBuf = if let Some(ref host) = ctx.host_work_dir {
+            host.join(&project_id)
+        } else {
+            PathBuf::from(".")
+        };
+        info!("Worker resolved repository path: {}", repo_path.display());
+        let worktree = self.create_worktree(&repo_path, &task_id).await?;
 
         let task_started = SemanticEvent::new_task_started(
             EventRoleId(self.id.0.clone()),
@@ -793,5 +803,162 @@ mod tests {
             Worker::summarise_patch(patch),
             "1 file(s) changed: valid.rs"
         );
+    }
+
+    #[tokio::test]
+    async fn resolves_repo_path_with_host_work_dir_and_project_id() {
+        let host_dir = tempdir().unwrap();
+        let project_id = "my-app";
+        let repo_path = host_dir.path().join(project_id);
+        std::fs::create_dir(&repo_path).unwrap();
+        let worker = Arc::new(
+            Worker::new()
+                .with_fallback_worktree(true)
+                .with_validation_commands(vec![]),
+        );
+        let bus = mmat_event_stream::event_bus::EventBus::new(16);
+        let receiver = bus.subscribe(&[EventType::TaskAssigned]);
+        let (coordinator, _coordinator_rx) =
+            tokio::sync::mpsc::channel::<mmat_coordinator::role::CoordinatorMessage>(10);
+        let memory_store = Arc::new(mmat_memory::store::MemoryStore::open(":memory:").unwrap());
+
+        let bus_clone = bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut sub = bus_clone.subscribe(&[EventType::ArtefactProduced]);
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let assigned = SemanticEvent::new_task_assigned(
+                EventRoleId("human".to_string()),
+                "task-1",
+                EventRoleId("worker-001".to_string()),
+                mmat_event_stream::event::TaskContract {
+                    contract_id: "c1".to_string(),
+                    description: "test".to_string(),
+                },
+                Vec::new(),
+            )
+            .with_context(mmat_event_stream::event::EventContext::new(
+                "org", "ws", project_id, "run",
+            ));
+            bus_clone.publish(assigned).unwrap();
+
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    result = sub.recv() => {
+                        if let Ok(evt) = result {
+                            if let SemanticEvent::ArtefactProduced {
+                                repository_output: Some(output),
+                                ..
+                            } = evt.as_ref()
+                            {
+                                return output.repository_path.clone();
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
+                }
+            }
+            String::new()
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store,
+            coordinator: mmat_coordinator::CoordinatorHandle::new(coordinator),
+            artefact_store: Some(Arc::new(mmat_memory::artefact_store::ArtefactStore::new())),
+            tools: Box::new(()),
+            host_work_dir: Some(host_dir.path().to_path_buf()),
+        };
+
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), worker.run(ctx)).await;
+        assert!(
+            result.is_ok(),
+            "worker should complete without error: {:?}",
+            result
+        );
+
+        let repo_path = handle.await.unwrap();
+        let expected = host_dir.path().join(project_id);
+        assert_eq!(
+            repo_path,
+            expected.display().to_string(),
+            "repository path should be host_work_dir joined with project_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_cwd_when_host_work_dir_is_none() {
+        let worker = Arc::new(
+            Worker::new()
+                .with_fallback_worktree(true)
+                .with_validation_commands(vec![]),
+        );
+        let bus = mmat_event_stream::event_bus::EventBus::new(16);
+        let receiver = bus.subscribe(&[EventType::TaskAssigned]);
+        let (coordinator, _coordinator_rx) =
+            tokio::sync::mpsc::channel::<mmat_coordinator::role::CoordinatorMessage>(10);
+        let memory_store = Arc::new(mmat_memory::store::MemoryStore::open(":memory:").unwrap());
+
+        let bus_clone = bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut sub = bus_clone.subscribe(&[EventType::ArtefactProduced]);
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let assigned = SemanticEvent::new_task_assigned(
+                EventRoleId("human".to_string()),
+                "task-2",
+                EventRoleId("worker-001".to_string()),
+                mmat_event_stream::event::TaskContract {
+                    contract_id: "c2".to_string(),
+                    description: "test".to_string(),
+                },
+                Vec::new(),
+            )
+            .with_context(mmat_event_stream::event::EventContext::new(
+                "org", "ws", "my-app", "run",
+            ));
+            bus_clone.publish(assigned).unwrap();
+
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                tokio::select! {
+                    result = sub.recv() => {
+                        if let Ok(evt) = result {
+                            if let SemanticEvent::ArtefactProduced {
+                                repository_output: Some(output),
+                                ..
+                            } = evt.as_ref()
+                            {
+                                return output.repository_path.clone();
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
+                }
+            }
+            String::new()
+        });
+
+        let ctx = RoleContext {
+            bus: bus.clone(),
+            receiver,
+            memory_store,
+            coordinator: mmat_coordinator::CoordinatorHandle::new(coordinator),
+            artefact_store: Some(Arc::new(mmat_memory::artefact_store::ArtefactStore::new())),
+            tools: Box::new(()),
+            host_work_dir: None,
+        };
+
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), worker.run(ctx)).await;
+        assert!(
+            result.is_ok(),
+            "worker should complete without error: {:?}",
+            result
+        );
+
+        let repo_path = handle.await.unwrap();
+        assert_eq!(repo_path, ".", "repository path should fallback to cwd");
     }
 }

@@ -551,6 +551,7 @@ fn event_source_agent(event: &SemanticEvent) -> String {
         SemanticEvent::ActionRequestCreated { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::ActionRequestResolved { source_agent, .. } => source_agent.to_string(),
         SemanticEvent::ActionRequestCancelled { source_agent, .. } => source_agent.to_string(),
+        SemanticEvent::ProjectCreated { source_agent, .. } => source_agent.to_string(),
     }
 }
 
@@ -588,6 +589,7 @@ fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
         SemanticEvent::ActionRequestCreated { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::ActionRequestResolved { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::ActionRequestCancelled { timestamp_ns, .. } => *timestamp_ns,
+        SemanticEvent::ProjectCreated { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 

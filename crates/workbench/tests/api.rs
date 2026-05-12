@@ -770,3 +770,127 @@ async fn new_project_has_no_conversation_history() {
         "fresh project should have no action requests",
     );
 }
+
+// ---------------------------------------------------------------------------
+// 6.1  POST /api/projects
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn post_projects_creates_project_and_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let host_dir = temp.path().to_path_buf();
+    let state = common::test_app_state_with_host_work_dir(host_dir.clone()).await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/projects"))
+        .json(&serde_json::json!({ "name": "my-app" }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 201);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body.get("id").unwrap().as_str().unwrap(), "my-app");
+    assert_eq!(body.get("name").unwrap().as_str().unwrap(), "my-app");
+    assert!(
+        body.get("path")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("my-app"),
+        "path should contain project name"
+    );
+
+    assert!(host_dir.join("my-app").is_dir());
+}
+
+#[tokio::test]
+async fn post_projects_returns_conflict_for_duplicate_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let host_dir = temp.path().to_path_buf();
+    let state = common::test_app_state_with_host_work_dir(host_dir.clone()).await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+
+    // First creation succeeds
+    let resp = client
+        .post(&format!("{base_url}/api/projects"))
+        .json(&serde_json::json!({ "name": "duplicate" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Second creation with same name fails with 409
+    let resp = client
+        .post(&format!("{base_url}/api/projects"))
+        .json(&serde_json::json!({ "name": "duplicate" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn post_projects_returns_400_for_invalid_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let host_dir = temp.path().to_path_buf();
+    let state = common::test_app_state_with_host_work_dir(host_dir.clone()).await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+
+    let cases = vec![
+        "",
+        ".",
+        "..",
+        "has/slash",
+        "has\\backslash",
+        "has;semi",
+        "has|pipe",
+        "has&amp",
+        "has$dollar",
+        "has(paren)",
+        "has<brace>",
+        "has{brace}",
+        "has*star",
+        "has?question",
+        "has[bracket]",
+        "has#hash",
+        "has!bang",
+        "has\"quote",
+        "has'apostrophe",
+        "has~tilde",
+        "has^caret",
+        "has%percent",
+    ];
+    for name in cases {
+        let resp = client
+            .post(&format!("{base_url}/api/projects"))
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "expected 400 for name '{}'", name);
+    }
+}
+
+#[tokio::test]
+async fn post_projects_returns_400_when_host_work_dir_not_configured() {
+    let state = common::test_app_state().await;
+    let base_url = common::spawn_test_server(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!("{base_url}/api/projects"))
+        .json(&serde_json::json!({ "name": "my-app" }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+}

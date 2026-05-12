@@ -518,6 +518,15 @@ pub enum SemanticEvent {
         request_id: String,
         reason: String,
     },
+    ProjectCreated {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        project_id: String,
+        host_work_dir: String,
+    },
 }
 
 /// The set of known semantic event types, used for filtering.
@@ -587,6 +596,8 @@ pub enum EventType {
     ActionRequestResolved,
     /// An action request was cancelled.
     ActionRequestCancelled,
+    /// A project was created.
+    ProjectCreated,
 }
 
 impl EventId {
@@ -1289,6 +1300,22 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ProjectCreated`](SemanticEvent::ProjectCreated) event.
+    pub fn new_project_created(
+        source_agent: RoleId,
+        project_id: impl Into<String>,
+        host_work_dir: impl Into<String>,
+    ) -> Self {
+        Self::ProjectCreated {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            project_id: project_id.into(),
+            host_work_dir: host_work_dir.into(),
+        }
+    }
+
     /// Returns the [`EventId`] of this event.
     pub fn event_id(&self) -> EventId {
         match self {
@@ -1324,6 +1351,7 @@ impl SemanticEvent {
             Self::ActionRequestCreated { event_id, .. } => *event_id,
             Self::ActionRequestResolved { event_id, .. } => *event_id,
             Self::ActionRequestCancelled { event_id, .. } => *event_id,
+            Self::ProjectCreated { event_id, .. } => *event_id,
         }
     }
 
@@ -1362,6 +1390,7 @@ impl SemanticEvent {
             Self::ActionRequestCreated { .. } => "ActionRequestCreated",
             Self::ActionRequestResolved { .. } => "ActionRequestResolved",
             Self::ActionRequestCancelled { .. } => "ActionRequestCancelled",
+            Self::ProjectCreated { .. } => "ProjectCreated",
         }
     }
 
@@ -1400,6 +1429,7 @@ impl SemanticEvent {
             Self::ActionRequestCreated { .. } => EventType::ActionRequestCreated,
             Self::ActionRequestResolved { .. } => EventType::ActionRequestResolved,
             Self::ActionRequestCancelled { .. } => EventType::ActionRequestCancelled,
+            Self::ProjectCreated { .. } => EventType::ProjectCreated,
         }
     }
 
@@ -1437,7 +1467,8 @@ impl SemanticEvent {
             | Self::LanePaused { context, .. }
             | Self::ActionRequestCreated { context, .. }
             | Self::ActionRequestResolved { context, .. }
-            | Self::ActionRequestCancelled { context, .. } => context,
+            | Self::ActionRequestCancelled { context, .. }
+            | Self::ProjectCreated { context, .. } => context,
         }
     }
 
@@ -1992,6 +2023,21 @@ impl SemanticEvent {
                 request_id,
                 reason,
             },
+            Self::ProjectCreated {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                project_id,
+                host_work_dir,
+                ..
+            } => Self::ProjectCreated {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                context,
+                project_id,
+                host_work_dir,
+            },
         }
     }
 }
@@ -2032,7 +2078,14 @@ impl EventType {
             Self::ActionRequestCreated => "ActionRequestCreated",
             Self::ActionRequestResolved => "ActionRequestResolved",
             Self::ActionRequestCancelled => "ActionRequestCancelled",
+            Self::ProjectCreated => "ProjectCreated",
         }
+    }
+}
+
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
     }
 }
 
@@ -2118,8 +2171,31 @@ mod tests {
             EventType::ActionRequestCreated.name(),
             EventType::ActionRequestResolved.name(),
             EventType::ActionRequestCancelled.name(),
+            EventType::ProjectCreated.name(),
         ];
         let unique: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(names.len(), unique.len());
+    }
+
+    #[test]
+    fn project_created_round_trip_serialisation() {
+        let event =
+            SemanticEvent::new_project_created(RoleId::new("human"), "my-app", "/workspace");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ProjectCreated"));
+        let back: SemanticEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.event_id(), back.event_id());
+        assert_eq!(event.event_type(), EventType::ProjectCreated);
+        match &back {
+            SemanticEvent::ProjectCreated {
+                project_id,
+                host_work_dir,
+                ..
+            } => {
+                assert_eq!(project_id, "my-app");
+                assert_eq!(host_work_dir, "/workspace");
+            }
+            other => panic!("expected ProjectCreated, got {}", other.variant_name()),
+        }
     }
 }

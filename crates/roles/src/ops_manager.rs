@@ -748,6 +748,7 @@ impl Role for OpsManager {
             coordinator: ctx.coordinator.clone(),
             artefact_store: ctx.artefact_store.clone(),
             tools: Box::new(()),
+            host_work_dir: ctx.host_work_dir.clone(),
         };
         tokio::spawn(async move {
             let _ = self_clone.run_periodic_review(&ctx_for_spawn).await;

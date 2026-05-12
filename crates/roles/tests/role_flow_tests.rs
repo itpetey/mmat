@@ -117,6 +117,7 @@ async fn architect_receives_task_and_produces_adr() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let result =
@@ -162,6 +163,7 @@ async fn intent_lead_turns_initial_prompt_into_brief_and_dispatches_roles() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let run_handle = tokio::spawn(intent_lead.run(ctx));
@@ -290,6 +292,7 @@ async fn ops_manager_creates_sop_on_task() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(10), ops_manager.run(ctx)).await;
@@ -327,6 +330,7 @@ async fn ops_manager_sop_memory_is_accepted_by_librarian() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
     let role_handle = tokio::spawn(ops_manager.run(ctx));
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -411,6 +415,7 @@ async fn project_manager_deduplicates_adrs() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let _ = tokio::time::timeout(
@@ -481,6 +486,7 @@ async fn project_manager_marks_failed_task_in_delivery_graph() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let _ = tokio::time::timeout(
@@ -562,6 +568,7 @@ async fn reviewer_extracts_implementation_from_task_completed() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), reviewer.run(ctx)).await;
@@ -613,6 +620,7 @@ async fn scholar_budget_exhaustion_requests_escalation() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(10), scholar.run(ctx)).await;
@@ -677,6 +685,7 @@ async fn scholar_receives_task_and_completes_research_outputs() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(10), scholar.run(ctx)).await;
@@ -727,6 +736,7 @@ async fn worker_does_not_fallback_by_default() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(10), worker.run(ctx)).await;
@@ -821,6 +831,7 @@ async fn worker_receives_task_and_completes() {
         coordinator,
         artefact_store: Some(Arc::new(ArtefactStore::new())),
         tools: Box::new(()),
+        host_work_dir: None,
     };
 
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(10), worker.run(ctx)).await;

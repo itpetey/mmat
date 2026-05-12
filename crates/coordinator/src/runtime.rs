@@ -41,6 +41,8 @@ pub struct OrganisationConfig {
     pub memory_store_path: Option<PathBuf>,
     /// Postgres connection string (replaces event_store_path and memory_store_path when set).
     pub database_url: Option<String>,
+    /// Host working directory where all project directories reside.
+    pub host_work_dir: Option<PathBuf>,
 }
 
 /// Runtime that owns and orchestrates the entire organisation: roles, event bus,
@@ -70,6 +72,7 @@ impl Default for OrganisationConfig {
             event_store_path: Some(PathBuf::from("events.db")),
             memory_store_path: Some(PathBuf::from("memory.db")),
             database_url: None,
+            host_work_dir: None,
         }
     }
 }
@@ -224,6 +227,7 @@ impl OrganisationRuntime {
                 artefact_store: Some(Arc::clone(&self.artefact_store)),
                 coordinator: CoordinatorHandle::new(self.coordinator_tx.clone()),
                 tools: Box::new(()),
+                host_work_dir: self.config.host_work_dir.clone(),
             };
             let role_clone = Arc::clone(role);
             let role_id_for_task = role_id.clone();
@@ -390,5 +394,16 @@ impl OrganisationRuntime {
             scheduler.replay_task_event(event);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn organisation_config_default_has_no_host_work_dir() {
+        let config = OrganisationConfig::default();
+        assert!(config.host_work_dir.is_none());
     }
 }

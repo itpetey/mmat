@@ -21,6 +21,15 @@ pub async fn test_app_state_with_events(events: &[SemanticEvent]) -> AppState {
     AppState::with_events(bus, events, store).await
 }
 
+/// Create a test AppState with a configured host work directory.
+pub async fn test_app_state_with_host_work_dir(host_work_dir: std::path::PathBuf) -> AppState {
+    let bus = EventBus::new(16);
+    let store = Arc::new(ArtefactStore::new());
+    AppState::with_events(bus, &[], store)
+        .await
+        .with_host_work_dir(Some(host_work_dir))
+}
+
 /// Spawn a test HTTP server and return the base URL.
 pub async fn spawn_test_server(state: AppState) -> String {
     spawn_projection_task(state.clone());

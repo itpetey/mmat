@@ -1002,6 +1002,7 @@ impl Auditor {
             SemanticEvent::ActionRequestCreated { source_agent, .. } => source_agent.clone(),
             SemanticEvent::ActionRequestResolved { source_agent, .. } => source_agent.clone(),
             SemanticEvent::ActionRequestCancelled { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::ProjectCreated { source_agent, .. } => source_agent.clone(),
         };
 
         self.check_authority(ctx, &source_agent, &event.event_type(), event.event_id())

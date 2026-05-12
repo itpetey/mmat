@@ -27,6 +27,12 @@ use tracing::error;
 use uuid::Uuid;
 
 pub const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
+pub const DEFAULT_ORGANISATION: &str = "default-organisation";
+pub const DEFAULT_WORKSPACE: &str = "default-workspace";
+
+/// Characters that have special meaning in common shells and MUST be rejected
+/// in project names to prevent command injection and unexpected path behaviour.
+pub const SHELL_METACHARACTERS: &str = ";|&$`()<>{}*?[]#\"'~^%\\!";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,6 +40,7 @@ pub struct AppState {
     projection: Arc<RwLock<WorkbenchProjection>>,
     artefact_store: Arc<ArtefactStore>,
     scheduler: Option<Arc<Mutex<Scheduler>>>,
+    host_work_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -84,6 +91,7 @@ pub struct ProjectView {
     pub(crate) status: String,
     pub(crate) active_run_id: Option<String>,
     pub(crate) understanding: UnderstandingView,
+    pub(crate) host_work_dir: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -166,6 +174,7 @@ pub fn classify_event_lane(event: &SemanticEvent) -> Lane {
         SemanticEvent::ActionRequestCreated { .. }
         | SemanticEvent::ActionRequestResolved { .. }
         | SemanticEvent::ActionRequestCancelled { .. } => Lane::Conversation,
+        SemanticEvent::ProjectCreated { .. } => Lane::System,
     }
 }
 
@@ -362,6 +371,7 @@ pub fn build_app_router(state: AppState) -> Router {
         .route("/api/runs/{id}/select", post(select_run))
         .route("/api/runs/{id}/archive", post(archive_run))
         .route("/api/project/reset", post(reset_project))
+        .route("/api/projects", post(create_project))
         .with_state(state)
 }
 
@@ -378,6 +388,7 @@ impl AppState {
             )),
             artefact_store,
             scheduler: None,
+            host_work_dir: None,
         }
     }
 
@@ -386,12 +397,17 @@ impl AppState {
         self
     }
 
+    pub fn with_host_work_dir(mut self, host_work_dir: Option<std::path::PathBuf>) -> Self {
+        self.host_work_dir = host_work_dir;
+        self
+    }
+
     pub async fn publish(&self, event: SemanticEvent) {
         let context = {
             let projection = self.projection.read().await;
             mmat_event_stream::event::EventContext::new(
-                "default-organisation",
-                "default-workspace",
+                DEFAULT_ORGANISATION,
+                DEFAULT_WORKSPACE,
                 &projection.active_project_id,
                 &projection.active_run_id,
             )
@@ -436,8 +452,38 @@ fn require_database_url() -> Result<String, WorkbenchError> {
     })
 }
 
+/// Parses and validates a host work directory path.
+fn parse_host_work_dir_from_env(
+    value: Option<String>,
+) -> Result<Option<std::path::PathBuf>, WorkbenchError> {
+    value
+        .map(|path| {
+            let p = std::path::PathBuf::from(path);
+            if !p.exists() {
+                return Err(WorkbenchError::Init(format!(
+                    "MMAT_HOST_WORK_DIR points to a non-existent path: {}",
+                    p.display()
+                )));
+            }
+            if !p.is_dir() {
+                return Err(WorkbenchError::Init(format!(
+                    "MMAT_HOST_WORK_DIR is not a directory: {}",
+                    p.display()
+                )));
+            }
+            Ok(p)
+        })
+        .transpose()
+}
+
+/// Parses and validates the `MMAT_HOST_WORK_DIR` environment variable.
+fn parse_host_work_dir() -> Result<Option<std::path::PathBuf>, WorkbenchError> {
+    parse_host_work_dir_from_env(std::env::var("MMAT_HOST_WORK_DIR").ok())
+}
+
 pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), WorkbenchError> {
     let database_url = require_database_url()?;
+    let host_work_dir = parse_host_work_dir()?;
 
     let intent_lead = IntentLead::new();
     let mut scholar = Scholar::new();
@@ -508,6 +554,7 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
         database_url: Some(database_url.clone()),
         event_store_path: None,
         memory_store_path: None,
+        host_work_dir: host_work_dir.clone(),
         ..OrganisationConfig::default()
     };
 
@@ -529,7 +576,8 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
         runtime.artefact_store().clone(),
     )
     .await
-    .with_scheduler(runtime.scheduler().clone());
+    .with_scheduler(runtime.scheduler().clone())
+    .with_host_work_dir(host_work_dir);
 
     state
         .projection
@@ -610,6 +658,7 @@ impl WorkbenchProjection {
                 name: "SELIUM".to_string(),
                 status: "New project".to_string(),
                 active_run_id: Some("run-001".to_string()),
+                host_work_dir: None,
                 understanding: UnderstandingView {
                     intent: "Waiting for the first project intent.".to_string(),
                     audience: "Unknown".to_string(),
@@ -1525,6 +1574,25 @@ impl WorkbenchProjection {
                     related_lane_ids: Vec::new(),
                 });
             }
+            SemanticEvent::ProjectCreated {
+                project_id,
+                host_work_dir,
+                timestamp_ns,
+                ..
+            } => {
+                self.project.id = project_id.clone();
+                self.project.name = project_id.clone();
+                self.project.host_work_dir = Some(host_work_dir.clone());
+                self.active_project_id = project_id.clone();
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Project created: {project_id} at {host_work_dir}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
+            }
             _ => {}
         }
     }
@@ -2043,6 +2111,18 @@ struct CreateRunRequest {
     label: String,
 }
 
+#[derive(Deserialize)]
+struct CreateProjectRequest {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct CreateProjectResponse {
+    id: String,
+    name: String,
+    path: String,
+}
+
 async fn create_run(
     State(state): State<AppState>,
     Json(request): Json<CreateRunRequest>,
@@ -2156,6 +2236,90 @@ async fn reset_project(State(state): State<AppState>, headers: HeaderMap) -> imp
     let result = projection.clone();
     drop(projection);
     Json(result).into_response()
+}
+
+async fn create_project(
+    State(state): State<AppState>,
+    Json(request): Json<CreateProjectRequest>,
+) -> impl IntoResponse {
+    let name = request.name.trim();
+    let has_shell_metachar = name.chars().any(|c| SHELL_METACHARACTERS.contains(c));
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || has_shell_metachar
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "project name must not be empty, a path separator, shell metacharacter, or `.` / `..`" })),
+        )
+            .into_response();
+    }
+
+    let host_work_dir = match &state.host_work_dir {
+        Some(path) => path.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "host work directory is not configured" })),
+            )
+                .into_response();
+        }
+    };
+
+    let project_path = host_work_dir.join(name);
+
+    if let Err(err) = tokio::fs::create_dir(&project_path).await {
+        if err.kind() == std::io::ErrorKind::AlreadyExists {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": format!("project directory already exists: {}", project_path.display()) })),
+            )
+                .into_response();
+        }
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to create project directory: {err}") })),
+        )
+            .into_response();
+    }
+
+    let active_run_id = {
+        let mut projection = state.projection.write().await;
+        projection.active_project_id = name.to_string();
+        projection.project.id = name.to_string();
+        projection.project.name = name.to_string();
+        projection.project.host_work_dir = Some(host_work_dir.display().to_string());
+        projection.active_run_id.clone()
+    };
+
+    let event = SemanticEvent::new_project_created(
+        RoleId::new("human"),
+        name,
+        host_work_dir.display().to_string(),
+    )
+    .with_context(mmat_event_stream::event::EventContext::new(
+        DEFAULT_ORGANISATION,
+        DEFAULT_WORKSPACE,
+        name,
+        &active_run_id,
+    ));
+
+    if let Err(err) = state.bus.publish(event) {
+        error!("failed to publish project created event: {}", err);
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(CreateProjectResponse {
+            id: name.to_string(),
+            name: name.to_string(),
+            path: project_path.display().to_string(),
+        }),
+    )
+        .into_response()
 }
 
 async fn publish_mentions(state: &AppState, message: &str, context: ReviewContext<'_>) {
@@ -2575,6 +2739,7 @@ pub(crate) fn classify_event_variant_lane(variant: &str) -> Lane {
         | "ActionRequestCreated"
         | "ActionRequestResolved"
         | "ActionRequestCancelled" => Lane::Conversation,
+        "ProjectCreated" => Lane::System,
         _ => Lane::System,
     }
 }
@@ -2668,7 +2833,8 @@ fn source_agent(event: &SemanticEvent) -> String {
         | SemanticEvent::LanePaused { source_agent, .. }
         | SemanticEvent::ActionRequestCreated { source_agent, .. }
         | SemanticEvent::ActionRequestResolved { source_agent, .. }
-        | SemanticEvent::ActionRequestCancelled { source_agent, .. } => source_agent.0.clone(),
+        | SemanticEvent::ActionRequestCancelled { source_agent, .. }
+        | SemanticEvent::ProjectCreated { source_agent, .. } => source_agent.0.clone(),
     }
 }
 
@@ -2705,7 +2871,8 @@ fn timestamp_ns(event: &SemanticEvent) -> u64 {
         | SemanticEvent::LanePaused { timestamp_ns, .. }
         | SemanticEvent::ActionRequestCreated { timestamp_ns, .. }
         | SemanticEvent::ActionRequestResolved { timestamp_ns, .. }
-        | SemanticEvent::ActionRequestCancelled { timestamp_ns, .. } => *timestamp_ns,
+        | SemanticEvent::ActionRequestCancelled { timestamp_ns, .. }
+        | SemanticEvent::ProjectCreated { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 
@@ -2815,6 +2982,13 @@ fn event_summary(event: &SemanticEvent) -> String {
         SemanticEvent::ActionRequestResolved { choice, .. } => choice.clone(),
         SemanticEvent::ActionRequestCancelled { reason, .. } => {
             format!("Action request cancelled: {reason}")
+        }
+        SemanticEvent::ProjectCreated {
+            project_id,
+            host_work_dir,
+            ..
+        } => {
+            format!("Project {project_id} created at {host_work_dir}")
         }
     }
 }
@@ -2967,6 +3141,7 @@ mod tests {
             projection: Arc::new(RwLock::new(projection)),
             artefact_store,
             scheduler: None,
+            host_work_dir: None,
         };
 
         let mut receiver = bus.subscribe(&[]);
@@ -3054,6 +3229,7 @@ mod tests {
             projection: Arc::new(RwLock::new(projection)),
             artefact_store,
             scheduler: None,
+            host_work_dir: None,
         };
 
         let mut receiver = bus.subscribe(&[]);
@@ -3184,6 +3360,7 @@ mod tests {
             projection: Arc::new(RwLock::new(projection)),
             artefact_store,
             scheduler: None,
+            host_work_dir: None,
         };
 
         let mut receiver = bus.subscribe(&[]);
@@ -3212,6 +3389,7 @@ mod tests {
             projection: Arc::new(RwLock::new(projection)),
             artefact_store,
             scheduler: None,
+            host_work_dir: None,
         };
 
         let mut receiver = bus.subscribe(&[]);
@@ -5046,6 +5224,7 @@ mod tests {
             )),
             artefact_store,
             scheduler: None,
+            host_work_dir: None,
         };
 
         let projection = state.projection.read().await;
@@ -5158,5 +5337,222 @@ mod tests {
             .expect("should have action request message");
         assert!(msg.content.contains("clarification"), "{}", msg.content);
         assert!(msg.content.contains("async"), "{}", msg.content);
+    }
+
+    #[tokio::test]
+    async fn create_project_rejects_invalid_names() {
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus, &[], store)
+            .await
+            .with_host_work_dir(Some(std::path::PathBuf::from("/workspace")));
+
+        let cases = vec![
+            ("", "empty"),
+            (".", "dot"),
+            ("..", "dot-dot"),
+            ("my/app", "path separator"),
+            ("my\\app", "backslash"),
+            ("my;app", "semicolon"),
+            ("my|app", "pipe"),
+            ("my&app", "ampersand"),
+            ("my$app", "dollar"),
+            ("my`app", "backtick"),
+            ("my(app)", "parentheses"),
+            ("my<app>", "angle brackets"),
+            ("my{app}", "braces"),
+            ("my*app", "asterisk"),
+            ("my?app", "question mark"),
+            ("my[app]", "square brackets"),
+            ("my#app", "hash"),
+            ("my!app", "exclamation"),
+            ("my\"app", "quote"),
+            ("my'app", "apostrophe"),
+            ("my~app", "tilde"),
+            ("my^app", "caret"),
+            ("my%app", "percent"),
+        ];
+
+        for (name, desc) in cases {
+            let result = create_project(
+                axum::extract::State(state.clone()),
+                axum::Json(CreateProjectRequest {
+                    name: name.to_string(),
+                }),
+            )
+            .await
+            .into_response();
+
+            let status = result.status();
+            assert!(
+                status == axum::http::StatusCode::BAD_REQUEST,
+                "{desc}: expected 400 for name '{name}', got {status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_project_accepts_utf8_and_special_chars() {
+        let temp = tempfile::tempdir().unwrap();
+        let host_dir = temp.path().to_path_buf();
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus, &[], store)
+            .await
+            .with_host_work_dir(Some(host_dir.clone()));
+
+        let valid_names = vec![
+            "my.app",
+            "my app",
+            "my@app",
+            "café-project",
+            "プロジェクト",
+            "project-v1.2.3",
+        ];
+
+        for name in valid_names {
+            let result = create_project(
+                axum::extract::State(state.clone()),
+                axum::Json(CreateProjectRequest {
+                    name: name.to_string(),
+                }),
+            )
+            .await
+            .into_response();
+
+            assert_eq!(
+                result.status(),
+                axum::http::StatusCode::CREATED,
+                "expected 201 for name '{name}'"
+            );
+            assert!(host_dir.join(name).is_dir());
+        }
+    }
+
+    #[tokio::test]
+    async fn create_project_rejects_when_host_work_dir_not_configured() {
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus, &[], store).await;
+
+        let result = create_project(
+            axum::extract::State(state),
+            axum::Json(CreateProjectRequest {
+                name: "my-app".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(result.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_project_creates_directory_and_publishes_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let host_dir = temp.path().to_path_buf();
+        let bus = EventBus::new(16);
+        let store = Arc::new(ArtefactStore::new());
+        let state = AppState::with_events(bus.clone(), &[], store)
+            .await
+            .with_host_work_dir(Some(host_dir.clone()));
+
+        let mut rx = bus.subscribe(&[]);
+
+        let result = create_project(
+            axum::extract::State(state.clone()),
+            axum::Json(CreateProjectRequest {
+                name: "my-app".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(result.status(), axum::http::StatusCode::CREATED);
+        assert!(host_dir.join("my-app").is_dir());
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("should receive event")
+            .expect("event should be ok");
+
+        match event.as_ref() {
+            SemanticEvent::ProjectCreated {
+                project_id,
+                host_work_dir,
+                ..
+            } => {
+                assert_eq!(project_id, "my-app");
+                assert_eq!(*host_work_dir, host_dir.display().to_string());
+            }
+            other => panic!("expected ProjectCreated, got {}", other.variant_name()),
+        }
+
+        // Verify projection updated
+        let projection = state.projection.read().await;
+        assert_eq!(projection.active_project_id, "my-app");
+        assert_eq!(projection.project.id, "my-app");
+        assert_eq!(projection.project.name, "my-app");
+        assert_eq!(
+            projection.project.host_work_dir,
+            Some(host_dir.display().to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn projection_applies_project_created_event() {
+        let store = Arc::new(ArtefactStore::new());
+        let events = vec![SemanticEvent::new_project_created(
+            RoleId::new("human"),
+            "my-app",
+            "/workspace",
+        )];
+        let projection = WorkbenchProjection::from_events(&events, &store).await;
+        assert_eq!(projection.project.id, "my-app");
+        assert_eq!(projection.project.name, "my-app");
+        assert_eq!(projection.active_project_id, "my-app");
+        assert_eq!(
+            projection.project.host_work_dir,
+            Some("/workspace".to_string())
+        );
+        assert!(
+            projection
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Project created")),
+            "should have a project creation message"
+        );
+    }
+
+    #[test]
+    fn parse_host_work_dir_returns_none_when_env_not_set() {
+        let result = parse_host_work_dir_from_env(None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_host_work_dir_fails_for_nonexistent_path() {
+        let result = parse_host_work_dir_from_env(Some(
+            "/definitely/does/not/exist/host-work-dir".to_string(),
+        ));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("non-existent path"),
+            "error should mention non-existent path: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_host_work_dir_fails_for_file_not_directory() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let result = parse_host_work_dir_from_env(Some(temp.path().to_str().unwrap().to_string()));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not a directory"),
+            "error should mention not a directory: {err}"
+        );
     }
 }

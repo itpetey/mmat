@@ -333,6 +333,7 @@ fn test_config() -> (tempfile::TempDir, OrganisationConfig) {
         event_store_path: Some(tmp.path().join("events.db")),
         memory_store_path: Some(tmp.path().join("memory.db")),
         database_url: None,
+        host_work_dir: None,
     };
     (tmp, config)
 }
