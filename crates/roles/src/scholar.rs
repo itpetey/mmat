@@ -39,6 +39,7 @@ pub struct Scholar {
     max_llm_calls: usize,
     max_web_searches: usize,
     max_tool_invocations: usize,
+    model: String,
 }
 
 impl Scholar {
@@ -53,12 +54,19 @@ impl Scholar {
             max_llm_calls: DEFAULT_MAX_LLM_CALLS,
             max_web_searches: DEFAULT_MAX_WEB_SEARCHES,
             max_tool_invocations: DEFAULT_MAX_TOOL_INVOCATIONS,
+            model: "big-pickle".to_string(),
         }
     }
 
     /// Configures the Scholar with an LLM client for research.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Configures the Scholar with a specific model identifier.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
         self
     }
 
@@ -129,7 +137,7 @@ impl Scholar {
 
         if let Some(client) = &self.llm_client {
             let request = CompletionRequest::new(
-                "scholar-research",
+                &self.model,
                 vec![
                     Message::system(
                         "Gather evidence only. Do not make architectural decisions or recommendations.",

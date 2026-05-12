@@ -2,3 +2,4 @@
 **/.mmat/
 **/.mmat-worktree-*/
 .DS_Store
+mmat.toml

@@ -34,6 +34,7 @@ pub struct Reviewer {
     rework_counts: Arc<parking_lot::RwLock<std::collections::HashMap<String, u32>>>,
     max_retries: u32,
     pending_reviews: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
+    model: String,
 }
 
 impl Reviewer {
@@ -48,12 +49,19 @@ impl Reviewer {
             rework_counts: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
             max_retries: 3,
             pending_reviews: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            model: "big-pickle".to_string(),
         }
     }
 
     /// Configures the Reviewer with an LLM client for rubric checking and architectural compliance.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Configures the Reviewer with a specific model identifier.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
         self
     }
 
@@ -127,7 +135,7 @@ For each dimension that has issues, report: dimension name, description of issue
             );
 
             let request = CompletionRequest::new(
-                "reviewer-rubric",
+                &self.model,
                 vec![
                     Message::system(
                         "You are a code reviewer evaluating implementation quality. Report specific findings.",
@@ -216,7 +224,7 @@ Report any architectural violations.",
             );
 
             let request = CompletionRequest::new(
-                "reviewer-arch",
+                &self.model,
                 vec![
                     Message::system(
                         "You are reviewing for architectural compliance. Report specific violations.",

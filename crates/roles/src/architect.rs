@@ -33,6 +33,7 @@ pub struct Architect {
     executor: Executor,
     tool_registry: RoleToolRegistry,
     tool_runtime: RoleToolRuntime,
+    model: String,
 }
 
 impl Architect {
@@ -44,12 +45,19 @@ impl Architect {
             executor: Executor,
             tool_registry: RoleToolRegistry::new(),
             tool_runtime: RoleToolRuntime::new(),
+            model: "big-pickle".to_string(),
         }
     }
 
     /// Configures the Architect with an LLM client for making architecture decisions.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Configures the Architect with a specific model identifier.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
         self
     }
 
@@ -104,7 +112,7 @@ Base your decision on the provided intent brief and research context.";
             );
 
             let request = CompletionRequest::new(
-                "architect-ad",
+                &self.model,
                 vec![Message::system(system_prompt), Message::user(&user_prompt)],
             );
 

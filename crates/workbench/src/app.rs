@@ -16,9 +16,11 @@ use mmat_event_stream::{
     event::{ArtefactStorageKind, RepositoryOutputRef, RoleId, SemanticEvent, TaskContract},
     event_bus::{EventBus, RecvError},
 };
+use mmat_llm::client::{OpenAiClient, OpenAiConfig};
 use mmat_memory::artefact_store::ArtefactStore;
 use mmat_roles::{
-    Architect, Auditor, IntentLead, OpsManager, ProjectManager, Reviewer, Scholar, Worker,
+    Architect, Auditor, AuditorLlmConfig, IntentLead, OpsManager, ProjectManager, Reviewer,
+    Scholar, Worker,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -498,14 +500,75 @@ pub async fn build_runtime() -> Result<(AppState, OrganisationRuntime), Workbenc
     let database_url = require_database_url()?;
     let host_work_dir = parse_host_work_dir()?;
 
-    let intent_lead = IntentLead::new();
-    let mut scholar = Scholar::new();
-    let mut ops_manager = OpsManager::new();
-    let mut architect = Architect::new();
-    let mut project_manager = ProjectManager::new();
-    let mut worker = Worker::new().with_fallback_worktree(true);
-    let mut reviewer = Reviewer::new();
-    let auditor = Auditor::new();
+    let llm_client: Option<Arc<dyn mmat_llm::client::LlmClient>> = match std::env::var(
+        "MMAT_OPENCODE_ZEN_API_KEY",
+    ) {
+        Ok(api_key) if !api_key.is_empty() => {
+            let config = OpenAiConfig::builder()
+                .api_key(api_key)
+                .base_url("https://opencode.ai/zen/v1")
+                .build();
+            match OpenAiClient::new(config) {
+                Ok(client) => {
+                    tracing::info!(
+                        "LLM client configured via MMAT_OPENCODE_ZEN_API_KEY (OpenCode Zen, model: big-pickle)"
+                    );
+                    Some(Arc::new(client))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to initialise LLM client: {e}. Roles will use fallback behaviour."
+                    );
+                    None
+                }
+            }
+        }
+        _ => {
+            tracing::info!("MMAT_OPENCODE_ZEN_API_KEY not set. Roles will use fallback behaviour.");
+            None
+        }
+    };
+
+    let intent_lead = match &llm_client {
+        Some(c) => IntentLead::new().with_llm_client(c.clone()),
+        None => IntentLead::new(),
+    };
+    let mut scholar = match &llm_client {
+        Some(c) => Scholar::new().with_llm_client(c.clone()),
+        None => Scholar::new(),
+    };
+    let mut ops_manager = match &llm_client {
+        Some(c) => OpsManager::new().with_llm_client(c.clone()),
+        None => OpsManager::new(),
+    };
+    let mut architect = match &llm_client {
+        Some(c) => Architect::new().with_llm_client(c.clone()),
+        None => Architect::new(),
+    };
+    let mut project_manager = match &llm_client {
+        Some(c) => ProjectManager::new().with_llm_client(c.clone()),
+        None => ProjectManager::new(),
+    };
+    let mut worker = match &llm_client {
+        Some(c) => Worker::new()
+            .with_fallback_worktree(true)
+            .with_llm_client(c.clone()),
+        None => Worker::new().with_fallback_worktree(true),
+    };
+    let mut reviewer = match &llm_client {
+        Some(c) => Reviewer::new().with_llm_client(c.clone()),
+        None => Reviewer::new(),
+    };
+    let auditor = match &llm_client {
+        Some(c) => Auditor::new()
+            .with_llm_client(c.clone())
+            .with_llm_config(AuditorLlmConfig {
+                enabled: true,
+                model: "big-pickle".to_string(),
+                max_checks_per_cycle: 3,
+            }),
+        None => Auditor::new(),
+    };
 
     let mut readiness: Vec<(String, RoleReadiness)> = vec![
         (intent_lead.id().0.clone(), intent_lead.role_readiness()),

@@ -1,0 +1,30 @@
+# Postgres connection string for the event store, memory store, and
+# artefact store.  Required by the workbench binary; when unset in
+# library/coordinator crates, SQLite fallback is used.
+db_url = "postgres://mmat:mmat@localhost:5432/mmat"
+
+# Address and port the HTTP server binds to.
+workbench_addr = "127.0.0.1:8080"
+
+# Qdrant gRPC URL.  When unset, vector operations use a no-op backend.
+qdrant_url = "http://localhost:6334"
+
+# Optional API key for Qdrant authentication.
+# qdrant_api_key = ""
+
+# Qdrant collection name for vector storage.
+qdrant_collection = "memories"
+
+# Dimensionality of stored vectors.
+qdrant_vector_dimension = 64
+
+# OpenCode Zen API key for LLM-powered roles.  When unset, roles fall
+# back to deterministic (non-LLM) behaviour.
+# opencode_zen_api_key = ""
+
+# Root directory under which all project directories reside.  When unset,
+# falls back to the current working directory.
+# project_dir = ""
+
+# Tracing/logging filter directive.
+rust_log = "mmat_workbench=info"

@@ -76,6 +76,7 @@ pub struct ProjectManager {
     task_status: Arc<RwLock<HashMap<String, TaskStatus>>>,
     pending_adrs: Arc<RwLock<Vec<Adr>>>,
     processed_decisions: Arc<RwLock<std::collections::HashSet<String>>>,
+    model: String,
 }
 
 impl DeliveryGraph {
@@ -192,12 +193,19 @@ impl ProjectManager {
             task_status: Arc::new(RwLock::new(HashMap::new())),
             pending_adrs: Arc::new(RwLock::new(Vec::new())),
             processed_decisions: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            model: "big-pickle".to_string(),
         }
     }
 
     /// Configures the ProjectManager with an LLM client for task decomposition.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Configures the ProjectManager with a specific model identifier.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
         self
     }
 
@@ -272,7 +280,7 @@ dependencies (if any), acceptance criteria, and validation policy.",
                 );
 
                 let request = CompletionRequest::new(
-                    "pm-decompose",
+                    &self.model,
                     vec![
                         Message::system(
                             "You are a project manager decomposing architectural decisions into implementation tasks.",

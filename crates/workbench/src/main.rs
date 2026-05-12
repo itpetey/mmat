@@ -1,3 +1,5 @@
+use clap::Parser;
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,8 +14,92 @@ use mmat_workbench::{
 use tokio::signal;
 use tracing::{error, info};
 
+#[derive(Debug, Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Path to configuration file (mmat.toml)
+    #[arg(short = 'c', long = "config", env = "MMAT_CONFIG")]
+    config: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Config {
+    db_url: Option<String>,
+    workbench_addr: Option<String>,
+    qdrant_url: Option<String>,
+    qdrant_api_key: Option<String>,
+    qdrant_collection: Option<String>,
+    qdrant_vector_dimension: Option<u64>,
+    opencode_zen_api_key: Option<String>,
+    project_dir: Option<String>,
+    rust_log: Option<String>,
+}
+
+fn set_env_if_unset(key: &str, value: &str) {
+    if std::env::var(key).is_err() {
+        // Safety: called early in main() before any threads are spawned
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+}
+
+fn apply_config(config: &Config) {
+    if let Some(ref v) = config.db_url {
+        set_env_if_unset("MMAT_DB_URL", v);
+    }
+    if let Some(ref v) = config.workbench_addr {
+        set_env_if_unset("MMAT_WORKBENCH_ADDR", v);
+    }
+    if let Some(ref v) = config.qdrant_url {
+        set_env_if_unset("MMAT_QDRANT_URL", v);
+    }
+    if let Some(ref v) = config.qdrant_api_key {
+        set_env_if_unset("MMAT_QDRANT_API_KEY", v);
+    }
+    if let Some(ref v) = config.qdrant_collection {
+        set_env_if_unset("MMAT_QDRANT_COLLECTION", v);
+    }
+    if let Some(v) = config.qdrant_vector_dimension {
+        set_env_if_unset("MMAT_QDRANT_VECTOR_DIMENSION", &v.to_string());
+    }
+    if let Some(ref v) = config.opencode_zen_api_key {
+        set_env_if_unset("MMAT_OPENCODE_ZEN_API_KEY", v);
+    }
+    if let Some(ref v) = config.project_dir {
+        set_env_if_unset("MMAT_PROJECT_DIR", v);
+    }
+    if let Some(ref v) = config.rust_log {
+        set_env_if_unset("RUST_LOG", v);
+    }
+}
+
+fn load_config(path: &std::path::Path) -> Result<Config, WorkbenchError> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        WorkbenchError::Init(format!(
+            "failed to read config file {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    toml::from_str::<Config>(&contents).map_err(|e| {
+        WorkbenchError::Init(format!(
+            "failed to parse config file {}: {}",
+            path.display(),
+            e
+        ))
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), WorkbenchError> {
+    let cli = Cli::parse();
+
+    if let Some(ref config_path) = cli.config {
+        let config = load_config(config_path)?;
+        apply_config(&config);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "mmat_workbench=info".to_string()),

@@ -35,6 +35,7 @@ pub struct Worker {
     tool_runtime: RoleToolRuntime,
     validation_commands: Vec<String>,
     allow_fallback_worktree: bool,
+    model: String,
 }
 
 struct ImplementationOutput {
@@ -56,12 +57,19 @@ impl Worker {
                 "cargo test".to_string(),
             ],
             allow_fallback_worktree: false,
+            model: "big-pickle".to_string(),
         }
     }
 
     /// Configures the Worker with an LLM client for implementation.
     pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Configures the Worker with a specific model identifier.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
         self
     }
 
@@ -151,7 +159,7 @@ Worktree path: {}",
             );
 
             let request = CompletionRequest::new(
-                "worker-implement",
+                &self.model,
                 vec![
                     Message::system(
                         "You are a worker implementing a task card. \

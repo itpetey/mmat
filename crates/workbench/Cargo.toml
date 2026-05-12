@@ -7,10 +7,25 @@ repository.workspace = true
 license-file.workspace = true
 
 [dependencies]
-axum = { workspace = true, features = ["form", "http1", "json", "query", "tokio"] }
+axum = { workspace = true, features = [
+  "form",
+  "http1",
+  "json",
+  "query",
+  "tokio"
+] }
+clap = { workspace = true, features = [
+  "cargo",
+  "derive",
+  "env",
+  "help",
+  "std",
+  "usage"
+] }
 futures-util.workspace = true
 mmat-coordinator = { path = "../coordinator" }
 mmat-event-stream = { path = "../event-stream" }
+mmat-llm = { path = "../llm" }
 mmat-memory = { path = "../memory" }
 mmat-project = { path = "../project" }
 mmat-roles = { path = "../roles" }
@@ -26,7 +41,8 @@ tokio = { workspace = true, features = [
   "time"
 ] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+toml = { workspace = true, features = ["parse"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

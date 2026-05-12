@@ -57,7 +57,7 @@ impl Default for AuditorLlmConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            model: "gpt-4.1-mini".to_string(),
+            model: "big-pickle".to_string(),
             max_checks_per_cycle: 3,
         }
     }
