@@ -88,7 +88,23 @@ function renderProjects() {
     li.tabIndex = 0;
     li.setAttribute('role', 'button');
     li.setAttribute('aria-pressed', project.id === activeId ? 'true' : 'false');
-    li.innerHTML = `<span class="project-name">${escapeHtml(project.name || project.id)}</span>`;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'project-name';
+    nameSpan.textContent = project.name || project.id;
+
+    const pathEl = document.createElement('div');
+    pathEl.className = 'project-path';
+    pathEl.textContent = project.path || 'set project path';
+    pathEl.title = 'Click to edit project path';
+    pathEl.dataset.projectId = project.id;
+    pathEl.onclick = (e) => {
+      e.stopPropagation();
+      startPathEdit(project.id, pathEl);
+    };
+    pathEl.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.stopPropagation(); startPathEdit(project.id, pathEl); }
+    };
 
     const actions = document.createElement('span');
     actions.style.display = 'flex';
@@ -111,11 +127,60 @@ function renderProjects() {
 
     actions.appendChild(renameBtn);
     actions.appendChild(deleteBtn);
+
+    li.appendChild(nameSpan);
+    li.appendChild(pathEl);
     li.appendChild(actions);
 
     li.onclick = () => selectProject(project.id);
     li.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectProject(project.id); } };
     list.appendChild(li);
+  }
+}
+
+function startPathEdit(projectId, pathEl) {
+  const current = pathEl.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'project-path-input';
+  input.value = current;
+  input.setAttribute('aria-label', 'Edit project path');
+  pathEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = () => {
+    const newPath = input.value.trim();
+    const displayEl = document.createElement('div');
+    displayEl.className = 'project-path';
+    displayEl.textContent = newPath || 'set project path';
+    displayEl.title = 'Click to edit project path';
+    displayEl.dataset.projectId = projectId;
+    displayEl.onclick = (e) => { e.stopPropagation(); startPathEdit(projectId, displayEl); };
+    displayEl.onkeydown = (e) => { if (e.key === 'Enter') { e.stopPropagation(); startPathEdit(projectId, displayEl); } };
+    input.replaceWith(displayEl);
+    if (newPath && newPath !== current) {
+      updateProjectPath(projectId, newPath);
+    }
+  };
+
+  input.onblur = finish;
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = current; input.blur(); }
+    e.stopPropagation();
+  };
+}
+
+async function updateProjectPath(id, path) {
+  try {
+    await fetch(`/api/projects/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path })
+    });
+  } catch (err) {
+    console.warn('Failed to update project path:', err);
   }
 }
 
@@ -612,6 +677,14 @@ document.getElementById('message-form').addEventListener('submit', async (event)
     })
   });
   await loadState();
+});
+
+document.getElementById('sidebar-toggle').addEventListener('click', () => {
+  document.querySelector('.app-shell').classList.toggle('sidebar-collapsed');
+  const btn = document.getElementById('sidebar-toggle');
+  const collapsed = document.querySelector('.app-shell').classList.contains('sidebar-collapsed');
+  btn.textContent = collapsed ? '▶' : '◀';
+  btn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
 });
 
 document.getElementById('chat-view-button').addEventListener('click', () => {

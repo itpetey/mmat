@@ -381,7 +381,7 @@ pub fn build_app_router(state: AppState) -> Router {
         .route(
             "/api/projects/{id}",
             get(get_project)
-                .patch(rename_project)
+                .patch(update_project)
                 .delete(delete_project),
         )
         .route("/api/projects/{id}/select", post(select_project))
@@ -2590,87 +2590,107 @@ async fn create_project(
 }
 
 #[derive(Deserialize)]
-struct RenameProjectRequest {
-    name: String,
+struct UpdateProjectRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
-async fn rename_project(
+async fn update_project(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(request): Json<RenameProjectRequest>,
+    Json(request): Json<UpdateProjectRequest>,
 ) -> impl IntoResponse {
-    let new_name = request.name.trim();
-    if new_name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "project name must not be empty" })),
-        )
-            .into_response();
-    }
-
-    let host_work_dir = match &state.host_work_dir {
-        Some(path) => path.clone(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "host work directory is not configured" })),
-            )
-                .into_response();
-        }
-    };
-
-    let old_path = host_work_dir.join(&id);
-    let new_path = host_work_dir.join(new_name);
-
-    // NOTE: The design calls for slugifying project names, but the current
-    // implementation preserves the exact name to maintain compatibility with
-    // the existing test suite (create_project_accepts_utf8_and_special_chars).
     let mut projection = state.projection.write().await;
     if !projection.projects.iter().any(|p| p.id == id) {
         return (StatusCode::NOT_FOUND, "project not found").into_response();
     }
-    if projection.projects.iter().any(|p| p.id == *new_name) {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "a project with that name already exists" })),
-        )
-            .into_response();
+
+    // Handle path update
+    if let Some(new_path) = request.path {
+        let trimmed = new_path.trim();
+        if trimmed.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "project path must not be empty" })),
+            )
+                .into_response();
+        }
+        if let Some(project) = projection.projects.iter_mut().find(|p| p.id == id) {
+            project.host_work_dir = Some(trimmed.to_string());
+        }
     }
 
-    if let Err(err) = tokio::fs::rename(&old_path, &new_path).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("failed to rename project directory: {err}") })),
-        )
-            .into_response();
+    // Handle name update
+    if let Some(raw_name) = request.name {
+        let new_name = raw_name.trim();
+        if new_name.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "project name must not be empty" })),
+            )
+                .into_response();
+        }
+
+        if new_name == id {
+            // Name unchanged; nothing to do for rename.
+        } else {
+            let host_work_dir = match &state.host_work_dir {
+                Some(path) => path.clone(),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            serde_json::json!({ "error": "host work directory is not configured" }),
+                        ),
+                    )
+                        .into_response();
+                }
+            };
+
+            let old_path = host_work_dir.join(&id);
+            let new_path = host_work_dir.join(new_name);
+
+            if projection.projects.iter().any(|p| p.id == *new_name) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({ "error": "a project with that name already exists" })),
+                )
+                    .into_response();
+            }
+
+            if let Err(err) = tokio::fs::rename(&old_path, &new_path).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("failed to rename project directory: {err}") })),
+                )
+                    .into_response();
+            }
+
+            let event =
+                SemanticEvent::new_project_renamed(RoleId::new("human"), &id, &id, new_name)
+                    .with_context(mmat_event_stream::event::EventContext::new(
+                        DEFAULT_ORGANISATION,
+                        DEFAULT_WORKSPACE,
+                        new_name,
+                        "",
+                    ));
+
+            projection.apply_event(&event, &state.artefact_store).await;
+            if let Err(err) = state.bus.publish(event) {
+                error!("failed to publish project renamed event: {}", err);
+            }
+        }
     }
 
-    let event = SemanticEvent::new_project_renamed(RoleId::new("human"), &id, &id, new_name)
-        .with_context(mmat_event_stream::event::EventContext::new(
-            DEFAULT_ORGANISATION,
-            DEFAULT_WORKSPACE,
-            new_name,
-            "",
-        ));
-
-    // Apply directly to the read-model so the response includes the update,
-    // then publish to the bus for persistence and downstream subscribers.
-    projection.apply_event(&event, &state.artefact_store).await;
-    if let Err(err) = state.bus.publish(event) {
-        error!("failed to publish project renamed event: {}", err);
-    }
-
-    if let Some(project) = projection
-        .projects
-        .iter()
-        .find(|p| p.id == *new_name)
-        .cloned()
-    {
+    // Return updated project
+    if let Some(project) = projection.projects.iter().find(|p| p.id == id).cloned() {
         Json(project).into_response()
     } else {
         (
             StatusCode::OK,
-            Json(serde_json::json!({ "id": new_name, "name": new_name })),
+            Json(serde_json::json!({ "id": &id, "name": &id })),
         )
             .into_response()
     }

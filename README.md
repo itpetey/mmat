@@ -38,12 +38,12 @@ The core goals are:
 - Optional: Qdrant for vector-backed memory experiments.
 - Optional: an OpenAI-compatible API endpoint for `mmat-llm` integration.
 
-### Quick Start (Postgres)
+### Quick Start (dependencies)
 
-Start the local Postgres service:
+Start Postgres and Qdrant:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d
 ```
 
 Set `DATABASE_URL` in your environment using the connection details from `.env.example`:
@@ -57,9 +57,13 @@ export DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat
 The `mmat-workbench` binary reads these environment variables at startup:
 
 | Variable | Required | Default | Description |
-|---|---|---|---|
+|---|---|---|---|---|
 | `DATABASE_URL` | Yes | — | Postgres connection string for event, memory, and artefact stores. |
 | `MMAT_WORKBENCH_ADDR` | No | `127.0.0.1:8080` | Address and port the HTTP server binds to. |
+| `MMAT_QDRANT_URL` | No | — | Qdrant gRPC URL (e.g. `http://localhost:6334`). When unset, vector operations use a no-op backend. |
+| `MMAT_QDRANT_API_KEY` | No | — | Optional API key for Qdrant authentication. |
+| `MMAT_QDRANT_COLLECTION` | No | `memories` | Qdrant collection name for vector storage. |
+| `MMAT_QDRANT_VECTOR_DIMENSION` | No | `64` | Dimensionality of stored vectors. |
 | `RUST_LOG` | No | `mmat_workbench=info` | Tracing/logging filter directive. |
 
 ## Testing
@@ -128,16 +132,30 @@ cargo build
 cargo test
 ```
 
-Run the workbench frontend during development:
+Make sure dependencies are running first:
+
+```bash
+docker compose up -d
+```
+
+Run the workbench frontend during development (no vector backend):
 
 ```bash
 DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat cargo run -p mmat-workbench
+```
+
+Run with Qdrant vector search:
+
+```bash
+DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
+  MMAT_QDRANT_URL=http://localhost:6334 cargo run -p mmat-workbench
 ```
 
 Then open `http://127.0.0.1:8080`. Override the bind address with `MMAT_WORKBENCH_ADDR`, for example:
 
 ```bash
 DATABASE_URL=postgres://mmat:mmat@localhost:5432/mmat \
+  MMAT_QDRANT_URL=http://localhost:6334 \
   MMAT_WORKBENCH_ADDR=127.0.0.1:8090 cargo run -p mmat-workbench
 ```
 
