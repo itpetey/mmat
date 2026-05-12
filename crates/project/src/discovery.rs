@@ -173,3 +173,21 @@ impl RepoDiscovery {
         files
     }
 }
+
+/// Scan a directory for valid project subdirectories.
+///
+/// Returns a list of [`ProjectInfo`] for each subdirectory that contains
+/// a recognised project marker file.
+pub fn discover_projects(work_dir: &Path) -> Result<Vec<ProjectInfo>, DiscoveryError> {
+    let mut projects = Vec::new();
+    let entries = std::fs::read_dir(work_dir).map_err(DiscoveryError::Io)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir()
+            && let Ok(info) = RepoDiscovery::detect(&path)
+        {
+            projects.push(info);
+        }
+    }
+    Ok(projects)
+}

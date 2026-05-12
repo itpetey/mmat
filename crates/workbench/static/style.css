@@ -34,8 +34,23 @@ button { cursor: pointer; }
 button:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--me); outline-offset: 2px; border-radius: 2px; }
 textarea:focus-visible { outline-color: var(--me); }
 .icon-button:focus-visible { outline-offset: 4px; }
-.app-shell { min-height: 100vh; padding: 32px 96px 22px; display: grid; grid-template-rows: 48px 1fr auto; gap: 28px; }
+.app-shell { min-height: 100vh; padding: 32px 96px 22px; display: grid; grid-template-columns: 220px 1fr; grid-template-rows: 48px 1fr auto; gap: 0 28px; }
+.main-area { display: contents; }
 .topbar { display: grid; grid-template-columns: auto auto 1fr auto; align-items: start; gap: 12px; }
+.project-sidebar { grid-row: 1 / -1; padding-top: 8px; border-right: 1px solid #30343b; padding-right: 16px; display: flex; flex-direction: column; gap: 12px; }
+.project-sidebar h2 { margin: 0; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 400; }
+#project-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.project-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+.project-item:hover { background: #0d1117; }
+.project-item.active { background: #0d1117; border-left: 2px solid var(--me); }
+.project-item button { opacity: 0; background: transparent; border: 1px solid #30343b; color: var(--muted); font-size: 10px; padding: 2px 6px; }
+.project-item:hover button, .project-item:focus-within button { opacity: 1; }
+.project-item button:hover { color: var(--text); border-color: var(--me); }
+.project-item button.danger:hover { color: var(--scholar); border-color: var(--scholar); }
+.project-name { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-item.active .project-name { font-weight: 600; color: var(--me); }
+.sidebar-actions { margin-top: auto; padding-top: 12px; }
+.sidebar-actions .mini-button { width: 100%; }
 .project-mark { justify-self: start; position: relative; margin-left: 14px; margin-top: 3px; color: white; font-size: 12px; line-height: 27px; min-width: 62px; text-align: center; border: 1px solid white; background: var(--bg); }
 .project-mark::before { content: ""; position: absolute; inset: -4px 4px 4px -4px; border: 1px solid white; z-index: -1; }
 .run-controls { display: flex; flex-direction: column; gap: 4px; margin-top: 3px; }
@@ -156,4 +171,4 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--mut
 .role-badge .role-activity { display: inline-block; width: 6px; height: 6px; border-radius: 999px; margin-left: 4px; vertical-align: middle; }
 .role-badge .role-activity.running { background: var(--me); animation: pulse-dot 1.2s ease-in-out infinite; }
 .role-badge .role-activity.failed { background: var(--scholar); }
-@media (max-width: 920px) { .app-shell { padding: 16px 12px 12px; gap: 14px; } .topbar { grid-template-columns: 1fr auto; gap: 10px; } .wordmark { grid-column: 1 / -1; grid-row: 1; margin-top: 0; font-size: 18px; } .project-mark { grid-row: 2; } .run-controls { grid-row: 2; } .view-actions { grid-row: 2; gap: 18px; } .channel-row { grid-template-columns: 56px minmax(0, 1fr); column-gap: 8px; } .speaker-label { font-size: 12px; } .dag-layout, .events-layout { grid-template-columns: 1fr; gap: 18px; } .side-panel { border-left: 0; border-top: 1px solid #30343b; padding-left: 0; padding-top: 14px; } .dag-canvas { grid-template-columns: 1fr; gap: 14px; min-height: auto; } .dag-step { min-height: auto; padding: 12px; } .view-actions .icon-button { width: 28px; height: 28px; } .icon-button svg { width: 28px; height: 28px; } .composer-wrap { padding-top: 14px; } textarea { min-height: 44px; } .dag-layout .side-panel, .events-layout .side-panel { min-height: auto; } .role-readiness { gap: 6px; } .role-badge { padding: 4px 8px; font-size: 11px; } .next-action { padding: 10px 12px; font-size: 12px; } .notification-panel { width: calc(100vw - 2rem); } }
+@media (max-width: 920px) { .app-shell { padding: 16px 12px 12px; gap: 14px; grid-template-columns: 1fr; } .project-sidebar { display: none; } .topbar { grid-template-columns: 1fr auto; gap: 10px; } .wordmark { grid-column: 1 / -1; grid-row: 1; margin-top: 0; font-size: 18px; } .project-mark { grid-row: 2; } .run-controls { grid-row: 2; } .view-actions { grid-row: 2; gap: 18px; } .channel-row { grid-template-columns: 56px minmax(0, 1fr); column-gap: 8px; } .speaker-label { font-size: 12px; } .dag-layout, .events-layout { grid-template-columns: 1fr; gap: 18px; } .side-panel { border-left: 0; border-top: 1px solid #30343b; padding-left: 0; padding-top: 14px; } .dag-canvas { grid-template-columns: 1fr; gap: 14px; min-height: auto; } .dag-step { min-height: auto; padding: 12px; } .view-actions .icon-button { width: 28px; height: 28px; } .icon-button svg { width: 28px; height: 28px; } .composer-wrap { padding-top: 14px; } textarea { min-height: 44px; } .dag-layout .side-panel, .events-layout .side-panel { min-height: auto; } .role-readiness { gap: 6px; } .role-badge { padding: 4px 8px; font-size: 11px; } .next-action { padding: 10px 12px; font-size: 12px; } .notification-panel { width: calc(100vw - 2rem); } }

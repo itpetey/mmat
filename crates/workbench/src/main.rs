@@ -7,7 +7,7 @@ use mmat_memory::qdrant::{QdrantMemoryBackend, QdrantMemoryConfig};
 use mmat_memory::vector_backend::{NoopVectorBackend, VectorMemoryBackend};
 use mmat_workbench::{
     DEFAULT_BIND_ADDR, WorkbenchError, build_app_router, build_runtime, seed_workbench,
-    spawn_projection_task,
+    spawn_projection_task, startup_projection,
 };
 use tracing::{error, info};
 
@@ -31,6 +31,7 @@ async fn main() -> Result<(), WorkbenchError> {
 
     let (state, runtime) = build_runtime().await?;
     spawn_projection_task(state.clone());
+    startup_projection(&state).await;
 
     let librarian_bus: Arc<_> = runtime.bus().clone().into();
     let librarian_store = runtime.memory_store().clone();

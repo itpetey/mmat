@@ -527,6 +527,34 @@ pub enum SemanticEvent {
         project_id: String,
         host_work_dir: String,
     },
+    ProjectListed {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        project_id: String,
+        path: String,
+    },
+    ProjectRenamed {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        project_id: String,
+        old_name: String,
+        new_name: String,
+    },
+    ProjectDeleted {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        project_id: String,
+        name: String,
+    },
 }
 
 /// The set of known semantic event types, used for filtering.
@@ -598,6 +626,12 @@ pub enum EventType {
     ActionRequestCancelled,
     /// A project was created.
     ProjectCreated,
+    /// A project was discovered on the filesystem.
+    ProjectListed,
+    /// A project was renamed.
+    ProjectRenamed,
+    /// A project was deleted.
+    ProjectDeleted,
 }
 
 impl EventId {
@@ -1316,6 +1350,56 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`ProjectListed`](SemanticEvent::ProjectListed) event.
+    pub fn new_project_listed(
+        source_agent: RoleId,
+        project_id: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Self {
+        Self::ProjectListed {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            project_id: project_id.into(),
+            path: path.into(),
+        }
+    }
+
+    /// Constructs a new [`ProjectRenamed`](SemanticEvent::ProjectRenamed) event.
+    pub fn new_project_renamed(
+        source_agent: RoleId,
+        project_id: impl Into<String>,
+        old_name: impl Into<String>,
+        new_name: impl Into<String>,
+    ) -> Self {
+        Self::ProjectRenamed {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            project_id: project_id.into(),
+            old_name: old_name.into(),
+            new_name: new_name.into(),
+        }
+    }
+
+    /// Constructs a new [`ProjectDeleted`](SemanticEvent::ProjectDeleted) event.
+    pub fn new_project_deleted(
+        source_agent: RoleId,
+        project_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self::ProjectDeleted {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            project_id: project_id.into(),
+            name: name.into(),
+        }
+    }
+
     /// Returns the [`EventId`] of this event.
     pub fn event_id(&self) -> EventId {
         match self {
@@ -1352,6 +1436,9 @@ impl SemanticEvent {
             Self::ActionRequestResolved { event_id, .. } => *event_id,
             Self::ActionRequestCancelled { event_id, .. } => *event_id,
             Self::ProjectCreated { event_id, .. } => *event_id,
+            Self::ProjectListed { event_id, .. } => *event_id,
+            Self::ProjectRenamed { event_id, .. } => *event_id,
+            Self::ProjectDeleted { event_id, .. } => *event_id,
         }
     }
 
@@ -1391,6 +1478,9 @@ impl SemanticEvent {
             Self::ActionRequestResolved { .. } => "ActionRequestResolved",
             Self::ActionRequestCancelled { .. } => "ActionRequestCancelled",
             Self::ProjectCreated { .. } => "ProjectCreated",
+            Self::ProjectListed { .. } => "ProjectListed",
+            Self::ProjectRenamed { .. } => "ProjectRenamed",
+            Self::ProjectDeleted { .. } => "ProjectDeleted",
         }
     }
 
@@ -1430,6 +1520,9 @@ impl SemanticEvent {
             Self::ActionRequestResolved { .. } => EventType::ActionRequestResolved,
             Self::ActionRequestCancelled { .. } => EventType::ActionRequestCancelled,
             Self::ProjectCreated { .. } => EventType::ProjectCreated,
+            Self::ProjectListed { .. } => EventType::ProjectListed,
+            Self::ProjectRenamed { .. } => EventType::ProjectRenamed,
+            Self::ProjectDeleted { .. } => EventType::ProjectDeleted,
         }
     }
 
@@ -1468,7 +1561,10 @@ impl SemanticEvent {
             | Self::ActionRequestCreated { context, .. }
             | Self::ActionRequestResolved { context, .. }
             | Self::ActionRequestCancelled { context, .. }
-            | Self::ProjectCreated { context, .. } => context,
+            | Self::ProjectCreated { context, .. }
+            | Self::ProjectListed { context, .. }
+            | Self::ProjectRenamed { context, .. }
+            | Self::ProjectDeleted { context, .. } => context,
         }
     }
 
@@ -2038,6 +2134,53 @@ impl SemanticEvent {
                 project_id,
                 host_work_dir,
             },
+            Self::ProjectListed {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                project_id,
+                path,
+                ..
+            } => Self::ProjectListed {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                context,
+                project_id,
+                path,
+            },
+            Self::ProjectRenamed {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                project_id,
+                old_name,
+                new_name,
+                ..
+            } => Self::ProjectRenamed {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                context,
+                project_id,
+                old_name,
+                new_name,
+            },
+            Self::ProjectDeleted {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                project_id,
+                name,
+                ..
+            } => Self::ProjectDeleted {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                context,
+                project_id,
+                name,
+            },
         }
     }
 }
@@ -2079,6 +2222,9 @@ impl EventType {
             Self::ActionRequestResolved => "ActionRequestResolved",
             Self::ActionRequestCancelled => "ActionRequestCancelled",
             Self::ProjectCreated => "ProjectCreated",
+            Self::ProjectListed => "ProjectListed",
+            Self::ProjectRenamed => "ProjectRenamed",
+            Self::ProjectDeleted => "ProjectDeleted",
         }
     }
 }
@@ -2172,6 +2318,9 @@ mod tests {
             EventType::ActionRequestResolved.name(),
             EventType::ActionRequestCancelled.name(),
             EventType::ProjectCreated.name(),
+            EventType::ProjectListed.name(),
+            EventType::ProjectRenamed.name(),
+            EventType::ProjectDeleted.name(),
         ];
         let unique: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(names.len(), unique.len());

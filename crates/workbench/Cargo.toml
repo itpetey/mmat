@@ -12,6 +12,7 @@ futures-util.workspace = true
 mmat-coordinator = { path = "../coordinator" }
 mmat-event-stream = { path = "../event-stream" }
 mmat-memory = { path = "../memory" }
+mmat-project = { path = "../project" }
 mmat-roles = { path = "../roles" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }

@@ -1497,6 +1497,7 @@ dependencies = [
  "mmat-coordinator",
  "mmat-event-stream",
  "mmat-memory",
+ "mmat-project",
  "mmat-roles",
  "reqwest",
  "serde",

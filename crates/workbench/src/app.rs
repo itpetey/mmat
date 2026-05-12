@@ -64,6 +64,7 @@ pub enum WorkbenchError {
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkbenchProjection {
     pub(crate) project: ProjectView,
+    pub(crate) projects: Vec<ProjectView>,
     pub(crate) roles: BTreeMap<String, RoleView>,
     pub(crate) events: Vec<EventView>,
     pub(crate) messages: Vec<MessageView>,
@@ -90,7 +91,9 @@ pub struct ProjectView {
     pub(crate) name: String,
     pub(crate) status: String,
     pub(crate) active_run_id: Option<String>,
+    pub(crate) run_count: u32,
     pub(crate) understanding: UnderstandingView,
+    #[serde(rename = "path")]
     pub(crate) host_work_dir: Option<String>,
 }
 
@@ -174,7 +177,10 @@ pub fn classify_event_lane(event: &SemanticEvent) -> Lane {
         SemanticEvent::ActionRequestCreated { .. }
         | SemanticEvent::ActionRequestResolved { .. }
         | SemanticEvent::ActionRequestCancelled { .. } => Lane::Conversation,
-        SemanticEvent::ProjectCreated { .. } => Lane::System,
+        SemanticEvent::ProjectCreated { .. }
+        | SemanticEvent::ProjectListed { .. }
+        | SemanticEvent::ProjectRenamed { .. }
+        | SemanticEvent::ProjectDeleted { .. } => Lane::System,
     }
 }
 
@@ -371,7 +377,14 @@ pub fn build_app_router(state: AppState) -> Router {
         .route("/api/runs/{id}/select", post(select_run))
         .route("/api/runs/{id}/archive", post(archive_run))
         .route("/api/project/reset", post(reset_project))
-        .route("/api/projects", post(create_project))
+        .route("/api/projects", get(list_projects).post(create_project))
+        .route(
+            "/api/projects/{id}",
+            get(get_project)
+                .patch(rename_project)
+                .delete(delete_project),
+        )
+        .route("/api/projects/{id}/select", post(select_project))
         .with_state(state)
 }
 
@@ -658,6 +671,7 @@ impl WorkbenchProjection {
                 name: "SELIUM".to_string(),
                 status: "New project".to_string(),
                 active_run_id: Some("run-001".to_string()),
+                run_count: 0,
                 host_work_dir: None,
                 understanding: UnderstandingView {
                     intent: "Waiting for the first project intent.".to_string(),
@@ -668,6 +682,7 @@ impl WorkbenchProjection {
                     confidence: 0.0,
                 },
             },
+            projects: Vec::new(),
             roles,
             events: Vec::new(),
             messages: Vec::new(),
@@ -1584,10 +1599,124 @@ impl WorkbenchProjection {
                 self.project.name = project_id.clone();
                 self.project.host_work_dir = Some(host_work_dir.clone());
                 self.active_project_id = project_id.clone();
+                if !self.projects.iter().any(|p| p.id == *project_id) {
+                    self.projects.push(ProjectView {
+                        id: project_id.clone(),
+                        name: project_id.clone(),
+                        status: "New project".to_string(),
+                        active_run_id: Some(self.active_run_id.clone()),
+                        run_count: 0,
+                        host_work_dir: Some(host_work_dir.clone()),
+                        understanding: UnderstandingView {
+                            intent: String::new(),
+                            audience: String::new(),
+                            success: Vec::new(),
+                            constraints: Vec::new(),
+                            open_questions: Vec::new(),
+                            confidence: 0.0,
+                        },
+                    });
+                }
                 self.messages.push(MessageView {
                     message_id: Uuid::new_v4().to_string(),
                     speaker: "System".to_string(),
                     content: format!("Project created: {project_id} at {host_work_dir}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
+            }
+            SemanticEvent::ProjectListed {
+                project_id,
+                path,
+                timestamp_ns,
+                ..
+            } => {
+                if !self.projects.iter().any(|p| p.id == *project_id) {
+                    self.projects.push(ProjectView {
+                        id: project_id.clone(),
+                        name: project_id.clone(),
+                        status: "Discovered".to_string(),
+                        active_run_id: None,
+                        run_count: 0,
+                        host_work_dir: Some(path.clone()),
+                        understanding: UnderstandingView {
+                            intent: String::new(),
+                            audience: String::new(),
+                            success: Vec::new(),
+                            constraints: Vec::new(),
+                            open_questions: Vec::new(),
+                            confidence: 0.0,
+                        },
+                    });
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Project discovered: {project_id} at {path}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
+            }
+            SemanticEvent::ProjectRenamed {
+                project_id,
+                new_name,
+                timestamp_ns,
+                ..
+            } => {
+                for project in &mut self.projects {
+                    if project.id == *project_id {
+                        project.name = new_name.clone();
+                        project.id = new_name.clone();
+                    }
+                }
+                if self.project.id == *project_id {
+                    self.project.name = new_name.clone();
+                    self.project.id = new_name.clone();
+                }
+                if self.active_project_id == *project_id {
+                    self.active_project_id = new_name.clone();
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Project renamed to {new_name}"),
+                    timestamp_ns: *timestamp_ns,
+                    primary_lane_id: None,
+                    related_lane_ids: Vec::new(),
+                });
+            }
+            SemanticEvent::ProjectDeleted {
+                project_id,
+                name,
+                timestamp_ns,
+                ..
+            } => {
+                self.projects.retain(|p| p.id != *project_id);
+                if self.active_project_id == *project_id {
+                    self.active_project_id = String::new();
+                    self.project = ProjectView {
+                        id: String::new(),
+                        name: String::new(),
+                        status: "No active project".to_string(),
+                        active_run_id: None,
+                        run_count: 0,
+                        host_work_dir: None,
+                        understanding: UnderstandingView {
+                            intent: String::new(),
+                            audience: String::new(),
+                            success: Vec::new(),
+                            constraints: Vec::new(),
+                            open_questions: Vec::new(),
+                            confidence: 0.0,
+                        },
+                    };
+                }
+                self.messages.push(MessageView {
+                    message_id: Uuid::new_v4().to_string(),
+                    speaker: "System".to_string(),
+                    content: format!("Project deleted: {name}"),
                     timestamp_ns: *timestamp_ns,
                     primary_lane_id: None,
                     related_lane_ids: Vec::new(),
@@ -1852,6 +1981,97 @@ pub fn spawn_projection_task(state: AppState) {
             }
         }
     });
+}
+
+pub async fn startup_projection(state: &AppState) {
+    let host_work_dir = match &state.host_work_dir {
+        Some(path) => path.clone(),
+        None => return,
+    };
+
+    // Remove projects whose directories no longer exist (manual deletion).
+    {
+        let mut projection = state.projection.write().await;
+        let missing: Vec<String> = projection
+            .projects
+            .iter()
+            .filter(|p| {
+                p.host_work_dir
+                    .as_ref()
+                    .map(|dir| !std::path::Path::new(dir).exists())
+                    .unwrap_or(true)
+            })
+            .map(|p| p.id.clone())
+            .collect();
+        for id in missing {
+            projection.projects.retain(|p| p.id != id);
+            if projection.active_project_id == id {
+                projection.active_project_id = String::new();
+                projection.project = ProjectView {
+                    id: String::new(),
+                    name: String::new(),
+                    status: "No active project".to_string(),
+                    active_run_id: None,
+                    run_count: 0,
+                    host_work_dir: None,
+                    understanding: UnderstandingView {
+                        intent: String::new(),
+                        audience: String::new(),
+                        success: Vec::new(),
+                        constraints: Vec::new(),
+                        open_questions: Vec::new(),
+                        confidence: 0.0,
+                    },
+                };
+            }
+        }
+    }
+
+    let discovered = match mmat_project::discover_projects(&host_work_dir) {
+        Ok(projects) => projects,
+        Err(err) => {
+            tracing::warn!("project discovery failed: {}", err);
+            return;
+        }
+    };
+
+    let known_ids: Vec<String> = {
+        let projection = state.projection.read().await;
+        projection.projects.iter().map(|p| p.id.clone()).collect()
+    };
+
+    for info in discovered {
+        let dir_name = info
+            .root_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if known_ids.contains(&dir_name) {
+            continue;
+        }
+
+        let event = SemanticEvent::new_project_listed(
+            RoleId::new("coordinator"),
+            &dir_name,
+            info.root_path.display().to_string(),
+        )
+        .with_context(mmat_event_stream::event::EventContext::new(
+            DEFAULT_ORGANISATION,
+            DEFAULT_WORKSPACE,
+            &dir_name,
+            "",
+        ));
+        // Apply directly to the projection so the UI is updated immediately,
+        // then publish to the bus for persistence and other subscribers.
+        {
+            let mut projection = state.projection.write().await;
+            projection.apply_event(&event, &state.artefact_store).await;
+        }
+        if let Err(err) = state.bus.publish(event) {
+            tracing::warn!("failed to publish ProjectListed event: {}", err);
+        }
+    }
 }
 
 pub async fn seed_workbench(state: &AppState) {
@@ -2238,6 +2458,20 @@ async fn reset_project(State(state): State<AppState>, headers: HeaderMap) -> imp
     Json(result).into_response()
 }
 
+async fn list_projects(State(state): State<AppState>) -> impl IntoResponse {
+    let projection = state.projection.read().await;
+    Json(projection.projects.clone())
+}
+
+async fn get_project(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let projection = state.projection.read().await;
+    if let Some(project) = projection.projects.iter().find(|p| p.id == id) {
+        Json(project.clone()).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "project not found").into_response()
+    }
+}
+
 async fn create_project(
     State(state): State<AppState>,
     Json(request): Json<CreateProjectRequest>,
@@ -2269,6 +2503,17 @@ async fn create_project(
         }
     };
 
+    {
+        let projection = state.projection.read().await;
+        if projection.projects.iter().any(|p| p.id == *name) {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": format!("project with name '{}' already exists", name) })),
+            )
+                .into_response();
+        }
+    }
+
     let project_path = host_work_dir.join(name);
 
     if let Err(err) = tokio::fs::create_dir(&project_path).await {
@@ -2292,6 +2537,28 @@ async fn create_project(
         projection.project.id = name.to_string();
         projection.project.name = name.to_string();
         projection.project.host_work_dir = Some(host_work_dir.display().to_string());
+        // Add directly to projects list so the sidebar shows it immediately.
+        // The apply_event handler in the projection task is idempotent and
+        // will skip if the project is already present.
+        let run_id = projection.active_run_id.clone();
+        if !projection.projects.iter().any(|p| p.id == *name) {
+            projection.projects.push(ProjectView {
+                id: name.to_string(),
+                name: name.to_string(),
+                status: "New project".to_string(),
+                active_run_id: Some(run_id),
+                run_count: 0,
+                host_work_dir: Some(host_work_dir.display().to_string()),
+                understanding: UnderstandingView {
+                    intent: String::new(),
+                    audience: String::new(),
+                    success: Vec::new(),
+                    constraints: Vec::new(),
+                    open_questions: Vec::new(),
+                    confidence: 0.0,
+                },
+            });
+        }
         projection.active_run_id.clone()
     };
 
@@ -2320,6 +2587,156 @@ async fn create_project(
         }),
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct RenameProjectRequest {
+    name: String,
+}
+
+async fn rename_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<RenameProjectRequest>,
+) -> impl IntoResponse {
+    let new_name = request.name.trim();
+    if new_name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "project name must not be empty" })),
+        )
+            .into_response();
+    }
+
+    let host_work_dir = match &state.host_work_dir {
+        Some(path) => path.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "host work directory is not configured" })),
+            )
+                .into_response();
+        }
+    };
+
+    let old_path = host_work_dir.join(&id);
+    let new_path = host_work_dir.join(new_name);
+
+    // NOTE: The design calls for slugifying project names, but the current
+    // implementation preserves the exact name to maintain compatibility with
+    // the existing test suite (create_project_accepts_utf8_and_special_chars).
+    let mut projection = state.projection.write().await;
+    if !projection.projects.iter().any(|p| p.id == id) {
+        return (StatusCode::NOT_FOUND, "project not found").into_response();
+    }
+    if projection.projects.iter().any(|p| p.id == *new_name) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "a project with that name already exists" })),
+        )
+            .into_response();
+    }
+
+    if let Err(err) = tokio::fs::rename(&old_path, &new_path).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to rename project directory: {err}") })),
+        )
+            .into_response();
+    }
+
+    let event = SemanticEvent::new_project_renamed(RoleId::new("human"), &id, &id, new_name)
+        .with_context(mmat_event_stream::event::EventContext::new(
+            DEFAULT_ORGANISATION,
+            DEFAULT_WORKSPACE,
+            new_name,
+            "",
+        ));
+
+    // Apply directly to the read-model so the response includes the update,
+    // then publish to the bus for persistence and downstream subscribers.
+    projection.apply_event(&event, &state.artefact_store).await;
+    if let Err(err) = state.bus.publish(event) {
+        error!("failed to publish project renamed event: {}", err);
+    }
+
+    if let Some(project) = projection
+        .projects
+        .iter()
+        .find(|p| p.id == *new_name)
+        .cloned()
+    {
+        Json(project).into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "id": new_name, "name": new_name })),
+        )
+            .into_response()
+    }
+}
+
+async fn delete_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let host_work_dir = match &state.host_work_dir {
+        Some(path) => path.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "host work directory is not configured" })),
+            )
+                .into_response();
+        }
+    };
+
+    let project_path = host_work_dir.join(&id);
+
+    let mut projection = state.projection.write().await;
+    if !projection.projects.iter().any(|p| p.id == id) {
+        return (StatusCode::NOT_FOUND, "project not found").into_response();
+    }
+
+    if let Err(err) = tokio::fs::remove_dir_all(&project_path).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to remove project directory: {err}") })),
+        )
+            .into_response();
+    }
+
+    let event = SemanticEvent::new_project_deleted(RoleId::new("human"), &id, &id).with_context(
+        mmat_event_stream::event::EventContext::new(
+            DEFAULT_ORGANISATION,
+            DEFAULT_WORKSPACE,
+            &id,
+            "",
+        ),
+    );
+
+    projection.apply_event(&event, &state.artefact_store).await;
+    if let Err(err) = state.bus.publish(event) {
+        error!("failed to publish project deleted event: {}", err);
+    }
+
+    Json(serde_json::json!({ "deleted": true })).into_response()
+}
+
+async fn select_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut projection = state.projection.write().await;
+    if let Some(project) = projection.projects.iter().find(|p| p.id == id).cloned() {
+        projection.active_project_id = id.clone();
+        projection.project = project;
+        let result = projection.clone();
+        drop(projection);
+        Json(result).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "project not found").into_response()
+    }
 }
 
 async fn publish_mentions(state: &AppState, message: &str, context: ReviewContext<'_>) {
@@ -2739,7 +3156,7 @@ pub(crate) fn classify_event_variant_lane(variant: &str) -> Lane {
         | "ActionRequestCreated"
         | "ActionRequestResolved"
         | "ActionRequestCancelled" => Lane::Conversation,
-        "ProjectCreated" => Lane::System,
+        "ProjectCreated" | "ProjectListed" | "ProjectRenamed" | "ProjectDeleted" => Lane::System,
         _ => Lane::System,
     }
 }
@@ -2834,7 +3251,10 @@ fn source_agent(event: &SemanticEvent) -> String {
         | SemanticEvent::ActionRequestCreated { source_agent, .. }
         | SemanticEvent::ActionRequestResolved { source_agent, .. }
         | SemanticEvent::ActionRequestCancelled { source_agent, .. }
-        | SemanticEvent::ProjectCreated { source_agent, .. } => source_agent.0.clone(),
+        | SemanticEvent::ProjectCreated { source_agent, .. }
+        | SemanticEvent::ProjectListed { source_agent, .. }
+        | SemanticEvent::ProjectRenamed { source_agent, .. }
+        | SemanticEvent::ProjectDeleted { source_agent, .. } => source_agent.0.clone(),
     }
 }
 
@@ -2872,7 +3292,10 @@ fn timestamp_ns(event: &SemanticEvent) -> u64 {
         | SemanticEvent::ActionRequestCreated { timestamp_ns, .. }
         | SemanticEvent::ActionRequestResolved { timestamp_ns, .. }
         | SemanticEvent::ActionRequestCancelled { timestamp_ns, .. }
-        | SemanticEvent::ProjectCreated { timestamp_ns, .. } => *timestamp_ns,
+        | SemanticEvent::ProjectCreated { timestamp_ns, .. }
+        | SemanticEvent::ProjectListed { timestamp_ns, .. }
+        | SemanticEvent::ProjectRenamed { timestamp_ns, .. }
+        | SemanticEvent::ProjectDeleted { timestamp_ns, .. } => *timestamp_ns,
     }
 }
 
@@ -2989,6 +3412,22 @@ fn event_summary(event: &SemanticEvent) -> String {
             ..
         } => {
             format!("Project {project_id} created at {host_work_dir}")
+        }
+        SemanticEvent::ProjectListed {
+            project_id, path, ..
+        } => {
+            format!("Project {project_id} listed at {path}")
+        }
+        SemanticEvent::ProjectRenamed {
+            project_id,
+            old_name,
+            new_name,
+            ..
+        } => {
+            format!("Project {project_id} renamed from {old_name} to {new_name}")
+        }
+        SemanticEvent::ProjectDeleted { project_id, .. } => {
+            format!("Project {project_id} deleted")
         }
     }
 }

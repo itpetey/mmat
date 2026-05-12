@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Workbench manages project and run identity
 The workbench SHALL expose explicit project and run identity in API state and UI projections. The workbench SHALL maintain a list of all known projects alongside the active project.
@@ -11,17 +11,6 @@ The workbench SHALL expose explicit project and run identity in API state and UI
 #### Scenario: New run is created
 - **WHEN** the user starts a new delivery run from the UI
 - **THEN** emitted events MUST carry the new run ID in event context
-
-### Requirement: Workbench provides event history inspection
-The workbench SHALL let users inspect semantic event history without exposing raw chain-of-thought as default content.
-
-#### Scenario: Raw event is inspected
-- **WHEN** the user selects an event in the event history view
-- **THEN** the UI MUST show the event variant, source, timestamp, context IDs, summary, and raw JSON payload
-
-#### Scenario: Event history is filtered
-- **WHEN** the user filters by role, event type, run, task, or lane
-- **THEN** the visible event history MUST include only matching events
 
 ### Requirement: Workbench supports safe project reset and archive controls
 The workbench SHALL provide explicit controls for creating, listing, renaming, deleting, archiving, and resetting project UI state.
@@ -41,13 +30,7 @@ The workbench SHALL provide explicit controls for creating, listing, renaming, d
 - **AND** the project directory MUST be removed from disk
 - **AND** the project MUST be removed from the known projects list
 
-### Requirement: Workbench projects robust role and task states
-The workbench SHALL distinguish idle, running, waiting, blocked, completed, failed, and escalated states for roles and DAG steps.
-
-#### Scenario: Role fails
-- **WHEN** a role task returns an error or emits failure state
-- **THEN** the UI MUST mark the role as failed
-- **AND** provide a link to relevant event details
+## ADDED Requirements
 
 ### Requirement: Workbench supports project listing and switching
 The workbench SHALL provide API endpoints for listing all known projects and switching the active project.

@@ -20,6 +20,10 @@ The variants SHALL include at minimum:
 - `HumanFeedbackRequested` — question, context
 - `HumanFeedbackReceived` — answer
 - `ArtefactProduced` — artefact type, reference, producer role
+- `ProjectCreated` — project ID, host work directory
+- `ProjectListed` — project ID, path, source agent
+- `ProjectRenamed` — project ID, old name, new name
+- `ProjectDeleted` — project ID, name
 
 #### Scenario: Event carries full provenance
 - **WHEN** a Worker emits a `ClaimMade` event asserting "cargo test passed"

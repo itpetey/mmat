@@ -1,4 +1,4 @@
-let state = { project: {}, roles: {}, events: [], messages: [], artefacts: [], memories: [], notifications: [], dag_steps: [], active_artefact_id: null, active_step_id: null };
+let state = { project: {}, projects: [], roles: {}, events: [], messages: [], artefacts: [], memories: [], notifications: [], dag_steps: [], active_artefact_id: null, active_step_id: null };
 let selectedArtefactId = null;
 let selectedStepId = null;
 let selectedRoleId = null;
@@ -50,6 +50,7 @@ function setConnectionStatus(cls, text) {
 
 function render() {
   renderHeader();
+  renderProjects();
   renderRunControls();
   renderNextAction();
   renderConversation();
@@ -70,6 +71,89 @@ function renderHeader() {
   document.getElementById('chat-view').classList.toggle('active', activeView === 'chat');
   document.getElementById('dag-view').classList.toggle('active', activeView === 'dag');
 }
+
+function renderProjects() {
+  const list = document.getElementById('project-list');
+  if (!list) return;
+  const projects = state.projects || [];
+  const activeId = state.active_project_id || '';
+  list.innerHTML = '';
+  if (!projects.length) {
+    list.innerHTML = '<li class="empty">No projects yet.</li>';
+    return;
+  }
+  for (const project of projects) {
+    const li = document.createElement('li');
+    li.className = 'project-item' + (project.id === activeId ? ' active' : '');
+    li.tabIndex = 0;
+    li.setAttribute('role', 'button');
+    li.setAttribute('aria-pressed', project.id === activeId ? 'true' : 'false');
+    li.innerHTML = `<span class="project-name">${escapeHtml(project.name || project.id)}</span>`;
+
+    const actions = document.createElement('span');
+    actions.style.display = 'flex';
+    actions.style.gap = '4px';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.textContent = 'Rename';
+    renameBtn.setAttribute('aria-label', `Rename project ${project.name || project.id}`);
+    renameBtn.onclick = (e) => { e.stopPropagation(); promptRenameProject(project.id); };
+    renameBtn.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); promptRenameProject(project.id); } };
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.className = 'danger';
+    deleteBtn.setAttribute('aria-label', `Delete project ${project.name || project.id}`);
+    deleteBtn.onclick = (e) => { e.stopPropagation(); confirmDeleteProject(project.id); };
+    deleteBtn.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); confirmDeleteProject(project.id); } };
+
+    actions.appendChild(renameBtn);
+    actions.appendChild(deleteBtn);
+    li.appendChild(actions);
+
+    li.onclick = () => selectProject(project.id);
+    li.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectProject(project.id); } };
+    list.appendChild(li);
+  }
+}
+
+async function selectProject(id) {
+  if (id === state.active_project_id) return;
+  await fetch(`/api/projects/${encodeURIComponent(id)}/select`, { method: 'POST' });
+  await loadState();
+}
+
+function promptRenameProject(id) {
+  const project = (state.projects || []).find(p => p.id === id);
+  if (!project) return;
+  const newName = prompt(`Rename project "${project.name || project.id}" to:`, project.name || project.id);
+  if (!newName || newName.trim() === (project.name || project.id)) return;
+  fetch(`/api/projects/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: newName.trim() })
+  }).then(() => loadState());
+}
+
+function confirmDeleteProject(id) {
+  const project = (state.projects || []).find(p => p.id === id);
+  if (!project) return;
+  if (!confirm(`Delete project "${project.name || project.id}"? This cannot be undone.`)) return;
+  fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(() => loadState());
+}
+
+document.getElementById('new-project-button').addEventListener('click', async () => {
+  const name = prompt('Project name:');
+  if (!name || !name.trim()) return;
+  await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: name.trim() })
+  });
+  await loadState();
+});
 
 function renderRunControls() {
   const runLabel = document.getElementById('run-label');
