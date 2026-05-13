@@ -358,19 +358,6 @@ textarea:focus-visible {
     color: var(--scholar);
 }
 
-.wordmark {
-    justify-self: center;
-    margin-top: -32px;
-    background: white;
-    color: #111;
-    padding: 7px 10px 4px;
-    font-family: "Major Mono Display", "Courier New", monospace;
-    font-size: 24px;
-    letter-spacing: 0.02em;
-    text-decoration: underline;
-    line-height: 1;
-}
-
 .view-actions {
     justify-self: end;
     display: flex;

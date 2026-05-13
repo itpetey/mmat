@@ -9,7 +9,10 @@ use mmat_coordinator::{
     RoleReadiness, RoleSpec, RoleType,
 };
 use mmat_event_stream::event::{EventType, RoleId as EventRoleId, SemanticEvent, TaskContract};
-use mmat_llm::{client::LlmClient, executor::Executor};
+use mmat_llm::{
+    client::LlmClient,
+    message::{CompletionRequest, Message},
+};
 use serde_json;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -20,8 +23,8 @@ use crate::{artefacts::IntentBrief, tooling::RoleToolRegistry};
 pub struct IntentLead {
     id: EventRoleId,
     llm_client: Option<Arc<dyn LlmClient>>,
-    executor: Executor,
     read_tools: RoleToolRegistry,
+    model: String,
 }
 
 impl IntentLead {
@@ -30,8 +33,8 @@ impl IntentLead {
         Self {
             id: EventRoleId("intent-lead-001".to_string()),
             llm_client: None,
-            executor: Executor,
             read_tools: RoleToolRegistry::new(),
+            model: "big-pickle".to_string(),
         }
     }
 
@@ -44,6 +47,12 @@ impl IntentLead {
     /// Configures the IntentLead with a set of read-only tools.
     pub fn with_read_tools(mut self, read_tools: RoleToolRegistry) -> Self {
         self.read_tools = read_tools;
+        self
+    }
+
+    /// Configures the IntentLead with a specific model identifier.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
         self
     }
 
@@ -291,99 +300,16 @@ impl IntentLead {
         info!("Published stakeholder preference: {}", preference);
         Ok(())
     }
-}
 
-#[async_trait]
-impl Role for IntentLead {
-    fn id(&self) -> EventRoleId {
-        EventRoleId(self.id.0.clone())
-    }
-
-    fn spec(&self) -> RoleSpec {
-        RoleSpec {
-            id: EventRoleId(self.id.0.clone()),
-            role_type: RoleType::IntentLead,
-            authority_scope: AuthorityScope::IntentOnly,
-            default_budget: Budget {
-                time_limit_seconds: 600,
-                token_limit: 50_000,
-                max_retries: 3,
-            },
-            escalation_paths: std::collections::HashMap::new(),
-            input_contract: EventType::HumanFeedbackReceived,
-            output_contract: vec![
-                EventType::ArtefactProduced,
-                EventType::TaskAssigned,
-                EventType::HumanFeedbackRequested,
-                EventType::MemoryProposed,
-            ],
-        }
-    }
-
-    fn subscriptions(&self) -> &'static [EventType] {
-        &[EventType::HumanFeedbackReceived, EventType::TaskCompleted]
-    }
-
-    fn role_readiness(&self) -> RoleReadiness {
-        let has_llm = self.has_llm_client();
-        let tools = self.read_tool_count() as u32;
-        let has_tools = tools > 0;
-        let capability = if has_llm && has_tools {
-            CapabilityStatus::Configured
-        } else if has_llm {
-            CapabilityStatus::Degraded
-        } else {
-            CapabilityStatus::Fallback
-        };
-        RoleReadiness {
-            capability,
-            has_llm_client: has_llm,
-            has_tools,
-            tool_count: tools,
-            fallback_worktree: false,
-            requires_llm: false,
-            has_artefact_store: false,
-            summary: format!(
-                "LLM: {}, Read tools: {} — {}",
-                if has_llm { "configured" } else { "missing" },
-                tools,
-                capability,
-            ),
-        }
-    }
-
-    async fn run(self: Arc<Self>, mut ctx: RoleContext) -> Result<(), RoleError> {
-        info!("IntentLead starting");
-
-        let _executor = &self.executor;
-        let _has_llm = self.has_llm_client();
-        let _tool_count = self.read_tool_count();
-
-        ctx.coordinator
-            .report_status(EventRoleId(self.id.0.clone()), RoleLifecycleState::Running)
-            .await
-            .map_err(|e| RoleError::Internal(format!("Failed to report status: {e:?}")))?;
-
-        let mut goals = Vec::new();
-        let mut non_goals = Vec::new();
-        let mut constraints = Vec::new();
-        let mut success_metrics = Vec::new();
-        let mut open_questions = Vec::new();
-        let mut stakeholder_preferences = Vec::new();
-
-        let initial_prompt = loop {
-            let event = ctx.receiver.recv().await.map_err(|e| {
-                RoleError::Internal(format!("Failed to receive initial prompt: {e:?}"))
-            })?;
-
-            if let SemanticEvent::HumanFeedbackReceived { answer, .. } = event.as_ref() {
-                break answer.clone();
-            }
-        };
-
-        let filtered_prompt = Self::filter_implementation_suggestions(&initial_prompt);
-        goals.push(filtered_prompt.clone());
-
+    async fn scripted_elicitation(
+        &self,
+        ctx: &RoleContext,
+        goals: &mut Vec<String>,
+        non_goals: &mut Vec<String>,
+        constraints: &mut Vec<String>,
+        success_metrics: &mut Vec<String>,
+        stakeholder_preferences: &mut Vec<String>,
+    ) -> Result<(), RoleError> {
         loop {
             let clarifying_question = if goals.len() < 2 {
                 "Can you elaborate on the specific outcomes you want to achieve? What would success look like?"
@@ -401,7 +327,7 @@ impl Role for IntentLead {
 
             let answer = self
                 .interrogate_human(
-                    &ctx,
+                    ctx,
                     clarifying_question,
                     &format!(
                         "Current understanding: goals={:?}, non_goals={:?}, constraints={:?}",
@@ -470,6 +396,228 @@ impl Role for IntentLead {
                         });
                 }
             }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Role for IntentLead {
+    fn id(&self) -> EventRoleId {
+        EventRoleId(self.id.0.clone())
+    }
+
+    fn spec(&self) -> RoleSpec {
+        RoleSpec {
+            id: EventRoleId(self.id.0.clone()),
+            role_type: RoleType::IntentLead,
+            authority_scope: AuthorityScope::IntentOnly,
+            default_budget: Budget {
+                time_limit_seconds: 600,
+                token_limit: 50_000,
+                max_retries: 3,
+            },
+            escalation_paths: std::collections::HashMap::new(),
+            input_contract: EventType::HumanFeedbackReceived,
+            output_contract: vec![
+                EventType::ArtefactProduced,
+                EventType::TaskAssigned,
+                EventType::HumanFeedbackRequested,
+                EventType::MemoryProposed,
+            ],
+        }
+    }
+
+    fn subscriptions(&self) -> &'static [EventType] {
+        &[EventType::HumanFeedbackReceived, EventType::TaskCompleted]
+    }
+
+    fn role_readiness(&self) -> RoleReadiness {
+        let has_llm = self.has_llm_client();
+        let tools = self.read_tool_count() as u32;
+        let has_tools = tools > 0;
+        let capability = if has_llm && has_tools {
+            CapabilityStatus::Configured
+        } else if has_llm {
+            CapabilityStatus::Degraded
+        } else {
+            CapabilityStatus::Fallback
+        };
+        RoleReadiness {
+            capability,
+            has_llm_client: has_llm,
+            has_tools,
+            tool_count: tools,
+            fallback_worktree: false,
+            requires_llm: false,
+            has_artefact_store: false,
+            summary: format!(
+                "LLM: {}, Read tools: {} — {}",
+                if has_llm { "configured" } else { "missing" },
+                tools,
+                capability,
+            ),
+        }
+    }
+
+    async fn run(self: Arc<Self>, mut ctx: RoleContext) -> Result<(), RoleError> {
+        info!("IntentLead starting");
+
+        ctx.coordinator
+            .report_status(EventRoleId(self.id.0.clone()), RoleLifecycleState::Running)
+            .await
+            .map_err(|e| RoleError::Internal(format!("Failed to report status: {e:?}")))?;
+
+        let mut goals = Vec::new();
+        let mut non_goals = Vec::new();
+        let mut constraints = Vec::new();
+        let mut success_metrics = Vec::new();
+        let mut open_questions = Vec::new();
+        let mut stakeholder_preferences = Vec::new();
+
+        let initial_prompt = loop {
+            let event = ctx.receiver.recv().await.map_err(|e| {
+                RoleError::Internal(format!("Failed to receive initial prompt: {e:?}"))
+            })?;
+
+            if let SemanticEvent::HumanFeedbackReceived { answer, .. } = event.as_ref() {
+                break answer.clone();
+            }
+        };
+
+        let filtered_prompt = Self::filter_implementation_suggestions(&initial_prompt);
+
+        if let Some(client) = &self.llm_client {
+            let request = CompletionRequest::new(
+                &self.model,
+                vec![
+                    Message::system(
+                        "You are an intent extraction agent. \
+                         Analyse the user's request and extract structured information about their intent. \
+                         Respond ONLY with a JSON object in this exact format (no markdown, no explanation): \
+                         {\"goals\":[...],\"non_goals\":[...],\"constraints\":[...],\
+                         \"success_metrics\":[...],\"stakeholder_preferences\":[...]} \
+                         If a field has no information, use an empty array [].",
+                    ),
+                    Message::user(&filtered_prompt),
+                ],
+            );
+
+            match client.complete(request).await {
+                Ok(response) => {
+                    let content = response
+                        .choices
+                        .first()
+                        .and_then(|c| match &c.message {
+                            Message::Assistant { content, .. } => content.clone(),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(g) = parsed.get("goals").and_then(|v| v.as_array()) {
+                            for g in g {
+                                if let Some(s) = g.as_str() {
+                                    goals.push(s.to_string());
+                                }
+                            }
+                        }
+                        if let Some(n) = parsed.get("non_goals").and_then(|v| v.as_array()) {
+                            for n in n {
+                                if let Some(s) = n.as_str() {
+                                    non_goals.push(s.to_string());
+                                }
+                            }
+                        }
+                        if let Some(c) = parsed.get("constraints").and_then(|v| v.as_array()) {
+                            for c in c {
+                                if let Some(s) = c.as_str() {
+                                    constraints.push(s.to_string());
+                                }
+                            }
+                        }
+                        if let Some(m) = parsed.get("success_metrics").and_then(|v| v.as_array()) {
+                            for m in m {
+                                if let Some(s) = m.as_str() {
+                                    success_metrics.push(s.to_string());
+                                }
+                            }
+                        }
+                        if let Some(p) = parsed
+                            .get("stakeholder_preferences")
+                            .and_then(|v| v.as_array())
+                        {
+                            for p in p {
+                                if let Some(s) = p.as_str() {
+                                    stakeholder_preferences.push(s.to_string());
+                                }
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "Failed to parse LLM intent extraction JSON, falling back to raw prompt"
+                        );
+                        goals.push(filtered_prompt.clone());
+                    }
+
+                    info!(
+                        "LLM extracted: {} goals, {} non-goals, {} constraints, {} metrics, {} preferences",
+                        goals.len(),
+                        non_goals.len(),
+                        constraints.len(),
+                        success_metrics.len(),
+                        stakeholder_preferences.len(),
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "LLM call failed for intent extraction ({}), falling back to scripted elicitation",
+                        e
+                    );
+                    goals.push(filtered_prompt.clone());
+                }
+            }
+
+            if goals.is_empty() {
+                goals.push(filtered_prompt.clone());
+            }
+
+            // If LLM path left fields empty, fall back to scripted elicitation for those
+            if non_goals.is_empty()
+                || constraints.is_empty()
+                || success_metrics.is_empty()
+                || stakeholder_preferences.is_empty()
+            {
+                info!("LLM extraction incomplete, scripted elicitation for remaining fields");
+                self.scripted_elicitation(
+                    &ctx,
+                    &mut goals,
+                    &mut non_goals,
+                    &mut constraints,
+                    &mut success_metrics,
+                    &mut stakeholder_preferences,
+                )
+                .await?;
+            }
+
+            for pref in &stakeholder_preferences {
+                if pref != "None specified" {
+                    let _ = self.persist_stakeholder_preference(&ctx, pref).await;
+                }
+            }
+        } else {
+            goals.push(filtered_prompt.clone());
+
+            self.scripted_elicitation(
+                &ctx,
+                &mut goals,
+                &mut non_goals,
+                &mut constraints,
+                &mut success_metrics,
+                &mut stakeholder_preferences,
+            )
+            .await?;
 
             for pref in &stakeholder_preferences {
                 if pref != "None specified" {

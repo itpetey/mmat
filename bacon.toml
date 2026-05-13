@@ -74,12 +74,13 @@ need_stdout = false
 on_success = "back"  # so that we don't open the browser at each change
 
 [jobs.workbench]
+pre_command = ["docker", "compose", "up", "-d"]
 command = ["cargo", "run", "-p", "mmat-workbench"]
 need_stdout = true
 allow_warnings = true
 background = false
 on_change_strategy = "kill_then_restart"
-watch = ["crates/workbench/static/"]
+watch = ["crates/workbench/static/", "mmat.toml"]
 
 [jobs.workbench.env]
 MMAT_DB_URL = "postgres://mmat:mmat@localhost:5432/mmat"

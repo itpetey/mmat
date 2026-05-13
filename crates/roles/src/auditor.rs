@@ -104,6 +104,7 @@ impl Auditor {
             EventRoleId("system".to_string()),
             AuthorityScope::FullAccess,
         );
+        authority_registry.insert(EventRoleId("human".to_string()), AuthorityScope::FullAccess);
 
         Self {
             id: EventRoleId("auditor-001".to_string()),

@@ -1,6 +1,7 @@
 use clap::Parser;
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,8 +19,13 @@ use tracing::{error, info};
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Path to configuration file (mmat.toml)
-    #[arg(short = 'c', long = "config", env = "MMAT_CONFIG")]
-    config: Option<std::path::PathBuf>,
+    #[arg(
+        short = 'c',
+        long = "config",
+        env = "MMAT_CONFIG",
+        default_value = "mmat.toml"
+    )]
+    config: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,10 +101,8 @@ fn load_config(path: &std::path::Path) -> Result<Config, WorkbenchError> {
 async fn main() -> Result<(), WorkbenchError> {
     let cli = Cli::parse();
 
-    if let Some(ref config_path) = cli.config {
-        let config = load_config(config_path)?;
-        apply_config(&config);
-    }
+    let config = load_config(&cli.config)?;
+    apply_config(&config);
 
     tracing_subscriber::fmt()
         .with_env_filter(
