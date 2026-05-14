@@ -1,0 +1,15 @@
+[package]
+name = "mmat-db"
+version.workspace = true
+edition.workspace = true
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[dependencies]
+diesel = { workspace = true, features = ["postgres", "serde_json", "uuid"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["serde"] }

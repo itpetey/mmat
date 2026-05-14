@@ -7,45 +7,39 @@ repository.workspace = true
 license-file.workspace = true
 
 [dependencies]
-axum = { workspace = true, features = [
-  "form",
-  "http1",
-  "json",
-  "query",
-  "tokio"
+anyhow = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive", "env", "std"], optional = true }
+dioxus = { workspace = true, features = [
+  "devtools",
+  "fullstack",
+  "launch",
+  "lib",
+  "logger",
+  "macro"
 ] }
-clap = { workspace = true, features = [
-  "cargo",
-  "derive",
-  "env",
-  "help",
-  "std",
-  "usage"
-] }
-futures-util.workspace = true
-mmat-coordinator = { path = "../coordinator" }
-mmat-event-stream = { path = "../event-stream" }
-mmat-llm = { path = "../llm" }
-mmat-memory = { path = "../memory" }
-mmat-project = { path = "../project" }
-mmat-roles = { path = "../roles" }
+dioxus-icons = { version = "0.1.0", default-features = false }
+dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
+diesel = { workspace = true, features = ["postgres", "uuid"], optional = true }
+mmat-db = { path = "../db", optional = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["std"] }
-thiserror.workspace = true
-tokio = { workspace = true, features = [
-  "macros",
-  "net",
-  "rt-multi-thread",
-  "signal",
-  "sync",
-  "time"
-] }
-tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-toml = { workspace = true, features = ["parse"] }
-uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }
+toml = { workspace = true, features = ["parse", "serde"], optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
-[dev-dependencies]
-reqwest = { workspace = true, features = ["json"] }
-sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
-tempfile.workspace = true
+[features]
+default = ["web"]
+server = [
+  "dep:anyhow",
+  "dep:axum",
+  "dep:clap",
+  "dep:diesel",
+  "dep:mmat-db",
+  "dep:tokio",
+  "dep:toml",
+  "dep:tracing",
+  "dep:tracing-subscriber",
+  "dioxus/server"
+]
+web = ["dioxus/web"]
