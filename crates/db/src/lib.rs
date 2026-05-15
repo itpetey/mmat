@@ -1,7 +1,9 @@
 use diesel::{ConnectionResult, QueryResult, prelude::*};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
 use crate::models::{NewProject, Project};
+
+pub use diesel_async::AsyncPgConnection;
 
 pub mod models;
 pub mod schema;

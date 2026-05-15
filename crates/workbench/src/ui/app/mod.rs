@@ -151,7 +151,6 @@ pub fn App() -> Element {
                             }
                             SidebarContent {
                                 NavMain { items: NAV_MAIN }
-                                NavProjects { projects }
                             }
                             SidebarFooter { NavUser {} }
                             SidebarRail {}
@@ -198,137 +197,49 @@ fn DemoIcon() -> Element {
 }
 
 #[component]
-fn DemoSettingControls(
-    side: Signal<SidebarSide>,
-    collapsible: Signal<SidebarCollapsible>,
-) -> Element {
-    rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--dx-sidebar-border); border-radius: 0.75rem; background: var(--primary-color-2);",
-            div { style: "display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;",
-                span { style: "font-size: 0.75rem; font-weight: 600; color: var(--secondary-color-4);",
-                    "Side"
-                }
-                div { style: "display: inline-flex; gap: 0.5rem;",
-                    Button {
-                        variant: if side() == SidebarSide::Left { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| side.set(SidebarSide::Left),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Left"
-                    }
-                    Button {
-                        variant: if side() == SidebarSide::Right { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| side.set(SidebarSide::Right),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Right"
-                    }
-                }
-            }
-            div { style: "display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;",
-                span { style: "font-size: 0.75rem; font-weight: 600; color: var(--secondary-color-4);",
-                    "Collapse"
-                }
-                div { style: "display: inline-flex; gap: 0.5rem; flex-wrap: wrap;",
-                    Button {
-                        variant: if collapsible() == SidebarCollapsible::Offcanvas { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| collapsible.set(SidebarCollapsible::Offcanvas),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Offcanvas"
-                    }
-                    Button {
-                        variant: if collapsible() == SidebarCollapsible::Icon { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| collapsible.set(SidebarCollapsible::Icon),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Icon"
-                    }
-                    Button {
-                        variant: if collapsible() == SidebarCollapsible::None { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| collapsible.set(SidebarCollapsible::None),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "None"
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
 fn NavMain(items: &'static [NavMainItem]) -> Element {
     rsx! {
         SidebarGroup {
             SidebarGroupLabel { "Platform" }
-            SidebarMenu {
-                for item in items.iter() {
-                    Collapsible {
-                        default_open: item.is_active,
-                        as: move |attributes: Vec<Attribute>| rsx! {
-                            SidebarMenuItem { key: "{item.title}", attributes,
-                                CollapsibleTrigger { class: Styles::dx_sidebar_collapsible_trigger,
-                                    as: move |attributes: Vec<Attribute>| rsx! {
-                                        SidebarMenuButton {
-                                            class: AppStyles::dx_sidebar_menu_disclosure_button,
-                                            tooltip: rsx! {
-                                                {item.title}
-                                            },
-                                            attributes,
-                                            DemoIcon {}
-                                            span { {item.title} }
-                                            ChevronIcon {}
-                                        }
-                                    },
-                                }
-                                CollapsibleContent {
-                                    SidebarMenuSub {
-                                        for sub_item in item.items {
-                                            SidebarMenuSubItem { key: "{sub_item.title}",
-                                                SidebarMenuSubButton {
-                                                    as: move |attributes: Vec<Attribute>| rsx! {
-                                                        a { href: sub_item.url, ..attributes,
-                                                            span { {sub_item.title} }
-                                                        }
-                                                    },
+            SidebarGroupContent {
+                SidebarMenu {
+                    for item in items.iter() {
+                        Collapsible {
+                            default_open: item.is_active,
+                            as: move |attributes: Vec<Attribute>| rsx! {
+                                SidebarMenuItem { key: "{item.title}", attributes,
+                                    CollapsibleTrigger { class: Styles::dx_sidebar_collapsible_trigger,
+                                        as: move |attributes: Vec<Attribute>| rsx! {
+                                            SidebarMenuButton {
+                                                class: AppStyles::dx_sidebar_menu_disclosure_button,
+                                                tooltip: rsx! {
+                                                    {item.title}
+                                                },
+                                                attributes,
+                                                DemoIcon {}
+                                                span { {item.title} }
+                                                ChevronIcon {}
+                                            }
+                                        },
+                                    }
+                                    CollapsibleContent {
+                                        SidebarMenuSub {
+                                            for sub_item in item.items {
+                                                SidebarMenuSubItem { key: "{sub_item.title}",
+                                                    SidebarMenuSubButton {
+                                                        as: move |attributes: Vec<Attribute>| rsx! {
+                                                            a { href: sub_item.url, ..attributes,
+                                                                span { {sub_item.title} }
+                                                            }
+                                                        },
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
-                        },
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn NavProjects(projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) -> Element {
-    rsx! {
-        SidebarGroup { class: AppStyles::dx_sidebar_hide_on_collapse,
-            SidebarGroupLabel { "Projects" }
-            SidebarGroupContent {
-                SidebarMenu {
-                    match &*projects.read_unchecked() {
-                        Some(Ok(items)) if !items.is_empty() => rsx! {
-                            for project in items.iter() {
-                                ProjectNavItemLink { key: "{project.id}", project: project.clone() }
-                            }
-                        },
-                        Some(Ok(_)) => rsx! {
-                            SidebarMenuItem {
-                                SidebarMenuButton { style: "opacity:0.7;", "No projects yet" }
-                            }
-                        },
-                        Some(Err(error)) => rsx! {
-                            SidebarMenuItem {
-                                SidebarMenuButton { "Unable to load projects: {error}" }
-                            }
-                        },
-                        None => rsx! {
-                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
-                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
-                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
-                        },
+                            },
+                        }
                     }
                 }
             }
@@ -572,7 +483,7 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
             open: dialog_open(),
             on_open_change: move |open| dialog_open.set(open),
             DialogTitle { "Add Project" }
-            DialogDescription { "Create a project entry in the memory database." }
+            DialogDescription { "Create a new project at the given path." }
             form {
                 class: "mt-4 flex flex-col gap-4",
                 onsubmit: move |event| {
@@ -609,7 +520,7 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
                 label {
                     class: "flex flex-col gap-1 text-sm",
                     r#for: "project-label",
-                    "Project Name"
+                    "Name"
                     input {
                         id: "project-label",
                         class: "rounded-md border px-3 py-2 text-sm",
@@ -621,7 +532,7 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
                 label {
                     class: "flex flex-col gap-1 text-sm",
                     r#for: "project-path",
-                    "Project Path"
+                    "Path"
                     input {
                         id: "project-path",
                         class: "rounded-md border px-3 py-2 text-sm",

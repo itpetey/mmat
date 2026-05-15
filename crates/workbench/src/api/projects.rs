@@ -19,10 +19,7 @@ pub async fn create_project(label: String, path: String) -> ServerFnResult<Proje
         return Err(ServerFnError::new("Project name and path are required."));
     }
 
-    let database_url = crate::cli::pg_dsn();
-    let mut connection = mmat_db::connect(&database_url)
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not connect to database: {error}")))?;
+    let mut connection = super::db().await?;
 
     mmat_db::insert_project(&mut connection, &NewProject { label, path })
         .await
@@ -36,10 +33,7 @@ pub async fn create_project(label: String, path: String) -> ServerFnResult<Proje
 
 #[server]
 pub async fn list_projects() -> ServerFnResult<Vec<ProjectNavItem>> {
-    let database_url = crate::cli::pg_dsn();
-    let mut connection = mmat_db::connect(&database_url)
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not connect to database: {error}")))?;
+    let mut connection = super::db().await?;
 
     mmat_db::load_projects(&mut connection)
         .await
