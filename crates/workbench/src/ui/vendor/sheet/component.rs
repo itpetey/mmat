@@ -1,10 +1,10 @@
 use dioxus::prelude::*;
 use dioxus_icons::lucide::X;
-use dioxus_primitives::dialog::{
-    self, DialogCtx, DialogDescriptionProps, DialogRootProps, DialogTitleProps,
+use dioxus_primitives::{
+    dialog::{self, DialogCtx, DialogDescriptionProps, DialogRootProps, DialogTitleProps},
+    dioxus_attributes::attributes,
+    merge_attributes,
 };
-use dioxus_primitives::dioxus_attributes::attributes;
-use dioxus_primitives::merge_attributes;
 
 #[css_module("/src/ui/vendor/sheet/style.css")]
 struct Styles;
@@ -57,68 +57,6 @@ pub fn Sheet(props: DialogRootProps) -> Element {
 }
 
 #[component]
-pub fn SheetContentClose(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-) -> Element {
-    let base = attributes!(button {
-        class: Styles::dx_sheet_close,
-    });
-    let attributes = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        SheetClose { attributes,
-            X { size: "20px" }
-        }
-    }
-}
-
-#[component]
-pub fn SheetHeader(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    rsx! {
-        div { class: Styles::dx_sheet_header, "data-slot": "sheet-header", ..attributes, {children} }
-    }
-}
-
-#[component]
-pub fn SheetFooter(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    rsx! {
-        div { class: Styles::dx_sheet_footer, "data-slot": "sheet-footer", ..attributes, {children} }
-    }
-}
-
-#[component]
-pub fn SheetTitle(props: DialogTitleProps) -> Element {
-    rsx! {
-        dialog::DialogTitle {
-            id: props.id,
-            class: Styles::dx_sheet_title,
-            "data-slot": "sheet-title",
-            attributes: props.attributes,
-            {props.children}
-        }
-    }
-}
-
-#[component]
-pub fn SheetDescription(props: DialogDescriptionProps) -> Element {
-    rsx! {
-        dialog::DialogDescription {
-            id: props.id,
-            class: Styles::dx_sheet_description,
-            "data-slot": "sheet-description",
-            attributes: props.attributes,
-            {props.children}
-        }
-    }
-}
-
-#[component]
 pub fn SheetClose(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
     r#as: Option<Callback<Vec<Attribute>, Element>>,
@@ -140,6 +78,68 @@ pub fn SheetClose(
     } else {
         rsx! {
             button { ..merged, {children} }
+        }
+    }
+}
+
+#[component]
+pub fn SheetContentClose(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+) -> Element {
+    let base = attributes!(button {
+        class: Styles::dx_sheet_close,
+    });
+    let attributes = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        SheetClose { attributes,
+            X { size: "20px" }
+        }
+    }
+}
+
+#[component]
+pub fn SheetDescription(props: DialogDescriptionProps) -> Element {
+    rsx! {
+        dialog::DialogDescription {
+            id: props.id,
+            class: Styles::dx_sheet_description,
+            "data-slot": "sheet-description",
+            attributes: props.attributes,
+            {props.children}
+        }
+    }
+}
+
+#[component]
+pub fn SheetFooter(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    rsx! {
+        div { class: Styles::dx_sheet_footer, "data-slot": "sheet-footer", ..attributes, {children} }
+    }
+}
+
+#[component]
+pub fn SheetHeader(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    rsx! {
+        div { class: Styles::dx_sheet_header, "data-slot": "sheet-header", ..attributes, {children} }
+    }
+}
+
+#[component]
+pub fn SheetTitle(props: DialogTitleProps) -> Element {
+    rsx! {
+        dialog::DialogTitle {
+            id: props.id,
+            class: Styles::dx_sheet_title,
+            "data-slot": "sheet-title",
+            attributes: props.attributes,
+            {props.children}
         }
     }
 }

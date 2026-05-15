@@ -1,2 +1,3 @@
-mod component;
 pub use component::*;
+
+mod component;

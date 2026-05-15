@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
 
 use crate::{
     api::projects::{ProjectNavItem, create_project, list_projects},
@@ -24,33 +25,8 @@ use crate::{
     },
 };
 
-use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
-
-// const FAVICON: Asset = asset!("/assets/favicon.ico");
-const MAIN_CSS: Asset = asset!("/assets/main.css");
-const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const DX_COMPONENT_CSS: Asset = asset!("/assets/dx-components-theme.css");
-
-#[css_module("/src/ui/app/style.css")]
-struct AppStyles;
-
-#[css_module("/src/ui/vendor/sidebar/style.css")]
-struct Styles;
-
-#[derive(Clone, PartialEq)]
-struct NavMainItem {
-    title: &'static str,
-    url: &'static str,
-    is_active: bool,
-    items: &'static [SubItem],
-}
-
-#[derive(Clone, PartialEq)]
-struct SubItem {
-    title: &'static str,
-    url: &'static str,
-}
-
+const MAIN_CSS: Asset = asset!("/assets/main.css");
 const NAV_MAIN: &[NavMainItem] = &[
     NavMainItem {
         title: "Playground",
@@ -137,6 +113,27 @@ const NAV_MAIN: &[NavMainItem] = &[
         ],
     },
 ];
+const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
+
+#[css_module("/src/ui/app/style.css")]
+struct AppStyles;
+
+#[css_module("/src/ui/vendor/sidebar/style.css")]
+struct Styles;
+
+#[derive(Clone, PartialEq)]
+struct SubItem {
+    title: &'static str,
+    url: &'static str,
+}
+
+#[derive(Clone, PartialEq)]
+struct NavMainItem {
+    title: &'static str,
+    url: &'static str,
+    is_active: bool,
+    items: &'static [SubItem],
+}
 
 #[component]
 pub fn App() -> Element {
@@ -176,6 +173,301 @@ pub fn App() -> Element {
 
 
             Header {}
+        }
+    }
+}
+
+#[component]
+fn ChevronIcon() -> Element {
+    rsx! {
+        ChevronRight {
+            class: format!("{} {}", AppStyles::dx_sidebar_icon, AppStyles::dx_sidebar_chevron),
+            size: "24px",
+        }
+    }
+}
+
+#[component]
+fn DemoIcon() -> Element {
+    rsx! {
+        Circle {
+            class: AppStyles::dx_sidebar_icon,
+            size: "24px",
+        }
+    }
+}
+
+#[component]
+fn DemoSettingControls(
+    side: Signal<SidebarSide>,
+    collapsible: Signal<SidebarCollapsible>,
+) -> Element {
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--dx-sidebar-border); border-radius: 0.75rem; background: var(--primary-color-2);",
+            div { style: "display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;",
+                span { style: "font-size: 0.75rem; font-weight: 600; color: var(--secondary-color-4);",
+                    "Side"
+                }
+                div { style: "display: inline-flex; gap: 0.5rem;",
+                    Button {
+                        variant: if side() == SidebarSide::Left { ButtonVariant::Primary } else { ButtonVariant::Outline },
+                        onclick: move |_| side.set(SidebarSide::Left),
+                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
+                        "Left"
+                    }
+                    Button {
+                        variant: if side() == SidebarSide::Right { ButtonVariant::Primary } else { ButtonVariant::Outline },
+                        onclick: move |_| side.set(SidebarSide::Right),
+                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
+                        "Right"
+                    }
+                }
+            }
+            div { style: "display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;",
+                span { style: "font-size: 0.75rem; font-weight: 600; color: var(--secondary-color-4);",
+                    "Collapse"
+                }
+                div { style: "display: inline-flex; gap: 0.5rem; flex-wrap: wrap;",
+                    Button {
+                        variant: if collapsible() == SidebarCollapsible::Offcanvas { ButtonVariant::Primary } else { ButtonVariant::Outline },
+                        onclick: move |_| collapsible.set(SidebarCollapsible::Offcanvas),
+                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
+                        "Offcanvas"
+                    }
+                    Button {
+                        variant: if collapsible() == SidebarCollapsible::Icon { ButtonVariant::Primary } else { ButtonVariant::Outline },
+                        onclick: move |_| collapsible.set(SidebarCollapsible::Icon),
+                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
+                        "Icon"
+                    }
+                    Button {
+                        variant: if collapsible() == SidebarCollapsible::None { ButtonVariant::Primary } else { ButtonVariant::Outline },
+                        onclick: move |_| collapsible.set(SidebarCollapsible::None),
+                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
+                        "None"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn NavMain(items: &'static [NavMainItem]) -> Element {
+    rsx! {
+        SidebarGroup {
+            SidebarGroupLabel { "Platform" }
+            SidebarMenu {
+                for item in items.iter() {
+                    Collapsible {
+                        default_open: item.is_active,
+                        as: move |attributes: Vec<Attribute>| rsx! {
+                            SidebarMenuItem { key: "{item.title}", attributes,
+                                CollapsibleTrigger { class: Styles::dx_sidebar_collapsible_trigger,
+                                    as: move |attributes: Vec<Attribute>| rsx! {
+                                        SidebarMenuButton {
+                                            class: AppStyles::dx_sidebar_menu_disclosure_button,
+                                            tooltip: rsx! {
+                                                {item.title}
+                                            },
+                                            attributes,
+                                            DemoIcon {}
+                                            span { {item.title} }
+                                            ChevronIcon {}
+                                        }
+                                    },
+                                }
+                                CollapsibleContent {
+                                    SidebarMenuSub {
+                                        for sub_item in item.items {
+                                            SidebarMenuSubItem { key: "{sub_item.title}",
+                                                SidebarMenuSubButton {
+                                                    as: move |attributes: Vec<Attribute>| rsx! {
+                                                        a { href: sub_item.url, ..attributes,
+                                                            span { {sub_item.title} }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn NavProjects(projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) -> Element {
+    rsx! {
+        SidebarGroup { class: AppStyles::dx_sidebar_hide_on_collapse,
+            SidebarGroupLabel { "Projects" }
+            SidebarGroupContent {
+                SidebarMenu {
+                    match &*projects.read_unchecked() {
+                        Some(Ok(items)) if !items.is_empty() => rsx! {
+                            for project in items.iter() {
+                                ProjectNavItemLink { key: "{project.id}", project: project.clone() }
+                            }
+                        },
+                        Some(Ok(_)) => rsx! {
+                            SidebarMenuItem {
+                                SidebarMenuButton { style: "opacity:0.7;", "No projects yet" }
+                            }
+                        },
+                        Some(Err(error)) => rsx! {
+                            SidebarMenuItem {
+                                SidebarMenuButton { "Unable to load projects: {error}" }
+                            }
+                        },
+                        None => rsx! {
+                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
+                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
+                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn NavUser() -> Element {
+    rsx! {
+        SidebarMenu {
+            SidebarMenuItem {
+                DropdownMenu { class: Styles::dx_sidebar_dropdown_menu,
+                    DropdownMenuTrigger { class: Styles::dx_sidebar_dropdown_menu_trigger,
+                        as: move |attributes: Vec<Attribute>| rsx! {
+                            SidebarMenuButton { class: AppStyles::dx_sidebar_menu_disclosure_button, size: SidebarMenuButtonSize::Lg, attributes,
+                                Avatar {
+                                    size: AvatarImageSize::Small,
+                                    style: "border-radius:0.5rem;",
+                                    src: asset!("/assets/ol_gil.jpg", ImageAssetOptions::new().with_avif()).to_string(),
+                                    alt: "dioxus avatar",
+                                    "DX"
+                                }
+                                div { class: AppStyles::dx_sidebar_info_block,
+                                    span { class: AppStyles::dx_sidebar_info_title, "Dioxus" }
+                                    span { class: AppStyles::dx_sidebar_info_subtitle, "m@example.com" }
+                                }
+                                ChevronIcon {}
+                            }
+                        },
+                    }
+                    DropdownMenuContent { class: Styles::dx_sidebar_dropdown_menu_content,
+                        div { style: "display:flex; align-items:center; gap:0.5rem; padding:0.375rem 0.25rem; text-align:left; font-size:0.875rem;",
+                            Avatar {
+                                size: AvatarImageSize::Small,
+                                style: "border-radius:0.5rem;",
+                                src: asset!("/assets/ol_gil.jpg", ImageAssetOptions::new().with_avif()).to_string(),
+                                alt: "dioxus avatar",
+                                "DX"
+                            }
+                            div { class: AppStyles::dx_sidebar_info_block,
+                                span { class: AppStyles::dx_sidebar_info_title, "Dioxus" }
+                                span { class: AppStyles::dx_sidebar_info_subtitle, "m@example.com" }
+                            }
+                        }
+                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
+                        DropdownMenuItem {
+                            index: 0usize,
+                            value: "upgrade".to_string(),
+                            on_select: move |_: String| {},
+                            DemoIcon {}
+                            "Upgrade to Pro"
+                        }
+                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
+                        DropdownMenuItem {
+                            index: 1usize,
+                            value: "account".to_string(),
+                            on_select: move |_: String| {},
+                            DemoIcon {}
+                            "Account"
+                        }
+                        DropdownMenuItem {
+                            index: 2usize,
+                            value: "billing".to_string(),
+                            on_select: move |_: String| {},
+                            DemoIcon {}
+                            "Billing"
+                        }
+                        DropdownMenuItem {
+                            index: 3usize,
+                            value: "notifications".to_string(),
+                            on_select: move |_: String| {},
+                            DemoIcon {}
+                            "Notifications"
+                        }
+                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
+                        DropdownMenuItem {
+                            index: 4usize,
+                            value: "logout".to_string(),
+                            on_select: move |_: String| {},
+                            DemoIcon {}
+                            "Log out"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ProjectNavItemLink(project: ProjectNavItem) -> Element {
+    let href = format!("/projects/{}", project.id);
+    let label = project.label.clone();
+    let title = project.path.clone();
+
+    rsx! {
+        SidebarMenuItem {
+            SidebarMenuButton {
+                as: move |attributes: Vec<Attribute>| {
+                    let href = href.clone();
+                    let label = label.clone();
+                    let title = title.clone();
+
+                    rsx! {
+                        a { href, title, ..attributes,
+                            DemoIcon {}
+                            span { "{label}" }
+                        }
+                    }
+                },
+            }
+            DropdownMenu { class: Styles::dx_sidebar_dropdown_menu,
+                DropdownMenuTrigger { class: Styles::dx_sidebar_dropdown_menu_trigger,
+                    as: move |attributes: Vec<Attribute>| rsx! {
+                        SidebarMenuAction { show_on_hover: true, attributes,
+                            DemoIcon {}
+                            span { class: Styles::dx_sr_only, "More" }
+                        }
+                    },
+                }
+                DropdownMenuContent { class: Styles::dx_sidebar_dropdown_menu_content,
+                    DropdownMenuItem {
+                        index: 0usize,
+                        value: "view".to_string(),
+                        on_select: move |_: String| {},
+                        DemoIcon {}
+                        span { "View Project" }
+                    }
+                    Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
+                    DropdownMenuItem {
+                        index: 1usize,
+                        value: "delete".to_string(),
+                        on_select: move |_: String| {},
+                        DemoIcon {}
+                        span { "Delete Project" }
+                    }
+                }
+            }
         }
     }
 }
@@ -360,301 +652,6 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
                     }
                 }
             }
-        }
-    }
-}
-
-#[component]
-fn NavMain(items: &'static [NavMainItem]) -> Element {
-    rsx! {
-        SidebarGroup {
-            SidebarGroupLabel { "Platform" }
-            SidebarMenu {
-                for item in items.iter() {
-                    Collapsible {
-                        default_open: item.is_active,
-                        as: move |attributes: Vec<Attribute>| rsx! {
-                            SidebarMenuItem { key: "{item.title}", attributes,
-                                CollapsibleTrigger { class: Styles::dx_sidebar_collapsible_trigger,
-                                    as: move |attributes: Vec<Attribute>| rsx! {
-                                        SidebarMenuButton {
-                                            class: AppStyles::dx_sidebar_menu_disclosure_button,
-                                            tooltip: rsx! {
-                                                {item.title}
-                                            },
-                                            attributes,
-                                            DemoIcon {}
-                                            span { {item.title} }
-                                            ChevronIcon {}
-                                        }
-                                    },
-                                }
-                                CollapsibleContent {
-                                    SidebarMenuSub {
-                                        for sub_item in item.items {
-                                            SidebarMenuSubItem { key: "{sub_item.title}",
-                                                SidebarMenuSubButton {
-                                                    as: move |attributes: Vec<Attribute>| rsx! {
-                                                        a { href: sub_item.url, ..attributes,
-                                                            span { {sub_item.title} }
-                                                        }
-                                                    },
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn NavProjects(projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) -> Element {
-    rsx! {
-        SidebarGroup { class: AppStyles::dx_sidebar_hide_on_collapse,
-            SidebarGroupLabel { "Projects" }
-            SidebarGroupContent {
-                SidebarMenu {
-                    match &*projects.read_unchecked() {
-                        Some(Ok(items)) if !items.is_empty() => rsx! {
-                            for project in items.iter() {
-                                ProjectNavItemLink { key: "{project.id}", project: project.clone() }
-                            }
-                        },
-                        Some(Ok(_)) => rsx! {
-                            SidebarMenuItem {
-                                SidebarMenuButton { style: "opacity:0.7;", "No projects yet" }
-                            }
-                        },
-                        Some(Err(error)) => rsx! {
-                            SidebarMenuItem {
-                                SidebarMenuButton { "Unable to load projects: {error}" }
-                            }
-                        },
-                        None => rsx! {
-                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
-                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
-                            SidebarMenuItem { SidebarMenuSkeleton { show_icon: true } }
-                        },
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn ProjectNavItemLink(project: ProjectNavItem) -> Element {
-    let href = format!("/projects/{}", project.id);
-    let label = project.label.clone();
-    let title = project.path.clone();
-
-    rsx! {
-        SidebarMenuItem {
-            SidebarMenuButton {
-                as: move |attributes: Vec<Attribute>| {
-                    let href = href.clone();
-                    let label = label.clone();
-                    let title = title.clone();
-
-                    rsx! {
-                        a { href, title, ..attributes,
-                            DemoIcon {}
-                            span { "{label}" }
-                        }
-                    }
-                },
-            }
-            DropdownMenu { class: Styles::dx_sidebar_dropdown_menu,
-                DropdownMenuTrigger { class: Styles::dx_sidebar_dropdown_menu_trigger,
-                    as: move |attributes: Vec<Attribute>| rsx! {
-                        SidebarMenuAction { show_on_hover: true, attributes,
-                            DemoIcon {}
-                            span { class: Styles::dx_sr_only, "More" }
-                        }
-                    },
-                }
-                DropdownMenuContent { class: Styles::dx_sidebar_dropdown_menu_content,
-                    DropdownMenuItem {
-                        index: 0usize,
-                        value: "view".to_string(),
-                        on_select: move |_: String| {},
-                        DemoIcon {}
-                        span { "View Project" }
-                    }
-                    Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
-                    DropdownMenuItem {
-                        index: 1usize,
-                        value: "delete".to_string(),
-                        on_select: move |_: String| {},
-                        DemoIcon {}
-                        span { "Delete Project" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn NavUser() -> Element {
-    rsx! {
-        SidebarMenu {
-            SidebarMenuItem {
-                DropdownMenu { class: Styles::dx_sidebar_dropdown_menu,
-                    DropdownMenuTrigger { class: Styles::dx_sidebar_dropdown_menu_trigger,
-                        as: move |attributes: Vec<Attribute>| rsx! {
-                            SidebarMenuButton { class: AppStyles::dx_sidebar_menu_disclosure_button, size: SidebarMenuButtonSize::Lg, attributes,
-                                Avatar {
-                                    size: AvatarImageSize::Small,
-                                    style: "border-radius:0.5rem;",
-                                    src: asset!("/assets/ol_gil.jpg", ImageAssetOptions::new().with_avif()).to_string(),
-                                    alt: "dioxus avatar",
-                                    "DX"
-                                }
-                                div { class: AppStyles::dx_sidebar_info_block,
-                                    span { class: AppStyles::dx_sidebar_info_title, "Dioxus" }
-                                    span { class: AppStyles::dx_sidebar_info_subtitle, "m@example.com" }
-                                }
-                                ChevronIcon {}
-                            }
-                        },
-                    }
-                    DropdownMenuContent { class: Styles::dx_sidebar_dropdown_menu_content,
-                        div { style: "display:flex; align-items:center; gap:0.5rem; padding:0.375rem 0.25rem; text-align:left; font-size:0.875rem;",
-                            Avatar {
-                                size: AvatarImageSize::Small,
-                                style: "border-radius:0.5rem;",
-                                src: asset!("/assets/ol_gil.jpg", ImageAssetOptions::new().with_avif()).to_string(),
-                                alt: "dioxus avatar",
-                                "DX"
-                            }
-                            div { class: AppStyles::dx_sidebar_info_block,
-                                span { class: AppStyles::dx_sidebar_info_title, "Dioxus" }
-                                span { class: AppStyles::dx_sidebar_info_subtitle, "m@example.com" }
-                            }
-                        }
-                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
-                        DropdownMenuItem {
-                            index: 0usize,
-                            value: "upgrade".to_string(),
-                            on_select: move |_: String| {},
-                            DemoIcon {}
-                            "Upgrade to Pro"
-                        }
-                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
-                        DropdownMenuItem {
-                            index: 1usize,
-                            value: "account".to_string(),
-                            on_select: move |_: String| {},
-                            DemoIcon {}
-                            "Account"
-                        }
-                        DropdownMenuItem {
-                            index: 2usize,
-                            value: "billing".to_string(),
-                            on_select: move |_: String| {},
-                            DemoIcon {}
-                            "Billing"
-                        }
-                        DropdownMenuItem {
-                            index: 3usize,
-                            value: "notifications".to_string(),
-                            on_select: move |_: String| {},
-                            DemoIcon {}
-                            "Notifications"
-                        }
-                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
-                        DropdownMenuItem {
-                            index: 4usize,
-                            value: "logout".to_string(),
-                            on_select: move |_: String| {},
-                            DemoIcon {}
-                            "Log out"
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn DemoSettingControls(
-    side: Signal<SidebarSide>,
-    collapsible: Signal<SidebarCollapsible>,
-) -> Element {
-    rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--dx-sidebar-border); border-radius: 0.75rem; background: var(--primary-color-2);",
-            div { style: "display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;",
-                span { style: "font-size: 0.75rem; font-weight: 600; color: var(--secondary-color-4);",
-                    "Side"
-                }
-                div { style: "display: inline-flex; gap: 0.5rem;",
-                    Button {
-                        variant: if side() == SidebarSide::Left { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| side.set(SidebarSide::Left),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Left"
-                    }
-                    Button {
-                        variant: if side() == SidebarSide::Right { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| side.set(SidebarSide::Right),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Right"
-                    }
-                }
-            }
-            div { style: "display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;",
-                span { style: "font-size: 0.75rem; font-weight: 600; color: var(--secondary-color-4);",
-                    "Collapse"
-                }
-                div { style: "display: inline-flex; gap: 0.5rem; flex-wrap: wrap;",
-                    Button {
-                        variant: if collapsible() == SidebarCollapsible::Offcanvas { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| collapsible.set(SidebarCollapsible::Offcanvas),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Offcanvas"
-                    }
-                    Button {
-                        variant: if collapsible() == SidebarCollapsible::Icon { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| collapsible.set(SidebarCollapsible::Icon),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "Icon"
-                    }
-                    Button {
-                        variant: if collapsible() == SidebarCollapsible::None { ButtonVariant::Primary } else { ButtonVariant::Outline },
-                        onclick: move |_| collapsible.set(SidebarCollapsible::None),
-                        style: "padding: 0.4rem 0.6rem; font-size: 0.75rem;",
-                        "None"
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn DemoIcon() -> Element {
-    rsx! {
-        Circle {
-            class: AppStyles::dx_sidebar_icon,
-            size: "24px",
-        }
-    }
-}
-
-#[component]
-fn ChevronIcon() -> Element {
-    rsx! {
-        ChevronRight {
-            class: format!("{} {}", AppStyles::dx_sidebar_icon, AppStyles::dx_sidebar_chevron),
-            size: "24px",
         }
     }
 }

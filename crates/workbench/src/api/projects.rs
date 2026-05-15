@@ -9,28 +9,6 @@ pub struct ProjectNavItem {
 }
 
 #[server]
-pub async fn list_projects() -> ServerFnResult<Vec<ProjectNavItem>> {
-    let database_url = crate::cli::pg_dsn();
-    let mut connection = mmat_db::connect(&database_url)
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not connect to database: {error}")))?;
-
-    mmat_db::load_projects(&mut connection)
-        .await
-        .map(|items| {
-            items
-                .into_iter()
-                .map(|project| ProjectNavItem {
-                    id: project.id.to_string(),
-                    label: project.label,
-                    path: project.path,
-                })
-                .collect()
-        })
-        .map_err(|error| ServerFnError::new(format!("could not load projects: {error}")))
-}
-
-#[server]
 pub async fn create_project(label: String, path: String) -> ServerFnResult<ProjectNavItem> {
     use mmat_db::models::NewProject;
 
@@ -54,4 +32,26 @@ pub async fn create_project(label: String, path: String) -> ServerFnResult<Proje
             path: project.path,
         })
         .map_err(|error| ServerFnError::new(format!("could not create project: {error}")))
+}
+
+#[server]
+pub async fn list_projects() -> ServerFnResult<Vec<ProjectNavItem>> {
+    let database_url = crate::cli::pg_dsn();
+    let mut connection = mmat_db::connect(&database_url)
+        .await
+        .map_err(|error| ServerFnError::new(format!("could not connect to database: {error}")))?;
+
+    mmat_db::load_projects(&mut connection)
+        .await
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|project| ProjectNavItem {
+                    id: project.id.to_string(),
+                    label: project.label,
+                    path: project.path,
+                })
+                .collect()
+        })
+        .map_err(|error| ServerFnError::new(format!("could not load projects: {error}")))
 }

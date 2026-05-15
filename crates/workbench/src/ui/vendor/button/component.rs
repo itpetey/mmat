@@ -1,6 +1,5 @@
 use dioxus::prelude::*;
-use dioxus_primitives::dioxus_attributes::attributes;
-use dioxus_primitives::merge_attributes;
+use dioxus_primitives::{dioxus_attributes::attributes, merge_attributes};
 
 #[css_module("/src/ui/vendor/button/style.css")]
 struct Styles;
@@ -17,19 +16,6 @@ pub enum ButtonVariant {
     Link,
 }
 
-impl ButtonVariant {
-    pub fn class(&self) -> &'static str {
-        match self {
-            ButtonVariant::Primary => "primary",
-            ButtonVariant::Secondary => "secondary",
-            ButtonVariant::Destructive => "destructive",
-            ButtonVariant::Outline => "outline",
-            ButtonVariant::Ghost => "ghost",
-            ButtonVariant::Link => "link",
-        }
-    }
-}
-
 #[derive(Copy, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub enum ButtonSize {
@@ -42,6 +28,19 @@ pub enum ButtonSize {
     IconXs,
     IconSm,
     IconLg,
+}
+
+impl ButtonVariant {
+    pub fn class(&self) -> &'static str {
+        match self {
+            ButtonVariant::Primary => "primary",
+            ButtonVariant::Secondary => "secondary",
+            ButtonVariant::Destructive => "destructive",
+            ButtonVariant::Outline => "outline",
+            ButtonVariant::Ghost => "ghost",
+            ButtonVariant::Link => "link",
+        }
+    }
 }
 
 impl ButtonSize {

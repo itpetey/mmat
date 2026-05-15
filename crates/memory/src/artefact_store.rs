@@ -5,8 +5,7 @@ use mmat_event_stream::{
     event_bus::EventBus,
 };
 use parking_lot::Mutex;
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 use crate::error::Result;

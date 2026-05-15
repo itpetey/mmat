@@ -1,3 +1,7 @@
+use dioxus::{core::use_drop, prelude::*};
+use dioxus_icons::lucide::PanelLeft;
+use dioxus_primitives::{dioxus_attributes::attributes, merge_attributes, use_controlled};
+
 use crate::ui::vendor::{
     button::{Button, ButtonVariant},
     separator::Separator,
@@ -5,22 +9,15 @@ use crate::ui::vendor::{
     skeleton::Skeleton,
     tooltip::{Tooltip, TooltipContent, TooltipTrigger},
 };
-use dioxus::core::use_drop;
-use dioxus::prelude::*;
-use dioxus_icons::lucide::PanelLeft;
-use dioxus_primitives::dioxus_attributes::attributes;
-use dioxus_primitives::merge_attributes;
-use dioxus_primitives::use_controlled;
+
+const MOBILE_BREAKPOINT: u32 = 768;
+const SIDEBAR_KEYBOARD_SHORTCUT: &str = "b";
+const SIDEBAR_WIDTH: &str = "16rem";
+const SIDEBAR_WIDTH_ICON: &str = "3rem";
+const SIDEBAR_WIDTH_MOBILE: &str = "18rem";
 
 #[css_module("/src/ui/vendor/sidebar/style.css")]
 struct Styles;
-
-// constants
-const SIDEBAR_WIDTH: &str = "16rem";
-const SIDEBAR_WIDTH_MOBILE: &str = "18rem";
-const SIDEBAR_WIDTH_ICON: &str = "3rem";
-const SIDEBAR_KEYBOARD_SHORTCUT: &str = "b";
-const MOBILE_BREAKPOINT: u32 = 768;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SidebarState {
@@ -29,29 +26,11 @@ pub enum SidebarState {
     Collapsed,
 }
 
-impl SidebarState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarState::Expanded => "expanded",
-            SidebarState::Collapsed => "collapsed",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SidebarSide {
     #[default]
     Left,
     Right,
-}
-
-impl SidebarSide {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarSide::Left => "left",
-            SidebarSide::Right => "right",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -62,32 +41,12 @@ pub enum SidebarVariant {
     Inset,
 }
 
-impl SidebarVariant {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarVariant::Sidebar => "sidebar",
-            SidebarVariant::Floating => "floating",
-            SidebarVariant::Inset => "inset",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SidebarCollapsible {
     #[default]
     Offcanvas,
     Icon,
     None,
-}
-
-impl SidebarCollapsible {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarCollapsible::Offcanvas => "offcanvas",
-            SidebarCollapsible::Icon => "icon",
-            SidebarCollapsible::None => "none",
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -101,6 +60,69 @@ pub struct SidebarCtx {
     set_open: Callback<bool>,
     // Mobile state:
     open_mobile: Signal<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[allow(dead_code)]
+pub enum SidebarMenuButtonVariant {
+    #[default]
+    Default,
+    Outline,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[allow(dead_code)]
+pub enum SidebarMenuButtonSize {
+    #[default]
+    Default,
+    Sm,
+    Lg,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[allow(dead_code)]
+pub enum SidebarMenuSubButtonSize {
+    Sm,
+    #[default]
+    Md,
+}
+
+impl SidebarState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarState::Expanded => "expanded",
+            SidebarState::Collapsed => "collapsed",
+        }
+    }
+}
+
+impl SidebarSide {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarSide::Left => "left",
+            SidebarSide::Right => "right",
+        }
+    }
+}
+
+impl SidebarVariant {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarVariant::Sidebar => "sidebar",
+            SidebarVariant::Floating => "floating",
+            SidebarVariant::Inset => "inset",
+        }
+    }
+}
+
+impl SidebarCollapsible {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarCollapsible::Offcanvas => "offcanvas",
+            SidebarCollapsible::Icon => "icon",
+            SidebarCollapsible::None => "none",
+        }
+    }
 }
 
 impl SidebarCtx {
@@ -127,131 +149,31 @@ impl SidebarCtx {
     }
 }
 
-pub fn use_sidebar() -> SidebarCtx {
-    use_context::<SidebarCtx>()
-}
-
-pub fn use_is_mobile() -> Signal<bool> {
-    let mut is_mobile = use_signal(|| false);
-
-    use_effect(move || {
-        spawn(async move {
-            let js_code = format!(
-                r#"
-                function checkMobile() {{
-                    return window.innerWidth < {MOBILE_BREAKPOINT};
-                }}
-                function handleResize() {{
-                    dioxus.send(checkMobile());
-                }}
-                window.__sidebarResizeHandler = handleResize;
-                window.addEventListener('resize', window.__sidebarResizeHandler);
-                dioxus.send(checkMobile());
-                "#
-            );
-            let mut eval = document::eval(&js_code);
-
-            while let Ok(result) = eval.recv::<bool>().await {
-                is_mobile.set(result);
-            }
-        });
-    });
-
-    use_drop(|| {
-        _ = document::eval(
-            r#"
-            window.removeEventListener('resize', window.__sidebarResizeHandler);
-            delete window.__sidebarResizeHandler;
-            "#,
-        );
-    });
-
-    is_mobile
-}
-
-#[component]
-pub fn SidebarProvider(
-    #[props(default = true)] default_open: bool,
-    #[props(default)] open: ReadSignal<Option<bool>>,
-    #[props(default)] on_open_change: Callback<bool>,
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    let is_mobile = use_is_mobile();
-    let side = use_signal(|| SidebarSide::Left);
-    let open_mobile = use_signal(|| false);
-
-    let (open, set_open) = use_controlled(open, default_open, on_open_change);
-
-    let state = use_memo(move || {
-        if open() {
-            SidebarState::Expanded
-        } else {
-            SidebarState::Collapsed
+impl SidebarMenuButtonVariant {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarMenuButtonVariant::Default => "default",
+            SidebarMenuButtonVariant::Outline => "outline",
         }
-    });
+    }
+}
 
-    let ctx = SidebarCtx {
-        state,
-        side,
-        is_mobile,
-        open,
-        set_open,
-        open_mobile,
-    };
+impl SidebarMenuButtonSize {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarMenuButtonSize::Default => "default",
+            SidebarMenuButtonSize::Sm => "sm",
+            SidebarMenuButtonSize::Lg => "lg",
+        }
+    }
+}
 
-    use_context_provider(|| ctx);
-
-    use_effect(move || {
-        spawn(async move {
-            let js_code = format!(
-                r#"
-                function sidebarKeyHandler(event) {{
-                    if (event.key === '{SIDEBAR_KEYBOARD_SHORTCUT}' && (event.metaKey || event.ctrlKey)) {{
-                        event.preventDefault();
-                        dioxus.send(true);
-                    }}
-                }}
-                window.__sidebarKeyHandler = sidebarKeyHandler;
-                window.addEventListener('keydown', window.__sidebarKeyHandler);
-                "#
-            );
-            let mut eval = document::eval(&js_code);
-
-            loop {
-                if eval.recv::<bool>().await.is_ok() {
-                    ctx.toggle();
-                }
-            }
-        });
-    });
-
-    use_drop(|| {
-        _ = document::eval(
-            r#"
-            window.removeEventListener('keydown', window.__sidebarKeyHandler);
-            delete window.__sidebarKeyHandler;
-            "#,
-        );
-    });
-
-    let sidebar_style = format!(
-        r#"
-        --dx-sidebar-width: {SIDEBAR_WIDTH};
-        --dx-sidebar-width-mobile: {SIDEBAR_WIDTH_MOBILE};
-        --dx-sidebar-width-icon: {SIDEBAR_WIDTH_ICON}
-        "#
-    );
-
-    let base = attributes!(div {
-        class: Styles::dx_sidebar_wrapper,
-        "data-slot": "sidebar-wrapper",
-        style: sidebar_style,
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        div { ..merged, {children} }
+impl SidebarMenuSubButtonSize {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SidebarMenuSubButtonSize::Sm => "sm",
+            SidebarMenuSubButtonSize::Md => "md",
+        }
     }
 }
 
@@ -345,96 +267,6 @@ pub fn Sidebar(
 }
 
 #[component]
-pub fn SidebarTrigger(
-    #[props(default)] onclick: Option<EventHandler<MouseEvent>>,
-    #[props(extends = GlobalAttributes)]
-    #[props(extends = button)]
-    attributes: Vec<Attribute>,
-) -> Element {
-    let ctx = use_sidebar();
-
-    let base = attributes!(button {
-        class: Styles::dx_sidebar_trigger,
-        "data-sidebar": "trigger",
-        "data-slot": "sidebar-trigger",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        Button {
-            variant: ButtonVariant::Ghost,
-            onclick: move |e| {
-                if let Some(handler) = &onclick {
-                    handler.call(e);
-                }
-                ctx.toggle();
-            },
-            attributes: merged,
-            PanelLeft {
-                class: Styles::dx_sidebar_trigger_icon,
-                size: "1rem",
-            }
-            span { class: Styles::dx_sr_only, "Toggle Sidebar" }
-        }
-    }
-}
-
-#[component]
-pub fn SidebarRail(#[props(extends = GlobalAttributes)] attributes: Vec<Attribute>) -> Element {
-    let ctx = use_sidebar();
-
-    let base = attributes!(button {
-        class: Styles::dx_sidebar_rail,
-        "data-sidebar": "rail",
-        "data-slot": "sidebar-rail",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        button {
-            aria_label: "Toggle Sidebar",
-            tabindex: -1,
-            onclick: move |_| ctx.toggle(),
-            title: "Toggle Sidebar",
-            ..merged,
-        }
-    }
-}
-
-#[component]
-pub fn SidebarInset(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    let base = attributes!(main {
-        class: Styles::dx_sidebar_inset,
-        "data-slot": "sidebar-inset",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        main { ..merged, {children} }
-    }
-}
-
-#[component]
-pub fn SidebarHeader(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    let base = attributes!(div {
-        class: Styles::dx_sidebar_header,
-        "data-slot": "sidebar-header",
-        "data-sidebar": "header",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        div { ..merged, {children} }
-    }
-}
-
-#[component]
 pub fn SidebarContent(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
     children: Element,
@@ -469,24 +301,6 @@ pub fn SidebarFooter(
 }
 
 #[component]
-pub fn SidebarSeparator(
-    #[props(default = true)] horizontal: bool,
-    #[props(default = true)] decorative: bool,
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-) -> Element {
-    let base = attributes!(div {
-        class: Styles::dx_sidebar_separator,
-        "data-slot": "sidebar-separator",
-        "data-sidebar": "separator",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        Separator { horizontal, decorative, attributes: merged }
-    }
-}
-
-#[component]
 pub fn SidebarGroup(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
     children: Element,
@@ -500,28 +314,6 @@ pub fn SidebarGroup(
 
     rsx! {
         div { ..merged, {children} }
-    }
-}
-
-#[component]
-pub fn SidebarGroupLabel(
-    r#as: Option<Callback<Vec<Attribute>, Element>>,
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    let base = attributes!(div {
-        class: Styles::dx_sidebar_group_label,
-        "data-slot": "sidebar-group-label",
-        "data-sidebar": "group-label",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    if let Some(dynamic) = r#as {
-        dynamic.call(merged)
-    } else {
-        rsx! {
-            div { ..merged,{children} }
-        }
     }
 }
 
@@ -565,6 +357,61 @@ pub fn SidebarGroupContent(
 }
 
 #[component]
+pub fn SidebarGroupLabel(
+    r#as: Option<Callback<Vec<Attribute>, Element>>,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    let base = attributes!(div {
+        class: Styles::dx_sidebar_group_label,
+        "data-slot": "sidebar-group-label",
+        "data-sidebar": "group-label",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    if let Some(dynamic) = r#as {
+        dynamic.call(merged)
+    } else {
+        rsx! {
+            div { ..merged,{children} }
+        }
+    }
+}
+
+#[component]
+pub fn SidebarHeader(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    let base = attributes!(div {
+        class: Styles::dx_sidebar_header,
+        "data-slot": "sidebar-header",
+        "data-sidebar": "header",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        div { ..merged, {children} }
+    }
+}
+
+#[component]
+pub fn SidebarInset(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    let base = attributes!(main {
+        class: Styles::dx_sidebar_inset,
+        "data-slot": "sidebar-inset",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        main { ..merged, {children} }
+    }
+}
+
+#[component]
 pub fn SidebarMenu(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
     children: Element,
@@ -582,55 +429,43 @@ pub fn SidebarMenu(
 }
 
 #[component]
-pub fn SidebarMenuItem(
+pub fn SidebarMenuAction(
+    #[props(default = false)] show_on_hover: bool,
+    r#as: Option<Callback<Vec<Attribute>, Element>>,
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
     children: Element,
 ) -> Element {
-    let base = attributes!(li {
-        class: Styles::dx_sidebar_menu_item,
-        "data-slot": "sidebar-menu-item",
-        "data-sidebar": "menu-item",
+    let base = attributes!(button {
+        class: Styles::dx_sidebar_menu_action,
+        "data-slot": "sidebar-menu-action",
+        "data-sidebar": "menu-action",
+        "data-show-on-hover": if show_on_hover { "true" } else { "false" },
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    if let Some(dynamic) = r#as {
+        dynamic.call(merged)
+    } else {
+        rsx! {
+            button { ..merged,{children} }
+        }
+    }
+}
+
+#[component]
+pub fn SidebarMenuBadge(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    let base = attributes!(div {
+        class: Styles::dx_sidebar_menu_badge,
+        "data-slot": "sidebar-menu-badge",
+        "data-sidebar": "menu-badge",
     });
     let merged = merge_attributes(vec![base, attributes]);
 
     rsx! {
-        li { ..merged, {children} }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[allow(dead_code)]
-pub enum SidebarMenuButtonVariant {
-    #[default]
-    Default,
-    Outline,
-}
-
-impl SidebarMenuButtonVariant {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarMenuButtonVariant::Default => "default",
-            SidebarMenuButtonVariant::Outline => "outline",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[allow(dead_code)]
-pub enum SidebarMenuButtonSize {
-    #[default]
-    Default,
-    Sm,
-    Lg,
-}
-
-impl SidebarMenuButtonSize {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarMenuButtonSize::Default => "default",
-            SidebarMenuButtonSize::Sm => "sm",
-            SidebarMenuButtonSize::Lg => "lg",
-        }
+        div { ..merged, {children} }
     }
 }
 
@@ -696,43 +531,19 @@ pub fn SidebarMenuButton(
 }
 
 #[component]
-pub fn SidebarMenuAction(
-    #[props(default = false)] show_on_hover: bool,
-    r#as: Option<Callback<Vec<Attribute>, Element>>,
+pub fn SidebarMenuItem(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
     children: Element,
 ) -> Element {
-    let base = attributes!(button {
-        class: Styles::dx_sidebar_menu_action,
-        "data-slot": "sidebar-menu-action",
-        "data-sidebar": "menu-action",
-        "data-show-on-hover": if show_on_hover { "true" } else { "false" },
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    if let Some(dynamic) = r#as {
-        dynamic.call(merged)
-    } else {
-        rsx! {
-            button { ..merged,{children} }
-        }
-    }
-}
-
-#[component]
-pub fn SidebarMenuBadge(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    let base = attributes!(div {
-        class: Styles::dx_sidebar_menu_badge,
-        "data-slot": "sidebar-menu-badge",
-        "data-sidebar": "menu-badge",
+    let base = attributes!(li {
+        class: Styles::dx_sidebar_menu_item,
+        "data-slot": "sidebar-menu-item",
+        "data-sidebar": "menu-item",
     });
     let merged = merge_attributes(vec![base, attributes]);
 
     rsx! {
-        div { ..merged, {children} }
+        li { ..merged, {children} }
     }
 }
 
@@ -777,40 +588,6 @@ pub fn SidebarMenuSub(
 }
 
 #[component]
-pub fn SidebarMenuSubItem(
-    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
-    children: Element,
-) -> Element {
-    let base = attributes!(li {
-        class: Styles::dx_sidebar_menu_sub_item,
-        "data-slot": "sidebar-menu-sub-item",
-        "data-sidebar": "menu-sub-item",
-    });
-    let merged = merge_attributes(vec![base, attributes]);
-
-    rsx! {
-        li { ..merged, {children} }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[allow(dead_code)]
-pub enum SidebarMenuSubButtonSize {
-    Sm,
-    #[default]
-    Md,
-}
-
-impl SidebarMenuSubButtonSize {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SidebarMenuSubButtonSize::Sm => "sm",
-            SidebarMenuSubButtonSize::Md => "md",
-        }
-    }
-}
-
-#[component]
 pub fn SidebarMenuSubButton(
     #[props(default = false)] is_active: bool,
     #[props(default)] size: SidebarMenuSubButtonSize,
@@ -834,4 +611,224 @@ pub fn SidebarMenuSubButton(
             a { ..merged, {children} }
         }
     }
+}
+
+#[component]
+pub fn SidebarMenuSubItem(
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    let base = attributes!(li {
+        class: Styles::dx_sidebar_menu_sub_item,
+        "data-slot": "sidebar-menu-sub-item",
+        "data-sidebar": "menu-sub-item",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        li { ..merged, {children} }
+    }
+}
+
+#[component]
+pub fn SidebarProvider(
+    #[props(default = true)] default_open: bool,
+    #[props(default)] open: ReadSignal<Option<bool>>,
+    #[props(default)] on_open_change: Callback<bool>,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+    children: Element,
+) -> Element {
+    let is_mobile = use_is_mobile();
+    let side = use_signal(|| SidebarSide::Left);
+    let open_mobile = use_signal(|| false);
+
+    let (open, set_open) = use_controlled(open, default_open, on_open_change);
+
+    let state = use_memo(move || {
+        if open() {
+            SidebarState::Expanded
+        } else {
+            SidebarState::Collapsed
+        }
+    });
+
+    let ctx = SidebarCtx {
+        state,
+        side,
+        is_mobile,
+        open,
+        set_open,
+        open_mobile,
+    };
+
+    use_context_provider(|| ctx);
+
+    use_effect(move || {
+        spawn(async move {
+            let js_code = format!(
+                r#"
+                function sidebarKeyHandler(event) {{
+                    if (event.key === '{SIDEBAR_KEYBOARD_SHORTCUT}' && (event.metaKey || event.ctrlKey)) {{
+                        event.preventDefault();
+                        dioxus.send(true);
+                    }}
+                }}
+                window.__sidebarKeyHandler = sidebarKeyHandler;
+                window.addEventListener('keydown', window.__sidebarKeyHandler);
+                "#
+            );
+            let mut eval = document::eval(&js_code);
+
+            loop {
+                if eval.recv::<bool>().await.is_ok() {
+                    ctx.toggle();
+                }
+            }
+        });
+    });
+
+    use_drop(|| {
+        _ = document::eval(
+            r#"
+            window.removeEventListener('keydown', window.__sidebarKeyHandler);
+            delete window.__sidebarKeyHandler;
+            "#,
+        );
+    });
+
+    let sidebar_style = format!(
+        r#"
+        --dx-sidebar-width: {SIDEBAR_WIDTH};
+        --dx-sidebar-width-mobile: {SIDEBAR_WIDTH_MOBILE};
+        --dx-sidebar-width-icon: {SIDEBAR_WIDTH_ICON}
+        "#
+    );
+
+    let base = attributes!(div {
+        class: Styles::dx_sidebar_wrapper,
+        "data-slot": "sidebar-wrapper",
+        style: sidebar_style,
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        div { ..merged, {children} }
+    }
+}
+
+#[component]
+pub fn SidebarRail(#[props(extends = GlobalAttributes)] attributes: Vec<Attribute>) -> Element {
+    let ctx = use_sidebar();
+
+    let base = attributes!(button {
+        class: Styles::dx_sidebar_rail,
+        "data-sidebar": "rail",
+        "data-slot": "sidebar-rail",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        button {
+            aria_label: "Toggle Sidebar",
+            tabindex: -1,
+            onclick: move |_| ctx.toggle(),
+            title: "Toggle Sidebar",
+            ..merged,
+        }
+    }
+}
+
+#[component]
+pub fn SidebarSeparator(
+    #[props(default = true)] horizontal: bool,
+    #[props(default = true)] decorative: bool,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+) -> Element {
+    let base = attributes!(div {
+        class: Styles::dx_sidebar_separator,
+        "data-slot": "sidebar-separator",
+        "data-sidebar": "separator",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        Separator { horizontal, decorative, attributes: merged }
+    }
+}
+
+#[component]
+pub fn SidebarTrigger(
+    #[props(default)] onclick: Option<EventHandler<MouseEvent>>,
+    #[props(extends = GlobalAttributes)]
+    #[props(extends = button)]
+    attributes: Vec<Attribute>,
+) -> Element {
+    let ctx = use_sidebar();
+
+    let base = attributes!(button {
+        class: Styles::dx_sidebar_trigger,
+        "data-sidebar": "trigger",
+        "data-slot": "sidebar-trigger",
+    });
+    let merged = merge_attributes(vec![base, attributes]);
+
+    rsx! {
+        Button {
+            variant: ButtonVariant::Ghost,
+            onclick: move |e| {
+                if let Some(handler) = &onclick {
+                    handler.call(e);
+                }
+                ctx.toggle();
+            },
+            attributes: merged,
+            PanelLeft {
+                class: Styles::dx_sidebar_trigger_icon,
+                size: "1rem",
+            }
+            span { class: Styles::dx_sr_only, "Toggle Sidebar" }
+        }
+    }
+}
+
+pub fn use_is_mobile() -> Signal<bool> {
+    let mut is_mobile = use_signal(|| false);
+
+    use_effect(move || {
+        spawn(async move {
+            let js_code = format!(
+                r#"
+                function checkMobile() {{
+                    return window.innerWidth < {MOBILE_BREAKPOINT};
+                }}
+                function handleResize() {{
+                    dioxus.send(checkMobile());
+                }}
+                window.__sidebarResizeHandler = handleResize;
+                window.addEventListener('resize', window.__sidebarResizeHandler);
+                dioxus.send(checkMobile());
+                "#
+            );
+            let mut eval = document::eval(&js_code);
+
+            while let Ok(result) = eval.recv::<bool>().await {
+                is_mobile.set(result);
+            }
+        });
+    });
+
+    use_drop(|| {
+        _ = document::eval(
+            r#"
+            window.removeEventListener('resize', window.__sidebarResizeHandler);
+            delete window.__sidebarResizeHandler;
+            "#,
+        );
+    });
+
+    is_mobile
+}
+
+pub fn use_sidebar() -> SidebarCtx {
+    use_context::<SidebarCtx>()
 }

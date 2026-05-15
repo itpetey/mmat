@@ -33,16 +33,16 @@ impl HashEmbeddingProvider {
     }
 }
 
-impl Default for HashEmbeddingProvider {
-    fn default() -> Self {
-        Self::new(64)
-    }
-}
-
 #[async_trait::async_trait]
 impl EmbeddingProvider for HashEmbeddingProvider {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         Ok(Self::embed_with_dimension(text, self.dimension))
+    }
+}
+
+impl Default for HashEmbeddingProvider {
+    fn default() -> Self {
+        Self::new(64)
     }
 }
 

@@ -4,8 +4,7 @@ use chrono::{DateTime, Utc};
 use mmat_event_stream::event::{EventId, RoleId};
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 use crate::{
@@ -13,6 +12,14 @@ use crate::{
     types::{Authority, Confidence, DecayPolicy, Memory, MemoryId, MemoryScope, MemoryType},
     vector_backend::VectorMemoryBackend,
 };
+
+struct SqliteMemoryStore {
+    conn: Mutex<Connection>,
+}
+
+pub struct PgMemoryStore {
+    pool: PgPool,
+}
 
 enum MemoryStoreInner {
     Sqlite(SqliteMemoryStore),
@@ -23,156 +30,21 @@ pub struct MemoryStore {
     inner: MemoryStoreInner,
 }
 
-struct SqliteMemoryStore {
-    conn: Mutex<Connection>,
-}
-
-pub struct PgMemoryStore {
-    pool: PgPool,
-}
-
-impl MemoryStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let sqlite = SqliteMemoryStore::open(path.as_ref())?;
-        Ok(Self {
-            inner: MemoryStoreInner::Sqlite(sqlite),
-        })
-    }
-
-    pub fn new(database_url: &str) -> Result<Self> {
-        let pg = PgMemoryStore::connect_lazy(database_url)?;
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| crate::error::Error::Runtime(e.to_string()))?;
-        tokio::task::block_in_place(|| -> Result<()> { rt.block_on(pg.migrate()) })?;
-        Ok(Self {
-            inner: MemoryStoreInner::Postgres(pg),
-        })
-    }
-
-    pub async fn new_async(database_url: &str) -> Result<Self> {
-        let pg = PgMemoryStore::connect(database_url).await?;
-        Ok(Self {
-            inner: MemoryStoreInner::Postgres(pg),
-        })
-    }
-
-    pub fn insert(&self, memory: &Memory) -> Result<()> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.insert(memory),
-            MemoryStoreInner::Postgres(s) => s.insert(memory),
-        }
-    }
-
-    pub fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.get_by_id(id),
-            MemoryStoreInner::Postgres(s) => s.get_by_id(id),
-        }
-    }
-
-    pub fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.query_by_type(memory_type),
-            MemoryStoreInner::Postgres(s) => s.query_by_type(memory_type),
-        }
-    }
-
-    pub fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.query_by_scope(scope),
-            MemoryStoreInner::Postgres(s) => s.query_by_scope(scope),
-        }
-    }
-
-    pub fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.query_by_authority(min, max),
-            MemoryStoreInner::Postgres(s) => s.query_by_authority(min, max),
-        }
-    }
-
-    pub fn query_decayed(&self) -> Result<Vec<Memory>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.query_decayed(),
-            MemoryStoreInner::Postgres(s) => s.query_decayed(),
-        }
-    }
-
-    pub fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.supersede(old_id, new_id),
-            MemoryStoreInner::Postgres(s) => s.supersede(old_id, new_id),
-        }
-    }
-
-    pub fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.get_supersession_chain(id),
-            MemoryStoreInner::Postgres(s) => s.get_supersession_chain(id),
-        }
-    }
-
-    pub fn query_current_only<F>(&self, query_fn: F) -> Result<Vec<Memory>>
-    where
-        F: Fn(&Connection) -> rusqlite::Result<Vec<Memory>>,
-    {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.query_current_only(query_fn),
-            MemoryStoreInner::Postgres(_) => Err(crate::error::Error::Store(
-                "query_current_only is not supported via Postgres".into(),
-            )),
-        }
-    }
-
-    pub fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.update_last_accessed(id),
-            MemoryStoreInner::Postgres(s) => s.update_last_accessed(id),
-        }
-    }
-
-    pub fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.update_content(id, content),
-            MemoryStoreInner::Postgres(s) => s.update_content(id, content),
-        }
-    }
-
-    pub async fn insert_with_embedding(
-        &self,
-        memory: &Memory,
-        qdrant: &dyn VectorMemoryBackend,
-    ) -> Result<()> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.insert_with_embedding(memory, qdrant).await,
-            MemoryStoreInner::Postgres(s) => s.insert_with_embedding(memory, qdrant).await,
-        }
-    }
-
-    pub async fn search_similar(
-        &self,
-        embedding: Vec<f32>,
-        limit: u64,
-        qdrant: &dyn VectorMemoryBackend,
-    ) -> Result<Vec<(MemoryId, f32)>> {
-        match &self.inner {
-            MemoryStoreInner::Sqlite(s) => s.search_similar(embedding, limit, qdrant).await,
-            MemoryStoreInner::Postgres(s) => s.search_similar(embedding, limit, qdrant).await,
-        }
-    }
-
-    pub fn pool(&self) -> Option<&PgPool> {
-        match &self.inner {
-            MemoryStoreInner::Postgres(s) => Some(&s.pool),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Debug for MemoryStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryStore").finish_non_exhaustive()
-    }
+#[derive(Debug, sqlx::FromRow)]
+struct PgMemoryRow {
+    id: String,
+    memory_type: String,
+    content: String,
+    scope: String,
+    authority: String,
+    confidence: f64,
+    decay_policy: String,
+    evidence_refs: String,
+    supersedes: Option<String>,
+    superseded_by: Option<String>,
+    created_at: String,
+    last_accessed_at: String,
+    source_agent: String,
 }
 
 impl SqliteMemoryStore {
@@ -982,6 +854,171 @@ impl PgMemoryStore {
     }
 }
 
+impl MemoryStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let sqlite = SqliteMemoryStore::open(path.as_ref())?;
+        Ok(Self {
+            inner: MemoryStoreInner::Sqlite(sqlite),
+        })
+    }
+
+    pub fn new(database_url: &str) -> Result<Self> {
+        let pg = PgMemoryStore::connect_lazy(database_url)?;
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|e| crate::error::Error::Runtime(e.to_string()))?;
+        tokio::task::block_in_place(|| -> Result<()> { rt.block_on(pg.migrate()) })?;
+        Ok(Self {
+            inner: MemoryStoreInner::Postgres(pg),
+        })
+    }
+
+    pub async fn new_async(database_url: &str) -> Result<Self> {
+        let pg = PgMemoryStore::connect(database_url).await?;
+        Ok(Self {
+            inner: MemoryStoreInner::Postgres(pg),
+        })
+    }
+
+    pub fn insert(&self, memory: &Memory) -> Result<()> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.insert(memory),
+            MemoryStoreInner::Postgres(s) => s.insert(memory),
+        }
+    }
+
+    pub fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.get_by_id(id),
+            MemoryStoreInner::Postgres(s) => s.get_by_id(id),
+        }
+    }
+
+    pub fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.query_by_type(memory_type),
+            MemoryStoreInner::Postgres(s) => s.query_by_type(memory_type),
+        }
+    }
+
+    pub fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.query_by_scope(scope),
+            MemoryStoreInner::Postgres(s) => s.query_by_scope(scope),
+        }
+    }
+
+    pub fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.query_by_authority(min, max),
+            MemoryStoreInner::Postgres(s) => s.query_by_authority(min, max),
+        }
+    }
+
+    pub fn query_decayed(&self) -> Result<Vec<Memory>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.query_decayed(),
+            MemoryStoreInner::Postgres(s) => s.query_decayed(),
+        }
+    }
+
+    pub fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.supersede(old_id, new_id),
+            MemoryStoreInner::Postgres(s) => s.supersede(old_id, new_id),
+        }
+    }
+
+    pub fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.get_supersession_chain(id),
+            MemoryStoreInner::Postgres(s) => s.get_supersession_chain(id),
+        }
+    }
+
+    pub fn query_current_only<F>(&self, query_fn: F) -> Result<Vec<Memory>>
+    where
+        F: Fn(&Connection) -> rusqlite::Result<Vec<Memory>>,
+    {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.query_current_only(query_fn),
+            MemoryStoreInner::Postgres(_) => Err(crate::error::Error::Store(
+                "query_current_only is not supported via Postgres".into(),
+            )),
+        }
+    }
+
+    pub fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.update_last_accessed(id),
+            MemoryStoreInner::Postgres(s) => s.update_last_accessed(id),
+        }
+    }
+
+    pub fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.update_content(id, content),
+            MemoryStoreInner::Postgres(s) => s.update_content(id, content),
+        }
+    }
+
+    pub async fn insert_with_embedding(
+        &self,
+        memory: &Memory,
+        qdrant: &dyn VectorMemoryBackend,
+    ) -> Result<()> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.insert_with_embedding(memory, qdrant).await,
+            MemoryStoreInner::Postgres(s) => s.insert_with_embedding(memory, qdrant).await,
+        }
+    }
+
+    pub async fn search_similar(
+        &self,
+        embedding: Vec<f32>,
+        limit: u64,
+        qdrant: &dyn VectorMemoryBackend,
+    ) -> Result<Vec<(MemoryId, f32)>> {
+        match &self.inner {
+            MemoryStoreInner::Sqlite(s) => s.search_similar(embedding, limit, qdrant).await,
+            MemoryStoreInner::Postgres(s) => s.search_similar(embedding, limit, qdrant).await,
+        }
+    }
+
+    pub fn pool(&self) -> Option<&PgPool> {
+        match &self.inner {
+            MemoryStoreInner::Postgres(s) => Some(&s.pool),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for MemoryStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryStore").finish_non_exhaustive()
+    }
+}
+
+impl PgMemoryRow {
+    fn into_memory(self) -> Result<Memory> {
+        row_to_memory_common(
+            self.id,
+            self.memory_type,
+            self.content,
+            self.scope,
+            self.authority,
+            self.confidence,
+            self.decay_policy,
+            self.evidence_refs,
+            self.supersedes,
+            self.superseded_by,
+            self.created_at,
+            self.last_accessed_at,
+            self.source_agent,
+        )
+        .map_err(|e| crate::error::Error::Store(e.to_string()))
+    }
+}
+
 fn authority_discriminant_str(authority: Authority) -> &'static str {
     match authority {
         Authority::CompilerOutput => "CompilerOutput",
@@ -1049,44 +1086,6 @@ fn row_to_memory_common(
         last_accessed_at,
         source_agent: RoleId::new(source_agent),
     })
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct PgMemoryRow {
-    id: String,
-    memory_type: String,
-    content: String,
-    scope: String,
-    authority: String,
-    confidence: f64,
-    decay_policy: String,
-    evidence_refs: String,
-    supersedes: Option<String>,
-    superseded_by: Option<String>,
-    created_at: String,
-    last_accessed_at: String,
-    source_agent: String,
-}
-
-impl PgMemoryRow {
-    fn into_memory(self) -> Result<Memory> {
-        row_to_memory_common(
-            self.id,
-            self.memory_type,
-            self.content,
-            self.scope,
-            self.authority,
-            self.confidence,
-            self.decay_policy,
-            self.evidence_refs,
-            self.supersedes,
-            self.superseded_by,
-            self.created_at,
-            self.last_accessed_at,
-            self.source_agent,
-        )
-        .map_err(|e| crate::error::Error::Store(e.to_string()))
-    }
 }
 
 #[cfg(test)]

@@ -127,57 +127,6 @@ pub struct StoredArtefactRef {
     pub storage_uri: String,
 }
 
-impl Default for EventContext {
-    fn default() -> Self {
-        Self {
-            organisation_id: "default-organisation".to_string(),
-            workspace_id: "default-workspace".to_string(),
-            project_id: "default-project".to_string(),
-            run_id: "default-run".to_string(),
-            task_id: None,
-            causation_id: None,
-            correlation_id: None,
-        }
-    }
-}
-
-impl EventContext {
-    /// Creates a context for a concrete organisation/workspace/project/run boundary.
-    pub fn new(
-        organisation_id: impl Into<String>,
-        workspace_id: impl Into<String>,
-        project_id: impl Into<String>,
-        run_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            organisation_id: organisation_id.into(),
-            workspace_id: workspace_id.into(),
-            project_id: project_id.into(),
-            run_id: run_id.into(),
-            task_id: None,
-            causation_id: None,
-            correlation_id: None,
-        }
-    }
-
-    /// Attaches a task boundary to the context.
-    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
-        self.task_id = Some(task_id.into());
-        self
-    }
-
-    /// Attaches causal and correlation identifiers to the context.
-    pub fn with_causality(
-        mut self,
-        causation_id: Option<EventId>,
-        correlation_id: Option<EventId>,
-    ) -> Self {
-        self.causation_id = causation_id;
-        self.correlation_id = correlation_id;
-        self
-    }
-}
-
 /// A semantic event representing a meaningful occurrence within the system.
 ///
 /// Every variant carries a unique [`EventId`], the [`RoleId`] of the source agent
@@ -662,31 +611,6 @@ impl From<Uuid> for EventId {
     }
 }
 
-impl MemoryId {
-    /// Creates a new random [`MemoryId`] based on a UUID v4.
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for MemoryId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for MemoryId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<Uuid> for MemoryId {
-    fn from(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
-
 impl RoleId {
     /// Creates a new [`RoleId`] from any type that can be converted into a [`String`].
     pub fn new(id: impl Into<String>) -> Self {
@@ -712,6 +636,82 @@ impl From<&str> for RoleId {
     /// Converts a string slice into a [`RoleId`].
     fn from(s: &str) -> Self {
         Self(s.into())
+    }
+}
+
+impl MemoryId {
+    /// Creates a new random [`MemoryId`] based on a UUID v4.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for MemoryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for MemoryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<Uuid> for MemoryId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl EventContext {
+    /// Creates a context for a concrete organisation/workspace/project/run boundary.
+    pub fn new(
+        organisation_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        project_id: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            organisation_id: organisation_id.into(),
+            workspace_id: workspace_id.into(),
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            task_id: None,
+            causation_id: None,
+            correlation_id: None,
+        }
+    }
+
+    /// Attaches a task boundary to the context.
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = Some(task_id.into());
+        self
+    }
+
+    /// Attaches causal and correlation identifiers to the context.
+    pub fn with_causality(
+        mut self,
+        causation_id: Option<EventId>,
+        correlation_id: Option<EventId>,
+    ) -> Self {
+        self.causation_id = causation_id;
+        self.correlation_id = correlation_id;
+        self
+    }
+}
+
+impl Default for EventContext {
+    fn default() -> Self {
+        Self {
+            organisation_id: "default-organisation".to_string(),
+            workspace_id: "default-workspace".to_string(),
+            project_id: "default-project".to_string(),
+            run_id: "default-run".to_string(),
+            task_id: None,
+            causation_id: None,
+            correlation_id: None,
+        }
     }
 }
 

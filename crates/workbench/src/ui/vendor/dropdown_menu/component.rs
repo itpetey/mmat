@@ -1,10 +1,12 @@
 use dioxus::prelude::*;
-use dioxus_primitives::dioxus_attributes::attributes;
-use dioxus_primitives::dropdown_menu::{
-    self, DropdownMenuContentProps, DropdownMenuItemProps, DropdownMenuProps,
-    DropdownMenuTriggerProps,
+use dioxus_primitives::{
+    dioxus_attributes::attributes,
+    dropdown_menu::{
+        self, DropdownMenuContentProps, DropdownMenuItemProps, DropdownMenuProps,
+        DropdownMenuTriggerProps,
+    },
+    merge_attributes,
 };
-use dioxus_primitives::merge_attributes;
 
 #[css_module("/src/ui/vendor/dropdown_menu/style.css")]
 struct Styles;
@@ -26,18 +28,6 @@ pub fn DropdownMenu(props: DropdownMenuProps) -> Element {
             attributes: merged,
             {props.children}
         }
-    }
-}
-
-#[component]
-pub fn DropdownMenuTrigger(props: DropdownMenuTriggerProps) -> Element {
-    let base = attributes!(button {
-        class: Styles::dx_dropdown_menu_trigger,
-    });
-    let merged = merge_attributes(vec![base, props.attributes]);
-
-    rsx! {
-        dropdown_menu::DropdownMenuTrigger { as: props.r#as, attributes: merged, {props.children} }
     }
 }
 
@@ -71,5 +61,17 @@ pub fn DropdownMenuItem<T: Clone + PartialEq + 'static>(
             attributes: merged,
             {props.children}
         }
+    }
+}
+
+#[component]
+pub fn DropdownMenuTrigger(props: DropdownMenuTriggerProps) -> Element {
+    let base = attributes!(button {
+        class: Styles::dx_dropdown_menu_trigger,
+    });
+    let merged = merge_attributes(vec![base, props.attributes]);
+
+    rsx! {
+        dropdown_menu::DropdownMenuTrigger { as: props.r#as, attributes: merged, {props.children} }
     }
 }

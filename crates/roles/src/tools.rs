@@ -5,8 +5,7 @@ use mmat_event_stream::event::{RoleId, SemanticEvent};
 use mmat_llm::tool::{Tool, ToolSpec};
 use serde_json::Value;
 
-use crate::tooling::RoleToolError;
-use crate::tooling::RoleToolRuntime;
+use crate::{tooling::RoleToolError, tooling::RoleToolRuntime};
 
 pub struct CreateLaneTool;
 

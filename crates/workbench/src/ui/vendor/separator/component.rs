@@ -1,6 +1,9 @@
 use dioxus::prelude::*;
-use dioxus_primitives::separator::{self, SeparatorProps};
-use dioxus_primitives::{dioxus_attributes::attributes, merge_attributes};
+use dioxus_primitives::{
+    dioxus_attributes::attributes,
+    merge_attributes,
+    separator::{self, SeparatorProps},
+};
 
 #[css_module("/src/ui/vendor/separator/style.css")]
 struct Styles;

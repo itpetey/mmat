@@ -1,16 +1,13 @@
 //! Organisation runtime managing role execution, event processing, and shutdown.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use mmat_event_stream::{
     event::{EventType, RoleId, SemanticEvent},
     event_bus::EventBus,
     event_store::EventStore,
 };
-use mmat_memory::artefact_store::ArtefactStore;
-use mmat_memory::store::MemoryStore;
+use mmat_memory::{artefact_store::ArtefactStore, store::MemoryStore};
 use tokio::{
     signal,
     sync::{broadcast, mpsc},

@@ -7,6 +7,13 @@ use mmat_event_stream::{
 };
 use sqlx::postgres::PgPoolOptions;
 
+async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn multiple_subscribers_with_filters() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -35,49 +42,11 @@ async fn multiple_subscribers_with_filters() {
     assert!(b_result.is_err());
 }
 
-#[tokio::test]
-async fn publish_subscribe_and_store() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(EventStore::open(tmp.path()).unwrap());
-    let bus = EventBus::new(16).with_store(store.clone());
-
-    let mut rx = bus.subscribe(&[]);
-    let event =
-        SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "out", "err", 0);
-    bus.publish(event.clone()).unwrap();
-
-    let received = rx.recv().await.unwrap();
-    assert_eq!(received.variant_name(), "ToolExecuted");
-
-    let replayed = store.replay(0, None).unwrap();
-    assert_eq!(replayed.len(), 1);
-    assert_eq!(replayed[0].variant_name(), "ToolExecuted");
-}
-
-#[tokio::test]
-async fn subscriber_replays_after_lag() {
-    let bus = EventBus::new(2);
-
-    let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
-    let e2 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t2", "{}", 0, "", "", 0);
-    let e3 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t3", "{}", 0, "", "", 0);
-
-    let mut rx = bus.subscribe(&[]);
-    bus.publish(e1).unwrap();
-    bus.publish(e2).unwrap();
-    bus.publish(e3).unwrap();
-
-    // rx should lag since capacity is 2
-    let result = rx.recv().await;
-    match result {
-        Err(mmat_event_stream::event_bus::RecvError::Lagged(n)) => {
-            assert!(n >= 1);
-        }
-        other => {
-            // Depending on timing, it might receive the latest event
-            assert!(other.is_ok());
-        }
-    }
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -166,16 +135,47 @@ async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, S
     Some((database_url, admin_pool, schema))
 }
 
-async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
-        .execute(pool)
-        .await
-        .unwrap();
+#[tokio::test]
+async fn publish_subscribe_and_store() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = Arc::new(EventStore::open(tmp.path()).unwrap());
+    let bus = EventBus::new(16).with_store(store.clone());
+
+    let mut rx = bus.subscribe(&[]);
+    let event =
+        SemanticEvent::new_tool_executed(RoleId::new("worker"), "test", "{}", 0, "out", "err", 0);
+    bus.publish(event.clone()).unwrap();
+
+    let received = rx.recv().await.unwrap();
+    assert_eq!(received.variant_name(), "ToolExecuted");
+
+    let replayed = store.replay(0, None).unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].variant_name(), "ToolExecuted");
 }
 
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
+#[tokio::test]
+async fn subscriber_replays_after_lag() {
+    let bus = EventBus::new(2);
+
+    let e1 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t1", "{}", 0, "", "", 0);
+    let e2 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t2", "{}", 0, "", "", 0);
+    let e3 = SemanticEvent::new_tool_executed(RoleId::new("a"), "t3", "{}", 0, "", "", 0);
+
+    let mut rx = bus.subscribe(&[]);
+    bus.publish(e1).unwrap();
+    bus.publish(e2).unwrap();
+    bus.publish(e3).unwrap();
+
+    // rx should lag since capacity is 2
+    let result = rx.recv().await;
+    match result {
+        Err(mmat_event_stream::event_bus::RecvError::Lagged(n)) => {
+            assert!(n >= 1);
+        }
+        other => {
+            // Depending on timing, it might receive the latest event
+            assert!(other.is_ok());
+        }
+    }
 }

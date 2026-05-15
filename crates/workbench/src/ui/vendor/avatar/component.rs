@@ -12,30 +12,11 @@ pub enum AvatarImageSize {
     Large,
 }
 
-impl AvatarImageSize {
-    fn to_class(self) -> &'static str {
-        match self {
-            AvatarImageSize::Small => Styles::dx_avatar_sm.inner,
-            AvatarImageSize::Medium => Styles::dx_avatar_md.inner,
-            AvatarImageSize::Large => Styles::dx_avatar_lg.inner,
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Default)]
 pub enum AvatarShape {
     #[default]
     Circle,
     Rounded,
-}
-
-impl AvatarShape {
-    fn to_class(self) -> &'static str {
-        match self {
-            AvatarShape::Circle => Styles::dx_avatar_circle.inner,
-            AvatarShape::Rounded => Styles::dx_avatar_rounded.inner,
-        }
-    }
 }
 
 /// The props for the [`Avatar`] component.
@@ -72,6 +53,25 @@ pub struct AvatarProps {
 
     /// The fallback content shown while the image is loading or if it fails to load.
     pub children: Element,
+}
+
+impl AvatarImageSize {
+    fn to_class(self) -> &'static str {
+        match self {
+            AvatarImageSize::Small => Styles::dx_avatar_sm.inner,
+            AvatarImageSize::Medium => Styles::dx_avatar_md.inner,
+            AvatarImageSize::Large => Styles::dx_avatar_lg.inner,
+        }
+    }
+}
+
+impl AvatarShape {
+    fn to_class(self) -> &'static str {
+        match self {
+            AvatarShape::Circle => Styles::dx_avatar_circle.inner,
+            AvatarShape::Rounded => Styles::dx_avatar_rounded.inner,
+        }
+    }
 }
 
 #[component]

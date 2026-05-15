@@ -3,13 +3,11 @@
 use std::{any::Any, collections::HashMap, fmt, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
-
 use mmat_event_stream::{
     event::{EscalationSeverity, EventType, RoleId, SemanticEvent, StoredArtefactRef},
     event_bus::{EventBus, EventReceiver},
 };
-use mmat_memory::artefact_store::ArtefactStore;
-use mmat_memory::store::MemoryStore;
+use mmat_memory::{artefact_store::ArtefactStore, store::MemoryStore};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -113,17 +111,6 @@ pub enum CapabilityStatus {
     Unavailable,
 }
 
-impl std::fmt::Display for CapabilityStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Configured => write!(f, "configured"),
-            Self::Degraded => write!(f, "degraded"),
-            Self::Fallback => write!(f, "fallback"),
-            Self::Unavailable => write!(f, "unavailable"),
-        }
-    }
-}
-
 /// Readiness information for a role indicating which capabilities are present
 /// and which are missing or degraded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,21 +131,6 @@ pub struct RoleReadiness {
     pub has_artefact_store: bool,
     /// Human-readable description of the readiness state.
     pub summary: String,
-}
-
-impl Default for RoleReadiness {
-    fn default() -> Self {
-        Self {
-            capability: CapabilityStatus::Fallback,
-            has_llm_client: false,
-            has_tools: false,
-            tool_count: 0,
-            fallback_worktree: false,
-            requires_llm: false,
-            has_artefact_store: false,
-            summary: "No capability information available".to_string(),
-        }
-    }
 }
 
 /// Resource budget constraining a role's execution.
@@ -333,6 +305,32 @@ impl AuthorityScope {
                     | EventType::ProcessSkipped
                     | EventType::ArtefactProduced
             ),
+        }
+    }
+}
+
+impl std::fmt::Display for CapabilityStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Configured => write!(f, "configured"),
+            Self::Degraded => write!(f, "degraded"),
+            Self::Fallback => write!(f, "fallback"),
+            Self::Unavailable => write!(f, "unavailable"),
+        }
+    }
+}
+
+impl Default for RoleReadiness {
+    fn default() -> Self {
+        Self {
+            capability: CapabilityStatus::Fallback,
+            has_llm_client: false,
+            has_tools: false,
+            tool_count: 0,
+            fallback_worktree: false,
+            requires_llm: false,
+            has_artefact_store: false,
+            summary: "No capability information available".to_string(),
         }
     }
 }

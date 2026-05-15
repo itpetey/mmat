@@ -1,12 +1,10 @@
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::{path::PathBuf, sync::OnceLock};
 
 use anyhow::Result;
 use clap::{ArgAction, Parser};
 use serde::Deserialize;
 
 const DEFAULT_PG_DSN: &str = "postgres://mmat:mmat@localhost:5432/mmat";
-
 static PG_DSN: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Parser)]

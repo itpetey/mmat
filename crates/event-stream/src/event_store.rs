@@ -2,8 +2,7 @@ use std::path::Path;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use thiserror::Error;
 
 use crate::event::{EventId, SemanticEvent};
@@ -25,6 +24,14 @@ pub enum EventStoreError {
     Runtime(String),
 }
 
+struct SqliteEventStore {
+    conn: Mutex<Connection>,
+}
+
+pub struct PgEventStore {
+    pool: PgPool,
+}
+
 enum EventStoreInner {
     Sqlite(SqliteEventStore),
     Postgres(PgEventStore),
@@ -32,14 +39,6 @@ enum EventStoreInner {
 
 pub struct EventStore {
     inner: EventStoreInner,
-}
-
-struct SqliteEventStore {
-    conn: Mutex<Connection>,
-}
-
-pub struct PgEventStore {
-    pool: PgPool,
 }
 
 impl SqliteEventStore {
@@ -68,138 +67,6 @@ impl SqliteEventStore {
             CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant);",
         )?;
         Ok(())
-    }
-}
-
-impl PgEventStore {
-    pub async fn connect(database_url: &str) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect(database_url)
-            .await?;
-        let store = Self { pool };
-        store.migrate().await?;
-        Ok(store)
-    }
-
-    pub fn connect_lazy(database_url: &str) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect_lazy(database_url)?;
-        let store = Self { pool };
-        Ok(store)
-    }
-
-    async fn migrate(&self) -> Result<()> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS events (
-                event_id UUID PRIMARY KEY,
-                rowid BIGSERIAL NOT NULL,
-                variant TEXT NOT NULL,
-                payload JSONB NOT NULL,
-                timestamp_ns BIGINT NOT NULL,
-                source_agent TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid)")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant)")
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-}
-
-impl EventStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let sqlite = SqliteEventStore::open(path.as_ref())?;
-        Ok(Self {
-            inner: EventStoreInner::Sqlite(sqlite),
-        })
-    }
-
-    pub fn new(database_url: &str) -> Result<Self> {
-        let pg = PgEventStore::connect_lazy(database_url)?;
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| EventStoreError::Runtime(e.to_string()))?;
-        tokio::task::block_in_place(|| -> Result<()> { rt.block_on(pg.migrate()) })?;
-        Ok(Self {
-            inner: EventStoreInner::Postgres(pg),
-        })
-    }
-
-    pub async fn new_async(database_url: &str) -> Result<Self> {
-        let pg = PgEventStore::connect(database_url).await?;
-        Ok(Self {
-            inner: EventStoreInner::Postgres(pg),
-        })
-    }
-
-    pub fn insert(&self, event: &SemanticEvent) -> Result<EventId> {
-        match &self.inner {
-            EventStoreInner::Sqlite(store) => store.insert(event),
-            EventStoreInner::Postgres(store) => store.insert(event),
-        }
-    }
-
-    pub fn replay(&self, after_row: i64, before_row: Option<i64>) -> Result<Vec<SemanticEvent>> {
-        match &self.inner {
-            EventStoreInner::Sqlite(store) => store.replay(after_row, before_row),
-            EventStoreInner::Postgres(store) => store.replay(after_row, before_row),
-        }
-    }
-
-    pub fn query_by_variant(
-        &self,
-        variant: &str,
-        after_row: Option<i64>,
-        before_row: Option<i64>,
-    ) -> Result<Vec<SemanticEvent>> {
-        match &self.inner {
-            EventStoreInner::Sqlite(store) => {
-                store.query_by_variant(variant, after_row, before_row)
-            }
-            EventStoreInner::Postgres(store) => {
-                store.query_by_variant(variant, after_row, before_row)
-            }
-        }
-    }
-
-    pub fn latest_row(&self) -> Result<Option<i64>> {
-        match &self.inner {
-            EventStoreInner::Sqlite(store) => store.latest_row(),
-            EventStoreInner::Postgres(store) => store.latest_row(),
-        }
-    }
-
-    pub fn row_for_event_id(&self, event_id: EventId) -> Result<Option<i64>> {
-        match &self.inner {
-            EventStoreInner::Sqlite(store) => store.row_for_event_id(event_id),
-            EventStoreInner::Postgres(store) => store.row_for_event_id(event_id),
-        }
-    }
-
-    pub fn get_by_event_id(&self, event_id: EventId) -> Result<Option<SemanticEvent>> {
-        match &self.inner {
-            EventStoreInner::Sqlite(store) => store.get_by_event_id(event_id),
-            EventStoreInner::Postgres(store) => store.get_by_event_id(event_id),
-        }
-    }
-
-    pub fn pool(&self) -> Option<&PgPool> {
-        match &self.inner {
-            EventStoreInner::Postgres(store) => Some(&store.pool),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Debug for EventStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventStore").finish_non_exhaustive()
     }
 }
 
@@ -333,11 +200,46 @@ impl SqliteEventStore {
     }
 }
 
-fn sqlite_map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SemanticEvent> {
-    let payload: String = row.get(0)?;
-    serde_json::from_str(&payload).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-    })
+impl PgEventStore {
+    pub async fn connect(database_url: &str) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await?;
+        let store = Self { pool };
+        store.migrate().await?;
+        Ok(store)
+    }
+
+    pub fn connect_lazy(database_url: &str) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect_lazy(database_url)?;
+        let store = Self { pool };
+        Ok(store)
+    }
+
+    async fn migrate(&self) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS events (
+                event_id UUID PRIMARY KEY,
+                rowid BIGSERIAL NOT NULL,
+                variant TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                timestamp_ns BIGINT NOT NULL,
+                source_agent TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_rowid ON events(rowid)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant)")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 impl PgEventStore {
@@ -517,6 +419,96 @@ impl PgEventStore {
     }
 }
 
+impl EventStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let sqlite = SqliteEventStore::open(path.as_ref())?;
+        Ok(Self {
+            inner: EventStoreInner::Sqlite(sqlite),
+        })
+    }
+
+    pub fn new(database_url: &str) -> Result<Self> {
+        let pg = PgEventStore::connect_lazy(database_url)?;
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|e| EventStoreError::Runtime(e.to_string()))?;
+        tokio::task::block_in_place(|| -> Result<()> { rt.block_on(pg.migrate()) })?;
+        Ok(Self {
+            inner: EventStoreInner::Postgres(pg),
+        })
+    }
+
+    pub async fn new_async(database_url: &str) -> Result<Self> {
+        let pg = PgEventStore::connect(database_url).await?;
+        Ok(Self {
+            inner: EventStoreInner::Postgres(pg),
+        })
+    }
+
+    pub fn insert(&self, event: &SemanticEvent) -> Result<EventId> {
+        match &self.inner {
+            EventStoreInner::Sqlite(store) => store.insert(event),
+            EventStoreInner::Postgres(store) => store.insert(event),
+        }
+    }
+
+    pub fn replay(&self, after_row: i64, before_row: Option<i64>) -> Result<Vec<SemanticEvent>> {
+        match &self.inner {
+            EventStoreInner::Sqlite(store) => store.replay(after_row, before_row),
+            EventStoreInner::Postgres(store) => store.replay(after_row, before_row),
+        }
+    }
+
+    pub fn query_by_variant(
+        &self,
+        variant: &str,
+        after_row: Option<i64>,
+        before_row: Option<i64>,
+    ) -> Result<Vec<SemanticEvent>> {
+        match &self.inner {
+            EventStoreInner::Sqlite(store) => {
+                store.query_by_variant(variant, after_row, before_row)
+            }
+            EventStoreInner::Postgres(store) => {
+                store.query_by_variant(variant, after_row, before_row)
+            }
+        }
+    }
+
+    pub fn latest_row(&self) -> Result<Option<i64>> {
+        match &self.inner {
+            EventStoreInner::Sqlite(store) => store.latest_row(),
+            EventStoreInner::Postgres(store) => store.latest_row(),
+        }
+    }
+
+    pub fn row_for_event_id(&self, event_id: EventId) -> Result<Option<i64>> {
+        match &self.inner {
+            EventStoreInner::Sqlite(store) => store.row_for_event_id(event_id),
+            EventStoreInner::Postgres(store) => store.row_for_event_id(event_id),
+        }
+    }
+
+    pub fn get_by_event_id(&self, event_id: EventId) -> Result<Option<SemanticEvent>> {
+        match &self.inner {
+            EventStoreInner::Sqlite(store) => store.get_by_event_id(event_id),
+            EventStoreInner::Postgres(store) => store.get_by_event_id(event_id),
+        }
+    }
+
+    pub fn pool(&self) -> Option<&PgPool> {
+        match &self.inner {
+            EventStoreInner::Postgres(store) => Some(&store.pool),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for EventStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventStore").finish_non_exhaustive()
+    }
+}
+
 fn event_source_agent(event: &SemanticEvent) -> String {
     match event {
         SemanticEvent::ToolExecuted { source_agent, .. } => source_agent.to_string(),
@@ -597,6 +589,13 @@ fn event_timestamp_ns(event: &SemanticEvent) -> u64 {
         SemanticEvent::ProjectRenamed { timestamp_ns, .. } => *timestamp_ns,
         SemanticEvent::ProjectDeleted { timestamp_ns, .. } => *timestamp_ns,
     }
+}
+
+fn sqlite_map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SemanticEvent> {
+    let payload: String = row.get(0)?;
+    serde_json::from_str(&payload).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 #[cfg(test)]

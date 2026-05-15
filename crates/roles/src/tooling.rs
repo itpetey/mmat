@@ -13,6 +13,14 @@ pub struct RoleToolRuntime {
     pub bus: Option<EventBus>,
 }
 
+/// Errors that can occur during role tool execution.
+#[derive(Debug, Error)]
+pub enum RoleToolError {
+    /// A general tool error.
+    #[error("{0}")]
+    Error(String),
+}
+
 impl RoleToolRuntime {
     pub fn new() -> Self {
         Self { bus: None }
@@ -27,14 +35,6 @@ impl Default for RoleToolRuntime {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Errors that can occur during role tool execution.
-#[derive(Debug, Error)]
-pub enum RoleToolError {
-    /// A general tool error.
-    #[error("{0}")]
-    Error(String),
 }
 
 /// Produces an empty tool result (JSON null).

@@ -1,10 +1,10 @@
 use dioxus::prelude::*;
 use dioxus_icons::lucide::ChevronsUpDown;
-use dioxus_primitives::collapsible::{
-    self, CollapsibleContentProps, CollapsibleProps, CollapsibleTriggerProps,
+use dioxus_primitives::{
+    collapsible::{self, CollapsibleContentProps, CollapsibleProps, CollapsibleTriggerProps},
+    dioxus_attributes::attributes,
+    merge_attributes,
 };
-use dioxus_primitives::dioxus_attributes::attributes;
-use dioxus_primitives::merge_attributes;
 
 #[css_module("/src/ui/vendor/collapsible/style.css")]
 struct Styles;
@@ -21,28 +21,6 @@ pub fn Collapsible(props: CollapsibleProps) -> Element {
             as: props.r#as,
             attributes: props.attributes,
             {props.children}
-        }
-    }
-}
-
-#[component]
-pub fn CollapsibleTrigger(props: CollapsibleTriggerProps) -> Element {
-    let base = attributes!(button {
-        class: Styles::dx_collapsible_trigger,
-    });
-    let merged = merge_attributes(vec![base, props.attributes]);
-
-    let show_icon = props.r#as.is_none();
-
-    rsx! {
-        collapsible::CollapsibleTrigger { as: props.r#as, attributes: merged,
-            {props.children}
-            if show_icon {
-                ChevronsUpDown {
-                    size: "1rem",
-                    stroke: "var(--secondary-color-3)",
-                }
-            }
         }
     }
 }
@@ -89,6 +67,28 @@ pub fn CollapsibleList(
             color: "var(--secondary-color-3)",
             ..attributes,
             {children}
+        }
+    }
+}
+
+#[component]
+pub fn CollapsibleTrigger(props: CollapsibleTriggerProps) -> Element {
+    let base = attributes!(button {
+        class: Styles::dx_collapsible_trigger,
+    });
+    let merged = merge_attributes(vec![base, props.attributes]);
+
+    let show_icon = props.r#as.is_none();
+
+    rsx! {
+        collapsible::CollapsibleTrigger { as: props.r#as, attributes: merged,
+            {props.children}
+            if show_icon {
+                ChevronsUpDown {
+                    size: "1rem",
+                    stroke: "var(--secondary-color-3)",
+                }
+            }
         }
     }
 }
