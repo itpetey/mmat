@@ -1,8 +1,9 @@
-use crate::components::App;
+use crate::ui::App;
 
+mod api;
 #[cfg(feature = "server")]
 mod cli;
-mod components;
+mod ui;
 
 #[cfg(feature = "web")]
 fn main() {

@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_primitives::dioxus_attributes::attributes;
 use dioxus_primitives::merge_attributes;
 
-#[css_module("/src/components/button/style.css")]
+#[css_module("/src/ui/vendor/button/style.css")]
 struct Styles;
 
 #[derive(Copy, Clone, PartialEq, Default)]

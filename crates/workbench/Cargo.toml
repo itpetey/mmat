@@ -20,7 +20,6 @@ dioxus = { workspace = true, features = [
 ] }
 dioxus-icons = { version = "0.1.0", default-features = false }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
-diesel = { workspace = true, features = ["postgres", "uuid"], optional = true }
 mmat-db = { path = "../db", optional = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }
@@ -34,7 +33,6 @@ server = [
   "dep:anyhow",
   "dep:axum",
   "dep:clap",
-  "dep:diesel",
   "dep:mmat-db",
   "dep:tokio",
   "dep:toml",

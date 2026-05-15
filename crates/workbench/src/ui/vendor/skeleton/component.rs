@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use dioxus_primitives::{dioxus_attributes::attributes, merge_attributes};
 
-#[css_module("/src/components/skeleton/style.css")]
+#[css_module("/src/ui/vendor/skeleton/style.css")]
 struct Styles;
 
 #[component]

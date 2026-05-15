@@ -6,7 +6,6 @@ members = [
   "crates/event-stream",
   "crates/llm",
   "crates/memory",
-  "crates/migration",
   "crates/process",
   "crates/project",
   "crates/roles",
@@ -44,6 +43,10 @@ default-features = false
 version = "2.3"
 default-features = false
 
+[workspace.dependencies.diesel-async]
+version = "0.9"
+default-features = false
+
 [workspace.dependencies.dioxus]
 version = "0.7"
 default-features = false
@@ -51,6 +54,9 @@ default-features = false
 [workspace.dependencies.futures-util]
 version = "0.3"
 default-features = false
+
+[workspace.dependencies.mmat-db]
+path = "crates/db"
 
 [workspace.dependencies.parking_lot]
 version = "0.12"

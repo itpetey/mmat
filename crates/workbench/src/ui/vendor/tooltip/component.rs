@@ -3,7 +3,7 @@ use dioxus_primitives::dioxus_attributes::attributes;
 use dioxus_primitives::merge_attributes;
 use dioxus_primitives::tooltip::{self, TooltipContentProps, TooltipProps, TooltipTriggerProps};
 
-#[css_module("/src/components/tooltip/style.css")]
+#[css_module("/src/ui/vendor/tooltip/style.css")]
 struct Styles;
 
 #[component]

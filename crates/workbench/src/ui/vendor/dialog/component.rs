@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_primitives::dialog::{self, DialogDescriptionProps, DialogRootProps, DialogTitleProps};
 use dioxus_primitives::{dioxus_attributes::attributes, merge_attributes};
 
-#[css_module("/src/components/dialog/style.css")]
+#[css_module("/src/ui/vendor/dialog/style.css")]
 struct Styles;
 
 #[component]

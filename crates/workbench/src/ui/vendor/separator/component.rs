@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_primitives::separator::{self, SeparatorProps};
 use dioxus_primitives::{dioxus_attributes::attributes, merge_attributes};
 
-#[css_module("/src/components/separator/style.css")]
+#[css_module("/src/ui/vendor/separator/style.css")]
 struct Styles;
 
 #[component]

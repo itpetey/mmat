@@ -6,7 +6,7 @@ use dioxus_primitives::dialog::{
 use dioxus_primitives::dioxus_attributes::attributes;
 use dioxus_primitives::merge_attributes;
 
-#[css_module("/src/components/sheet/style.css")]
+#[css_module("/src/ui/vendor/sheet/style.css")]
 struct Styles;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

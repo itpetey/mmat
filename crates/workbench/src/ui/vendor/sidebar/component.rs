@@ -1,10 +1,10 @@
-use crate::components::button::{Button, ButtonVariant};
-use crate::components::separator::Separator;
-use crate::components::sheet::{
-    Sheet, SheetContentClose, SheetDescription, SheetHeader, SheetSide, SheetTitle,
+use crate::ui::vendor::{
+    button::{Button, ButtonVariant},
+    separator::Separator,
+    sheet::{Sheet, SheetContentClose, SheetDescription, SheetHeader, SheetSide, SheetTitle},
+    skeleton::Skeleton,
+    tooltip::{Tooltip, TooltipContent, TooltipTrigger},
 };
-use crate::components::skeleton::Skeleton;
-use crate::components::tooltip::{Tooltip, TooltipContent, TooltipTrigger};
 use dioxus::core::use_drop;
 use dioxus::prelude::*;
 use dioxus_icons::lucide::PanelLeft;
@@ -12,7 +12,7 @@ use dioxus_primitives::dioxus_attributes::attributes;
 use dioxus_primitives::merge_attributes;
 use dioxus_primitives::use_controlled;
 
-#[css_module("/src/components/sidebar/style.css")]
+#[css_module("/src/ui/vendor/sidebar/style.css")]
 struct Styles;
 
 // constants
