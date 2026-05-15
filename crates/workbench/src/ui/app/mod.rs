@@ -1,4 +1,4 @@
-use dioxus::prelude::*;
+use dioxus::{document::Link, prelude::*};
 use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
 
 use crate::{
@@ -14,9 +14,9 @@ use crate::{
         sidebar::{
             Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
             SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
-            SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarMenuSkeleton,
-            SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail,
-            SidebarSide, SidebarTrigger, SidebarVariant,
+            SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarMenuSub,
+            SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail, SidebarSide,
+            SidebarTrigger, SidebarVariant,
         },
     },
 };
@@ -137,10 +137,10 @@ pub fn App() -> Element {
     let projects = use_resource(|| async move { list_projects().await });
 
     rsx! {
-        // document::Link { rel: "icon", href: FAVICON }
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
-        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-        document::Link { rel: "stylesheet", href: DX_COMPONENT_CSS }
+        // Link { rel: "icon", href: FAVICON }
+        Link { rel: "stylesheet", href: MAIN_CSS }
+        Link { rel: "stylesheet", href: TAILWIND_CSS }
+        Link { rel: "stylesheet", href: DX_COMPONENT_CSS }
         SidebarProvider {
             Sidebar { side: SidebarSide::Left, variant: SidebarVariant::Sidebar, collapsible: SidebarCollapsible::Offcanvas,
                 SidebarHeader {
