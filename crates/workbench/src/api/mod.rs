@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod projects;
 
 #[cfg(feature = "server")]

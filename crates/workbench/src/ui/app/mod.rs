@@ -3,20 +3,25 @@ use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
 
 use crate::{
     api::projects::{ProjectNavItem, create_project, list_projects},
-    ui::vendor::{
-        avatar::{Avatar, AvatarImageSize},
-        button::{Button, ButtonVariant},
-        collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger},
-        combobox::{Combobox, ComboboxEmpty, ComboboxOption},
-        dialog::{Dialog, DialogDescription, DialogTitle},
-        dropdown_menu::{DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger},
-        separator::Separator,
-        sidebar::{
-            Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
-            SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
-            SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarMenuSub,
-            SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail, SidebarSide,
-            SidebarTrigger, SidebarVariant,
+    ui::{
+        chat::ChatWorkbench,
+        vendor::{
+            avatar::{Avatar, AvatarImageSize},
+            button::{Button, ButtonVariant},
+            collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger},
+            combobox::{Combobox, ComboboxEmpty, ComboboxOption},
+            dialog::{Dialog, DialogDescription, DialogTitle},
+            dropdown_menu::{
+                DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+            },
+            separator::Separator,
+            sidebar::{
+                Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
+                SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
+                SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarMenuSub,
+                SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail,
+                SidebarSide, SidebarTrigger, SidebarVariant,
+            },
         },
     },
 };
@@ -160,9 +165,7 @@ pub fn App() -> Element {
                         span { "Conversation" }
                     }
                 }
-                div { style: "display:flex; flex:1; flex-direction:column; gap:1.5rem; padding:1.5rem; min-height:0; overflow-y:auto; overflow-x:hidden;",
-                    span { "Body" }
-                }
+                ChatWorkbench {}
             }
         }
     }
