@@ -1,4 +1,0 @@
-[alias]
-wb = "run -p mmat-workbench"
-wb-release = "run --release -p mmat-workbench"
-wb-build = "build --release -p mmat-workbench"

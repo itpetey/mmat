@@ -22,13 +22,18 @@ dioxus-icons = { version = "0.1.0", default-features = false }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 mmat-db = { path = "../db", optional = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"], optional = true }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "signal",
+  "sync"
+], optional = true }
 toml = { workspace = true, features = ["parse", "serde"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 
 [features]
-default = ["server"]
+default = ["web"]
 server = [
   "dep:anyhow",
   "dep:axum",

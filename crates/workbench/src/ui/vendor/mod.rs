@@ -5,6 +5,8 @@ pub mod button;
 #[allow(dead_code)]
 pub mod collapsible;
 #[allow(dead_code)]
+pub mod combobox;
+#[allow(dead_code)]
 pub mod dialog;
 #[allow(dead_code)]
 pub mod dropdown_menu;

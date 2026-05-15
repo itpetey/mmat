@@ -3,29 +3,26 @@ use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
 
 use crate::{
     api::projects::{ProjectNavItem, create_project, list_projects},
-    ui::{
-        header::Header,
-        vendor::{
-            avatar::{Avatar, AvatarImageSize},
-            button::{Button, ButtonVariant},
-            collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger},
-            dialog::{Dialog, DialogDescription, DialogTitle},
-            dropdown_menu::{
-                DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-            },
-            separator::Separator,
-            sidebar::{
-                Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
-                SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
-                SidebarMenuAction, SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem,
-                SidebarMenuSkeleton, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem,
-                SidebarProvider, SidebarRail, SidebarSide, SidebarTrigger, SidebarVariant,
-            },
+    ui::vendor::{
+        avatar::{Avatar, AvatarImageSize},
+        button::{Button, ButtonVariant},
+        collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger},
+        combobox::{Combobox, ComboboxEmpty, ComboboxOption},
+        dialog::{Dialog, DialogDescription, DialogTitle},
+        dropdown_menu::{DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger},
+        separator::Separator,
+        sidebar::{
+            Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
+            SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
+            SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarMenuSkeleton,
+            SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail,
+            SidebarSide, SidebarTrigger, SidebarVariant,
         },
     },
 };
 
 const DX_COMPONENT_CSS: Asset = asset!("/assets/dx-components-theme.css");
+const ADD_PROJECT_VALUE: &str = "__add_project__";
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const NAV_MAIN: &[NavMainItem] = &[
     NavMainItem {
@@ -145,33 +142,28 @@ pub fn App() -> Element {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         document::Link { rel: "stylesheet", href: DX_COMPONENT_CSS }
         SidebarProvider {
-                        Sidebar { side: SidebarSide::Left, variant: SidebarVariant::Sidebar, collapsible: SidebarCollapsible::Offcanvas,
-                            SidebarHeader {
-                                ProjectSwitcher { projects }
-                            }
-                            SidebarContent {
-                                NavMain { items: NAV_MAIN }
-                            }
-                            SidebarFooter { NavUser {} }
-                            SidebarRail {}
-                        }
-                        SidebarInset {
-                            header { style: "display:flex; align-items:center; justify-content:space-between; height:3.5rem; flex-shrink:0; padding:0 1rem; border-bottom:1px solid var(--dx-sidebar-border); background:var(--primary-color-1);",
-                                div { style: "display: flex; align-items: center; gap: 0.75rem;",
-                                    SidebarTrigger {}
-                                    Separator { height: "1rem", horizontal: false }
-                                    span { "Sidebar Setting" }
-                                }
-                            }
-                            div { style: "display:flex; flex:1; flex-direction:column; gap:1.5rem; padding:1.5rem; min-height:0; overflow-y:auto; overflow-x:hidden;",
-                                span { "blah" }
-                            }
-                        }
-
-
-
-
-            Header {}
+            Sidebar { side: SidebarSide::Left, variant: SidebarVariant::Sidebar, collapsible: SidebarCollapsible::Offcanvas,
+                SidebarHeader {
+                    ProjectSwitcher { projects }
+                }
+                SidebarContent {
+                    NavMain { items: NAV_MAIN }
+                }
+                SidebarFooter { NavUser {} }
+                SidebarRail {}
+            }
+            SidebarInset {
+                header { style: "display:flex; align-items:center; justify-content:space-between; height:3.5rem; flex-shrink:0; padding:0 1rem; border-bottom:1px solid var(--dx-sidebar-border); background:var(--primary-color-1);",
+                    div { style: "display: flex; align-items: center; gap: 0.75rem;",
+                        SidebarTrigger {}
+                        Separator { height: "1rem", horizontal: false }
+                        span { "Conversation" }
+                    }
+                }
+                div { style: "display:flex; flex:1; flex-direction:column; gap:1.5rem; padding:1.5rem; min-height:0; overflow-y:auto; overflow-x:hidden;",
+                    span { "Body" }
+                }
+            }
         }
     }
 }
@@ -331,149 +323,88 @@ fn NavUser() -> Element {
 }
 
 #[component]
-fn ProjectNavItemLink(project: ProjectNavItem) -> Element {
-    let href = format!("/projects/{}", project.id);
-    let label = project.label.clone();
-    let title = project.path.clone();
-
-    rsx! {
-        SidebarMenuItem {
-            SidebarMenuButton {
-                as: move |attributes: Vec<Attribute>| {
-                    let href = href.clone();
-                    let label = label.clone();
-                    let title = title.clone();
-
-                    rsx! {
-                        a { href, title, ..attributes,
-                            DemoIcon {}
-                            span { "{label}" }
-                        }
-                    }
-                },
-            }
-            DropdownMenu { class: Styles::dx_sidebar_dropdown_menu,
-                DropdownMenuTrigger { class: Styles::dx_sidebar_dropdown_menu_trigger,
-                    as: move |attributes: Vec<Attribute>| rsx! {
-                        SidebarMenuAction { show_on_hover: true, attributes,
-                            DemoIcon {}
-                            span { class: Styles::dx_sr_only, "More" }
-                        }
-                    },
-                }
-                DropdownMenuContent { class: Styles::dx_sidebar_dropdown_menu_content,
-                    DropdownMenuItem {
-                        index: 0usize,
-                        value: "view".to_string(),
-                        on_select: move |_: String| {},
-                        DemoIcon {}
-                        span { "View Project" }
-                    }
-                    Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
-                    DropdownMenuItem {
-                        index: 1usize,
-                        value: "delete".to_string(),
-                        on_select: move |_: String| {},
-                        DemoIcon {}
-                        span { "Delete Project" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
 fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) -> Element {
-    let mut active_project = use_signal(|| 0usize);
+    let mut active_project = use_signal(|| None::<String>);
     let mut dialog_open = use_signal(|| false);
+    let mut combobox_open = use_signal(|| false);
     let mut project_label = use_signal(String::new);
     let mut project_path = use_signal(String::new);
     let mut create_error = use_signal(|| None::<String>);
     let mut is_creating = use_signal(|| false);
 
+    use_effect(move || {
+        if let Some(Ok(items)) = &*projects.read() {
+            let current = active_project();
+
+            if items.is_empty() {
+                if current.is_some() {
+                    active_project.set(None);
+                }
+
+                return;
+            }
+
+            let needs_selection = current
+                .as_ref()
+                .is_none_or(|id| !items.iter().any(|project| project.id == *id));
+
+            if needs_selection {
+                active_project.set(Some(items[0].id.clone()));
+            }
+        }
+    });
+
     rsx! {
         SidebarMenu {
             SidebarMenuItem {
-                DropdownMenu { class: Styles::dx_sidebar_dropdown_menu,
-                    DropdownMenuTrigger { class: Styles::dx_sidebar_dropdown_menu_trigger,
-                        as: move |attributes: Vec<Attribute>| rsx! {
-                            SidebarMenuButton { class: AppStyles::dx_sidebar_menu_disclosure_button, size: SidebarMenuButtonSize::Lg, attributes,
-                                div { style: "display:flex; flex-shrink:0; align-items:center; justify-content:center; width:2rem; height:2rem; aspect-ratio:1; border-radius:0.5rem; background:var(--dx-sidebar-accent); color:var(--dx-sidebar-accent-foreground);",
+                Combobox::<String> {
+                    class: AppStyles::dx_project_combobox,
+                    value: Some(active_project.into()),
+                    on_open_change: move |open| combobox_open.set(open),
+                    on_value_change: move |value: Option<String>| match value.as_deref() {
+                        Some(ADD_PROJECT_VALUE) => {
+                            create_error.set(None);
+                            dialog_open.set(true);
+                        }
+                        Some(id) => active_project.set(Some(id.to_string())),
+                        None => active_project.set(None),
+                    },
+                    placeholder: "Select project...",
+                    aria_label: "Project",
+                    list_aria_label: "Projects",
+
+                    match &*projects.read_unchecked() {
+                        Some(Ok(items)) if !items.is_empty() => rsx! {
+                            for (idx , project) in items.iter().enumerate() {
+                                ComboboxOption::<String> {
+                                    index: idx,
+                                    value: project.id.clone(),
+                                    text_value: project.label.clone(),
                                     DemoIcon {}
-                                }
-                                match &*projects.read_unchecked() {
-                                    Some(Ok(items)) if !items.is_empty() => {
-                                        let project = &items[active_project().min(items.len() - 1)];
-                                        rsx! {
-                                            div { class: AppStyles::dx_sidebar_info_block,
-                                                span { class: AppStyles::dx_sidebar_info_title, {project.label.clone()} }
-                                                span { class: AppStyles::dx_sidebar_info_subtitle, {project.path.clone()} }
-                                            }
-                                        }
+                                    div { class: AppStyles::dx_project_combobox_option_text,
+                                        span { class: AppStyles::dx_project_combobox_option_title, {project.label.clone()} }
+                                        span { class: AppStyles::dx_project_combobox_option_path, {project.path.clone()} }
                                     }
-                                    Some(Ok(_)) => rsx! {
-                                        div { class: AppStyles::dx_sidebar_info_block,
-                                            span { class: AppStyles::dx_sidebar_info_title, "No projects" }
-                                            span { class: AppStyles::dx_sidebar_info_subtitle, "Create a project" }
-                                        }
-                                    },
-                                    Some(Err(_)) => rsx! {
-                                        div { class: AppStyles::dx_sidebar_info_block,
-                                            span { class: AppStyles::dx_sidebar_info_title, "Projects unavailable" }
-                                            span { class: AppStyles::dx_sidebar_info_subtitle, "Check server logs" }
-                                        }
-                                    },
-                                    None => rsx! {
-                                        div { class: AppStyles::dx_sidebar_info_block,
-                                            span { class: AppStyles::dx_sidebar_info_title, "Loading projects" }
-                                            span { class: AppStyles::dx_sidebar_info_subtitle, "Please wait" }
-                                        }
-                                    },
                                 }
-                                ChevronIcon {}
                             }
                         },
+                        Some(Ok(_)) if combobox_open() => rsx! {
+                            div { class: AppStyles::dx_project_combobox_message, "No projects found" }
+                        },
+                        Some(Ok(_)) | None => rsx! {},
+                        Some(Err(error)) => rsx! {
+                            div { class: AppStyles::dx_project_combobox_error, "Unable to load projects: {error}" }
+                        },
                     }
-                    DropdownMenuContent { class: Styles::dx_sidebar_dropdown_menu_content,
-                        div { style: "padding:0.5rem; font-size:0.75rem; opacity:0.7;",
-                            "Projects"
-                        }
-                        match &*projects.read_unchecked() {
-                            Some(Ok(items)) if !items.is_empty() => rsx! {
-                                for (idx , project) in items.iter().enumerate() {
-                                    DropdownMenuItem {
-                                        index: idx,
-                                        value: idx,
-                                        on_select: move |v: usize| active_project.set(v),
-                                        DemoIcon {}
-                                        {project.label.clone()}
-                                        span { style: "margin-left:auto; max-width:8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.75rem; opacity:0.7;",
-                                            {project.path.clone()}
-                                        }
-                                    }
-                                }
-                            },
-                            Some(Ok(_)) => rsx! {
-                                div { style: "padding:0.5rem; font-size:0.875rem; opacity:0.7;", "No projects found" }
-                            },
-                            Some(Err(error)) => rsx! {
-                                div { style: "padding:0.5rem; font-size:0.875rem; color:#dc2626;", "Unable to load projects: {error}" }
-                            },
-                            None => rsx! {
-                                div { style: "padding:0.5rem;", SidebarMenuSkeleton {} }
-                            },
-                        }
-                        Separator { class: Styles::dx_sidebar_dropdown_separator, decorative: true }
-                        DropdownMenuItem {
-                            index: 999usize,
-                            value: 999usize,
-                            on_select: move |_: usize| {
-                                create_error.set(None);
-                                dialog_open.set(true);
-                            },
-                            Plus { size: "16px" }
-                            div { style: "opacity:0.7; font-weight:500;", "Add project" }
+
+                    ComboboxEmpty { "No matching projects." }
+                    ComboboxOption::<String> {
+                        index: 999usize,
+                        value: ADD_PROJECT_VALUE.to_string(),
+                        text_value: "Add project".to_string(),
+                        Plus { size: "16px" }
+                        div { class: AppStyles::dx_project_combobox_option_text,
+                            span { class: AppStyles::dx_project_combobox_option_title, "Add project" }
                         }
                     }
                 }
@@ -502,10 +433,10 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
 
                     spawn(async move {
                         match create_project(label, path).await {
-                            Ok(_) => {
+                            Ok(project) => {
                                 project_label.set(String::new());
                                 project_path.set(String::new());
-                                active_project.set(0);
+                                active_project.set(Some(project.id));
                                 dialog_open.set(false);
                                 projects.restart();
                             }
