@@ -22,12 +22,13 @@ use crate::{
                 SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail,
                 SidebarSide, SidebarTrigger, SidebarVariant,
             },
+            tabs::{TabContent, TabList, TabTrigger, Tabs},
         },
     },
 };
 
-const DX_COMPONENT_CSS: Asset = asset!("/assets/dx-components-theme.css");
 const ADD_PROJECT_VALUE: &str = "__add_project__";
+const DX_COMPONENT_CSS: Asset = asset!("/assets/dx-components-theme.css");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const NAV_MAIN: &[NavMainItem] = &[
     NavMainItem {
@@ -158,14 +159,30 @@ pub fn App() -> Element {
                 SidebarRail {}
             }
             SidebarInset {
-                header { style: "display:flex; align-items:center; justify-content:space-between; height:3.5rem; flex-shrink:0; padding:0 1rem; border-bottom:1px solid var(--dx-sidebar-border); background:var(--primary-color-1);",
-                    div { style: "display: flex; align-items: center; gap: 0.75rem;",
-                        SidebarTrigger {}
-                        Separator { height: "1rem", horizontal: false }
-                        span { "Conversation" }
+                Tabs {
+                    class: AppStyles::app_tabs.to_string(),
+                    default_value: "chat",
+                    header { style: "display:flex; align-items:center; justify-content:space-between; height:3.5rem; flex-shrink:0; padding:0 1rem; border-bottom:1px solid var(--dx-sidebar-border); background:var(--primary-color-1);",
+                        div { style: "display: flex; align-items: center; gap: 0.75rem;",
+                            SidebarTrigger {}
+                            Separator { height: "1rem", horizontal: false }
+                            TabList {
+                                TabTrigger { index: 0usize, value: "chat", "Chat" }
+                                TabTrigger { index: 1usize, value: "graph", "Graph" }
+                            }
+                        }
+                    }
+                    TabContent {
+                        index: 0usize,
+                        value: "chat",
+                        ChatWorkbench {}
+                    }
+                    TabContent {
+                        index: 1usize,
+                        value: "graph",
+                        span { "Hello Graph!" }
                     }
                 }
-                ChatWorkbench {}
             }
         }
     }

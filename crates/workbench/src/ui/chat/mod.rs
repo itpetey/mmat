@@ -130,6 +130,7 @@ fn chat_composer(
                 aria_label: "Compose a message",
                 placeholder: "Type your message here...",
                 value: "{draft}",
+                autofocus: true,
                 oninput: move |event| draft.set(event.value()),
                 onkeydown: move |event| {
                     if event.key() == Key::Enter && event.modifiers().meta() {

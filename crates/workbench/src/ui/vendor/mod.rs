@@ -19,4 +19,6 @@ pub mod sidebar;
 #[allow(dead_code)]
 pub mod skeleton;
 #[allow(dead_code)]
+pub mod tabs;
+#[allow(dead_code)]
 pub mod tooltip;

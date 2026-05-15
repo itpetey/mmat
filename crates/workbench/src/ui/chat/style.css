@@ -89,7 +89,6 @@
 }
 
 .dx-chat-message code,
-.dx-chat-log,
 .dx-chat-submit-hint code {
     font-family: "Intel One Mono", "SFMono-Regular", Consolas, monospace;
 }
