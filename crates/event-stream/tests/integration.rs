@@ -5,19 +5,10 @@ use mmat_event_stream::{
     event_bus::EventBus,
     event_store::EventStore,
 };
-use sqlx::postgres::PgPoolOptions;
-
-async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
-        .execute(pool)
-        .await
-        .unwrap();
-}
 
 #[tokio::test]
 async fn multiple_subscribers_with_filters() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(EventStore::open(tmp.path()).unwrap());
+    let store = Arc::new(EventStore::empty());
     let bus = EventBus::new(16).with_store(store);
 
     let mut rx_a = bus.subscribe(&[EventType::TaskAssigned]);
@@ -42,21 +33,9 @@ async fn multiple_subscribers_with_filters() {
     assert!(b_result.is_err());
 }
 
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn postgres_event_store_round_trip_and_concurrent_writes() {
-    let Some((database_url, admin_pool, schema)) = postgres_test_database("event_stream").await
-    else {
-        return;
-    };
-
-    let store = Arc::new(EventStore::new(&database_url).unwrap());
+async fn event_store_round_trip_and_concurrent_writes() {
+    let store = Arc::new(EventStore::empty());
     assert!(store.replay(0, None).unwrap().is_empty());
 
     let tool =
@@ -114,31 +93,11 @@ async fn postgres_event_store_round_trip_and_concurrent_writes() {
     }
 
     assert_eq!(store.replay(0, None).unwrap().len(), 10);
-    drop(store);
-    drop_postgres_schema(&admin_pool, &schema).await;
-}
-
-async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, String)> {
-    let base_url = std::env::var("MMAT_DB_URL").ok()?;
-    let schema = format!("{}_{}", prefix, now_nanos());
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&base_url)
-        .await
-        .ok()?;
-    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
-        .execute(&admin_pool)
-        .await
-        .ok()?;
-    let separator = if base_url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
-    Some((database_url, admin_pool, schema))
 }
 
 #[tokio::test]
 async fn publish_subscribe_and_store() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(EventStore::open(tmp.path()).unwrap());
+    let store = Arc::new(EventStore::empty());
     let bus = EventBus::new(16).with_store(store.clone());
 
     let mut rx = bus.subscribe(&[]);

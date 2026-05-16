@@ -365,8 +365,7 @@ async fn integration_near_duplicate_suppression() {
 async fn integration_provenance_trace() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let store = MemoryStore::open(tmp.path()).unwrap();
-    let event_tmp = tempfile::NamedTempFile::new().unwrap();
-    let event_store = Arc::new(EventStore::open(event_tmp.path()).unwrap());
+    let event_store = Arc::new(EventStore::empty());
 
     let engine = ProvenanceEngine::new();
 
@@ -441,7 +440,6 @@ async fn postgres_artefact_store_round_trip_and_transactional_event() {
         return;
     };
 
-    let event_store = EventStore::new(&database_url).unwrap();
     let store = ArtefactStore::new_postgres(&database_url).unwrap();
     let bus = EventBus::new(16);
     let mut artefact_rx = bus.subscribe(&[EventType::ArtefactProduced]);
@@ -459,9 +457,6 @@ async fn postgres_artefact_store_round_trip_and_transactional_event() {
         .await
         .unwrap();
     assert!(event_ref.storage_uri.starts_with("db://artefacts/"));
-    let events = event_store.replay(0, None).unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].variant_name(), "ArtefactProduced");
     assert_eq!(
         artefact_rx.recv().await.unwrap().variant_name(),
         "ArtefactProduced"

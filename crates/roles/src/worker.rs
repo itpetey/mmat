@@ -853,14 +853,13 @@ mod tests {
             while tokio::time::Instant::now() < deadline {
                 tokio::select! {
                     result = sub.recv() => {
-                        if let Ok(evt) = result {
-                            if let SemanticEvent::ArtefactProduced {
+                        if let Ok(evt) = result
+                            && let SemanticEvent::ArtefactProduced {
                                 repository_output: Some(output),
                                 ..
                             } = evt.as_ref()
-                            {
-                                return output.repository_path.clone();
-                            }
+                        {
+                            return output.repository_path.clone();
                         }
                     }
                     _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
@@ -932,14 +931,13 @@ mod tests {
             while tokio::time::Instant::now() < deadline {
                 tokio::select! {
                     result = sub.recv() => {
-                        if let Ok(evt) = result {
-                            if let SemanticEvent::ArtefactProduced {
+                        if let Ok(evt) = result
+                            && let SemanticEvent::ArtefactProduced {
                                 repository_output: Some(output),
                                 ..
                             } = evt.as_ref()
-                            {
-                                return output.repository_path.clone();
-                            }
+                        {
+                            return output.repository_path.clone();
                         }
                     }
                     _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}

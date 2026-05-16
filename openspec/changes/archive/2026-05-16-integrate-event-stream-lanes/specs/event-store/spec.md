@@ -1,9 +1,4 @@
-# event-store Specification
-
-## Purpose
-Define durable Postgres-backed event persistence, replay, and query semantics.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Event store persists events in Postgres
 The system SHALL store every published event in a Postgres database through `mmat-db` Diesel functions. The `events` table MUST have columns for a UUID event ID (primary key), a `BIGSERIAL rowid` for efficient range scans, variant discriminator, `JSONB` payload, nanosecond timestamp, and source agent identifier. Database dependencies and schema access MUST be confined to `mmat-db`; `mmat-event-stream` MUST NOT own SQLx, Rusqlite, Diesel, or database connection code.
@@ -58,3 +53,9 @@ The system SHALL provide an `mmat-db` method to retrieve the maximum `rowid` in 
 #### Scenario: Get latest row from empty store
 - **WHEN** the store contains no events
 - **THEN** the latest-row query MUST return `None`
+
+## REMOVED Requirements
+
+### Requirement: Event store creates schema on first open
+**Reason**: Database schema ownership is moving to `mmat-db` and the project's Diesel/Postgres setup rather than runtime schema creation in `mmat-event-stream`.
+**Migration**: Define schema and CRUD in `mmat-db`; application startup connects through `mmat-db` and does not call `EventStore::new(database_url)`.

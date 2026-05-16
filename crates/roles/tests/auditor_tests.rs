@@ -99,7 +99,7 @@ impl VectorMemoryBackend for FakeVectorBackend {
 
 fn setup_auditor_test_env() -> (TempDir, EventBus, Arc<EventStore>, Arc<MemoryStore>) {
     let dir = tempdir().unwrap();
-    let event_store = Arc::new(EventStore::open(dir.path().join("events.db")).unwrap());
+    let event_store = Arc::new(EventStore::empty());
     let bus = EventBus::new(100).with_store(event_store.clone());
     let memory_store = Arc::new(MemoryStore::open(dir.path().join("memory.db")).unwrap());
     (dir, bus, event_store, memory_store)

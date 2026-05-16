@@ -1,4 +1,9 @@
-## ADDED Requirements
+# event-bus Specification
+
+## Purpose
+Define live semantic event publication and subscription semantics.
+
+## Requirements
 
 ### Requirement: Event bus supports topic-based subscription
 The system SHALL allow subscribers to register interest in a subset of `SemanticEvent` variants. Subscribers MUST receive only events matching their registered variants. Registration MUST occur at subscription time via a filter function or variant set.
@@ -26,3 +31,15 @@ The system SHALL report when a subscriber has fallen behind the broadcast buffer
 #### Scenario: Publisher is never blocked by slow subscribers
 - **WHEN** a publisher calls `bus.publish(event)` and one subscriber is processing a previous event slowly
 - **THEN** the publish call MUST return immediately without awaiting the slow subscriber
+
+### Requirement: Event bus is live-only
+The event bus SHALL provide in-memory live pub/sub for `SemanticEvent` values and MUST NOT own durable database persistence. Callers that require durability MUST persist through `mmat-db` before broadcasting.
+
+#### Scenario: Persisted event is broadcast
+- **WHEN** a service successfully appends an event through `mmat-db`
+- **THEN** it MAY broadcast the same event through `EventBus`
+- **AND** subscribers MUST receive it according to their variant filters
+
+#### Scenario: Event bus has no store attachment
+- **WHEN** code constructs an `EventBus`
+- **THEN** it MUST NOT require a database URL, SQLx pool, Rusqlite connection, or `EventStore`

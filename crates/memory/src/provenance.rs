@@ -337,8 +337,7 @@ mod tests {
         let event =
             SemanticEvent::new_claim_made(RoleId::new("llm"), "ungrounded claim", vec![], 0.5);
 
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = EventStore::open(tmp.path()).unwrap();
+        let store = EventStore::empty();
         store.insert(&event).unwrap();
 
         let confidence = engine.assess_confidence(event.event_id(), &store).unwrap();
@@ -370,8 +369,7 @@ mod tests {
             0.8,
         );
 
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = EventStore::open(tmp.path()).unwrap();
+        let store = EventStore::empty();
         store.insert(&tool_event).unwrap();
         store.insert(&claim).unwrap();
 

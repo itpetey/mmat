@@ -21,6 +21,23 @@ diesel::table! {
 }
 
 diesel::table! {
+    lanes (id) {
+        id -> Text,
+        project_id -> Text,
+        title -> Text,
+        summary -> Text,
+        status -> Text,
+        creator -> Text,
+        parent_lane_id -> Nullable<Text>,
+        origin_event_id -> Nullable<Uuid>,
+        origin_message_id -> Nullable<Text>,
+        created_at -> Text,
+        updated_at -> Text,
+        archived_at -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     memories (id) {
         id -> Uuid,
         memory_type -> Text,
@@ -46,4 +63,4 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(artefacts, events, memories, projects,);
+diesel::allow_tables_to_appear_in_same_query!(artefacts, events, lanes, memories, projects,);

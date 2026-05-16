@@ -17,9 +17,16 @@ pub async fn db() -> dioxus::prelude::ServerFnResult<DbGuard> {
     }
 
     let url = crate::cli::pg_dsn();
-    let connection = mmat_db::connect(&url).await.map_err(|error| {
+    let mut connection = mmat_db::connect(&url).await.map_err(|error| {
         dioxus::prelude::ServerFnError::new(format!("could not connect to database: {error}"))
     })?;
+    mmat_db::ensure_schema(&mut connection)
+        .await
+        .map_err(|error| {
+            dioxus::prelude::ServerFnError::new(format!(
+                "could not initialise database schema: {error}"
+            ))
+        })?;
 
     if DB.set(tokio::sync::Mutex::new(connection)).is_err() {
         // Another request initialised the shared connection first.

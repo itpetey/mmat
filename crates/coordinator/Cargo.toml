@@ -8,7 +8,8 @@ license-file.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-mmat-event-stream = { path = "../event-stream" }
+mmat-db.workspace = true
+mmat-event-stream.workspace = true
 mmat-memory = { path = "../memory" }
 serde.workspace = true
 thiserror.workspace = true

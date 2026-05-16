@@ -1,9 +1,4 @@
-# conversation-lanes Specification
-
-## Purpose
-Conversation lanes isolate UI attention (not project memory) by persisting branch/lane metadata and projecting lane-scoped messages and events. Lanes support single-lane views, LLM tool-based lane creation, archived lane history, System lane projection, notification deep-linking, and inline action-request semantics.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Workbench supports conversation lanes
 The workbench SHALL support multiple durable conversation lanes per project. A lane MUST have an ID, project ID, title/name, optional summary/purpose, status, creator, optional parent lane ID, optional origin event/message reference, created timestamp, and updated timestamp. Lanes are conversation branches and MUST NOT be modelled as multi-lane tags.

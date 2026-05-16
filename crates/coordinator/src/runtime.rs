@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use mmat_event_stream::{
     event::{EventType, RoleId, SemanticEvent},
-    event_bus::EventBus,
+    event_bus::{EventBus, RecvError},
     event_store::EventStore,
 };
 use mmat_memory::{artefact_store::ArtefactStore, store::MemoryStore};
@@ -32,12 +32,8 @@ pub struct OrganisationConfig {
     pub heartbeat_interval: Duration,
     /// Grace period for role shutdown before forced abort.
     pub shutdown_grace_period: Duration,
-    /// File path for the event store database (SQLite legacy).
-    pub event_store_path: Option<PathBuf>,
-    /// File path for the memory store database (SQLite legacy).
-    pub memory_store_path: Option<PathBuf>,
-    /// Postgres connection string (replaces event_store_path and memory_store_path when set).
-    pub database_url: Option<String>,
+    /// Postgres connection string for all durable runtime state.
+    pub database_url: String,
     /// Host working directory where all project directories reside.
     pub host_work_dir: Option<PathBuf>,
 }
@@ -59,16 +55,14 @@ pub struct OrganisationRuntime {
     shutdown_tx: broadcast::Sender<()>,
 }
 
-/// Returns default organisation configuration with sensible defaults.
-impl Default for OrganisationConfig {
-    fn default() -> Self {
+impl OrganisationConfig {
+    /// Creates an organisation configuration using Postgres for durable state.
+    pub fn new(database_url: impl Into<String>) -> Self {
         Self {
             event_bus_capacity: 1024,
             heartbeat_interval: Duration::from_secs(30),
             shutdown_grace_period: Duration::from_secs(10),
-            event_store_path: Some(PathBuf::from("events.db")),
-            memory_store_path: Some(PathBuf::from("memory.db")),
-            database_url: None,
+            database_url: database_url.into(),
             host_work_dir: None,
         }
     }
@@ -80,44 +74,23 @@ impl OrganisationRuntime {
     /// Opens the event store and memory store, validates the registry is non-empty,
     /// and initialises the scheduler.
     pub fn new(config: OrganisationConfig, registry: RoleRegistry) -> Result<Self> {
-        let event_store: Arc<EventStore> = if let Some(ref url) = config.database_url {
-            Arc::new(
-                EventStore::new(url)
-                    .map_err(|e| Error::Runtime(format!("failed to connect to Postgres: {e}")))?,
-            )
-        } else {
-            let path = config.event_store_path.as_ref().ok_or_else(|| {
-                Error::Runtime("event_store_path or database_url required".into())
-            })?;
-            Arc::new(
-                EventStore::open(path)
-                    .map_err(|e| Error::Runtime(format!("failed to open event store: {e}")))?,
-            )
-        };
-        let bus = EventBus::new(config.event_bus_capacity).with_store(Arc::clone(&event_store));
-        let memory_store: Arc<MemoryStore> = if let Some(ref url) = config.database_url {
-            Arc::new(
-                MemoryStore::new(url)
-                    .map_err(|e| Error::Runtime(format!("failed to connect to Postgres: {e}")))?,
-            )
-        } else {
-            let path = config.memory_store_path.as_ref().ok_or_else(|| {
-                Error::Runtime("memory_store_path or database_url required".into())
-            })?;
-            Arc::new(
-                MemoryStore::open(path)
-                    .map_err(|e| Error::Runtime(format!("failed to open memory store: {e}")))?,
-            )
-        };
+        if config.database_url.trim().is_empty() {
+            return Err(Error::Runtime(
+                "database_url is required for organisation runtime durability".into(),
+            ));
+        }
 
-        let artefact_store: Arc<ArtefactStore> = if let Some(ref url) = config.database_url {
-            Arc::new(
-                ArtefactStore::new_postgres(url)
-                    .map_err(|e| Error::Runtime(format!("failed to create artefact store: {e}")))?,
-            )
-        } else {
-            Arc::new(ArtefactStore::new())
-        };
+        let event_store = Arc::new(EventStore::empty());
+        let bus = EventBus::new(config.event_bus_capacity).with_store(Arc::clone(&event_store));
+        let memory_store = Arc::new(
+            MemoryStore::new(&config.database_url)
+                .map_err(|e| Error::Runtime(format!("failed to connect to Postgres: {e}")))?,
+        );
+
+        let artefact_store = Arc::new(
+            ArtefactStore::new_postgres(&config.database_url)
+                .map_err(|e| Error::Runtime(format!("failed to create artefact store: {e}")))?,
+        );
 
         // Validate registry
         if registry.all_roles().is_empty() {
@@ -201,8 +174,12 @@ impl OrganisationRuntime {
     /// budget monitoring, and heartbeats. Blocks until a shutdown signal is received
     /// (Ctrl+C or explicit [`shutdown`](Self::shutdown) call), then gracefully stops all roles.
     pub async fn run(mut self) -> Result<()> {
+        self.hydrate_event_store_from_db().await?;
+
         // Startup replay
         self.replay_events().await?;
+
+        let persistence_handle = self.spawn_event_persistence_task();
 
         // Publish organisation started
         self.bus
@@ -360,9 +337,75 @@ impl OrganisationRuntime {
         coordinator_handle.abort();
         budget_handle.abort();
         heartbeat_handle.abort();
+        persistence_handle.abort();
 
         info!("Organisation runtime stopped");
         Ok(())
+    }
+
+    async fn hydrate_event_store_from_db(&self) -> Result<()> {
+        let mut connection = mmat_db::connect(&self.config.database_url)
+            .await
+            .map_err(|e| Error::Runtime(format!("failed to connect to event database: {e}")))?;
+        mmat_db::ensure_schema(&mut connection)
+            .await
+            .map_err(|e| Error::Runtime(format!("failed to initialise event schema: {e}")))?;
+        let events = mmat_db::replay_events(&mut connection, 0, None)
+            .await
+            .map_err(|e| Error::Runtime(format!("failed to replay persisted events: {e}")))?;
+
+        for event in events {
+            self.event_store
+                .insert(&event)
+                .map_err(|e| Error::Runtime(format!("failed to hydrate event store: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    fn spawn_event_persistence_task(&self) -> tokio::task::JoinHandle<()> {
+        let database_url = self.config.database_url.clone();
+        let shutdown_tx = self.shutdown_tx.clone();
+        let mut receiver = self.bus.subscribe(&[]);
+
+        tokio::spawn(async move {
+            let mut connection = match mmat_db::connect(&database_url).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    warn!("failed to connect to event database for persistence: {error}");
+                    let _ = shutdown_tx.send(());
+                    return;
+                }
+            };
+
+            if let Err(error) = mmat_db::ensure_schema(&mut connection).await {
+                warn!("failed to initialise event database schema: {error}");
+                let _ = shutdown_tx.send(());
+                return;
+            }
+
+            loop {
+                match receiver.recv().await {
+                    Ok(event) => {
+                        if let Err(error) =
+                            persist_semantic_event(&mut connection, event.as_ref()).await
+                        {
+                            warn!("failed to persist semantic event: {error}");
+                            let _ = shutdown_tx.send(());
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "event persistence subscriber lagged by {skipped} events; shutting down"
+                        );
+                        let _ = shutdown_tx.send(());
+                        break;
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        })
     }
 
     async fn replay_events(&mut self) -> Result<()> {
@@ -394,13 +437,41 @@ impl OrganisationRuntime {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn organisation_config_default_has_no_host_work_dir() {
-        let config = OrganisationConfig::default();
-        assert!(config.host_work_dir.is_none());
+async fn persist_semantic_event(
+    connection: &mut mmat_db::AsyncPgConnection,
+    event: &SemanticEvent,
+) -> std::result::Result<(), mmat_db::DbError> {
+    if let SemanticEvent::LaneCreated {
+        lane_id,
+        name,
+        purpose,
+        parent_lane_id,
+        source_event_id,
+        source_message_id,
+        source_agent,
+        ..
+    } = event
+        && !event.context().project_id.is_empty()
+    {
+        let now = mmat_db::now_timestamp_string();
+        let lane = mmat_db::models::NewLane {
+            id: lane_id.clone(),
+            project_id: event.context().project_id.clone(),
+            title: name.clone(),
+            summary: purpose.clone(),
+            status: "active".to_string(),
+            creator: source_agent.to_string(),
+            parent_lane_id: parent_lane_id.clone(),
+            origin_event_id: (*source_event_id).map(|event_id| event_id.0),
+            origin_message_id: source_message_id.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+            archived_at: None,
+        };
+        mmat_db::create_lane_with_event(connection, lane, event.clone()).await?;
+    } else {
+        mmat_db::append_event(connection, event).await?;
     }
+
+    Ok(())
 }

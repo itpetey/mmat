@@ -1,8 +1,9 @@
-//! A publish-subscribe event bus with optional persistence via [`EventStore`].
+//! A publish-subscribe event bus with an optional in-memory compatibility store.
 //!
 //! The [`EventBus`] is the central mechanism for distributing [`SemanticEvent`]s
 //! to subscribers. Subscribers can filter by [`EventType`] and receive events
-//! through an asynchronous [`EventReceiver`].
+//! through an asynchronous [`EventReceiver`]. Durable persistence is owned by
+//! `mmat-db`; the optional [`EventStore`] is process-local compatibility state.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -52,7 +53,7 @@ impl EventBus {
         }
     }
 
-    /// Attaches a persistent [`EventStore`] to this bus, consuming `self`.
+    /// Attaches a process-local compatibility store to this bus.
     pub fn with_store(mut self, store: Arc<EventStore>) -> Self {
         self.store = Some(store);
         self
@@ -60,8 +61,8 @@ impl EventBus {
 
     /// Publishes an event to all subscribers.
     ///
-    /// If a store is configured the event is persisted first. The event is
-    /// wrapped in an [`Arc`] before being broadcast.
+    /// If a compatibility store is configured the event is inserted first. The
+    /// event is wrapped in an [`Arc`] before being broadcast.
     pub fn publish(&self, event: SemanticEvent) -> std::result::Result<(), EventStoreError> {
         if let Some(store) = &self.store {
             store.insert(&event)?;
@@ -92,7 +93,7 @@ impl EventBus {
         }
     }
 
-    /// Returns a reference to the attached [`EventStore`], if any.
+    /// Returns a reference to the attached process-local [`EventStore`], if any.
     pub fn store(&self) -> Option<Arc<EventStore>> {
         self.store.clone()
     }
@@ -112,8 +113,8 @@ impl EventBus {
         };
 
         let filter_set: HashSet<EventType> = filter.iter().cloned().collect();
-        let events = store.replay(after_row, None)?;
-        Ok(events
+        Ok(store
+            .replay(after_row, None)?
             .into_iter()
             .filter(|event| filter_set.is_empty() || filter_set.contains(&event.event_type()))
             .collect())
@@ -194,9 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_publish_and_subscribe() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(EventStore::open(tmp.path()).unwrap());
-        let bus = Arc::new(EventBus::new(64).with_store(store.clone()));
+        let bus = Arc::new(EventBus::new(64));
 
         let mut rx = bus.subscribe(&[]);
         let bus_clone = bus.clone();
@@ -205,7 +204,7 @@ mod tests {
             for i in 0..10 {
                 let event = SemanticEvent::new_tool_executed(
                     RoleId::new("worker"),
-                    &format!("tool_{}", i),
+                    format!("tool_{}", i),
                     "{}",
                     0,
                     "",
@@ -226,13 +225,11 @@ mod tests {
 
         handle.await.unwrap();
         assert_eq!(received, 10);
-        assert_eq!(store.latest_row().unwrap(), Some(10));
     }
 
     #[test]
-    fn replay_from_filters_persisted_events() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(EventStore::open(tmp.path()).unwrap());
+    fn replay_from_filters_compatibility_store() {
+        let store = Arc::new(EventStore::empty());
         let bus = EventBus::new(16).with_store(store);
 
         let tool = SemanticEvent::new_tool_executed(RoleId::new("a"), "t", "{}", 0, "", "", 0);

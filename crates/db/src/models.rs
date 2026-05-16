@@ -18,10 +18,46 @@ pub struct Event {
 #[derive(Debug, Clone, Insertable, Serialize, Deserialize)]
 #[diesel(table_name = crate::schema::events)]
 pub struct NewEvent {
+    pub id: Uuid,
     pub variant: String,
     pub payload: Value,
     pub timestamp_ns: i64,
     pub source_agent: String,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable, Serialize, Deserialize)]
+#[diesel(table_name = crate::schema::lanes)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct Lane {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub summary: String,
+    pub status: String,
+    pub creator: String,
+    pub parent_lane_id: Option<String>,
+    pub origin_event_id: Option<Uuid>,
+    pub origin_message_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Insertable, Serialize, Deserialize)]
+#[diesel(table_name = crate::schema::lanes)]
+pub struct NewLane {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub summary: String,
+    pub status: String,
+    pub creator: String,
+    pub parent_lane_id: Option<String>,
+    pub origin_event_id: Option<Uuid>,
+    pub origin_message_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable, Serialize, Deserialize)]

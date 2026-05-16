@@ -58,6 +58,9 @@ default-features = false
 [workspace.dependencies.mmat-db]
 path = "crates/db"
 
+[workspace.dependencies.mmat-event-stream]
+path = "crates/event-stream"
+
 [workspace.dependencies.parking_lot]
 version = "0.12"
 default-features = false

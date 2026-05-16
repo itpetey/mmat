@@ -2,13 +2,16 @@ use dioxus::{document::Link, prelude::*};
 use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
 
 use crate::{
+    api::chat::{
+        SYSTEM_LANE_ID, WorkbenchLane, archive_lane as archive_lane_api,
+        create_lane as create_lane_api, load_lanes,
+    },
     api::projects::{ProjectNavItem, create_project, list_projects},
     ui::{
         chat::ChatWorkbench,
         vendor::{
             avatar::{Avatar, AvatarImageSize},
             button::{Button, ButtonVariant},
-            collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger},
             combobox::{Combobox, ComboboxEmpty, ComboboxOption},
             dialog::{Dialog, DialogDescription, DialogTitle},
             dropdown_menu::{
@@ -18,9 +21,8 @@ use crate::{
             sidebar::{
                 Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
                 SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
-                SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarMenuSub,
-                SidebarMenuSubButton, SidebarMenuSubItem, SidebarProvider, SidebarRail,
-                SidebarSide, SidebarTrigger, SidebarVariant,
+                SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarProvider,
+                SidebarRail, SidebarSide, SidebarTrigger, SidebarVariant,
             },
             tabs::{TabContent, TabList, TabTrigger, Tabs},
         },
@@ -30,92 +32,6 @@ use crate::{
 const ADD_PROJECT_VALUE: &str = "__add_project__";
 const DX_COMPONENT_CSS: Asset = asset!("/assets/dx-components-theme.css");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
-const NAV_MAIN: &[NavMainItem] = &[
-    NavMainItem {
-        title: "Playground",
-        url: "#",
-        is_active: true,
-        items: &[
-            SubItem {
-                title: "History",
-                url: "#",
-            },
-            SubItem {
-                title: "Starred",
-                url: "#",
-            },
-            SubItem {
-                title: "Settings",
-                url: "#",
-            },
-        ],
-    },
-    NavMainItem {
-        title: "Models",
-        url: "#",
-        is_active: false,
-        items: &[
-            SubItem {
-                title: "Genesis",
-                url: "#",
-            },
-            SubItem {
-                title: "Explorer",
-                url: "#",
-            },
-            SubItem {
-                title: "Quantum",
-                url: "#",
-            },
-        ],
-    },
-    NavMainItem {
-        title: "Documentation",
-        url: "#",
-        is_active: false,
-        items: &[
-            SubItem {
-                title: "Introduction",
-                url: "#",
-            },
-            SubItem {
-                title: "Get Started",
-                url: "#",
-            },
-            SubItem {
-                title: "Tutorials",
-                url: "#",
-            },
-            SubItem {
-                title: "Changelog",
-                url: "#",
-            },
-        ],
-    },
-    NavMainItem {
-        title: "Settings",
-        url: "#",
-        is_active: false,
-        items: &[
-            SubItem {
-                title: "General",
-                url: "#",
-            },
-            SubItem {
-                title: "Team",
-                url: "#",
-            },
-            SubItem {
-                title: "Billing",
-                url: "#",
-            },
-            SubItem {
-                title: "Limits",
-                url: "#",
-            },
-        ],
-    },
-];
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 #[css_module("/src/ui/app/style.css")]
@@ -124,23 +40,13 @@ struct AppStyles;
 #[css_module("/src/ui/vendor/sidebar/style.css")]
 struct Styles;
 
-#[derive(Clone, PartialEq)]
-struct SubItem {
-    title: &'static str,
-    url: &'static str,
-}
-
-#[derive(Clone, PartialEq)]
-struct NavMainItem {
-    title: &'static str,
-    url: &'static str,
-    is_active: bool,
-    items: &'static [SubItem],
-}
-
 #[component]
 pub fn App() -> Element {
     let projects = use_resource(|| async move { list_projects().await });
+    let selected_lane_id = use_signal(|| None::<String>);
+    let selected_lane_status = use_signal(|| None::<String>);
+    let selected_project_id = use_signal(|| None::<String>);
+    let lanes_revision = use_signal(|| 0u64);
 
     rsx! {
         // Link { rel: "icon", href: FAVICON }
@@ -150,10 +56,10 @@ pub fn App() -> Element {
         SidebarProvider {
             Sidebar { side: SidebarSide::Left, variant: SidebarVariant::Sidebar, collapsible: SidebarCollapsible::Offcanvas,
                 SidebarHeader {
-                    ProjectSwitcher { projects }
+                    ProjectSwitcher { projects, selected_project_id, selected_lane_id, selected_lane_status }
                 }
                 SidebarContent {
-                    NavMain { items: NAV_MAIN }
+                    LaneNavigation { selected_project_id, selected_lane_id, selected_lane_status, lanes_revision }
                 }
                 SidebarFooter { NavUser {} }
                 SidebarRail {}
@@ -175,7 +81,7 @@ pub fn App() -> Element {
                     TabContent {
                         index: 0usize,
                         value: "chat",
-                        ChatWorkbench {}
+                        ChatWorkbench { selected_project_id, selected_lane_id, selected_lane_status, lanes_revision }
                     }
                     TabContent {
                         index: 1usize,
@@ -209,51 +115,202 @@ fn DemoIcon() -> Element {
 }
 
 #[component]
-fn NavMain(items: &'static [NavMainItem]) -> Element {
+fn LaneNavigation(
+    selected_project_id: Signal<Option<String>>,
+    mut selected_lane_id: Signal<Option<String>>,
+    mut selected_lane_status: Signal<Option<String>>,
+    lanes_revision: Signal<u64>,
+) -> Element {
+    let mut lanes = use_resource(move || async move {
+        let _revision = lanes_revision();
+        match selected_project_id() {
+            Some(project_id) => load_lanes(project_id).await,
+            None => Ok(crate::api::chat::LaneProjection {
+                active: Vec::new(),
+                archived: Vec::new(),
+                system: WorkbenchLane {
+                    id: SYSTEM_LANE_ID.to_string(),
+                    title: "System".to_string(),
+                    status: "system".to_string(),
+                    system: true,
+                },
+            }),
+        }
+    });
+    let mut title = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+
+    use_effect(move || {
+        if let Some(Ok(projection)) = &*lanes.read() {
+            if let Some(selected_lane) = selected_lane_id() {
+                let selected_status = projection
+                    .active
+                    .iter()
+                    .chain(projection.archived.iter())
+                    .chain(std::iter::once(&projection.system))
+                    .find(|lane| lane.id == selected_lane)
+                    .map(|lane| lane.status.clone());
+                selected_lane_status.set(selected_status);
+            } else if let Some(first) = projection.active.first() {
+                selected_lane_id.set(Some(first.id.clone()));
+                selected_lane_status.set(Some(first.status.clone()));
+            }
+        }
+    });
+
     rsx! {
         SidebarGroup {
-            SidebarGroupLabel { "Platform" }
+            SidebarGroupLabel { "Lanes" }
             SidebarGroupContent {
                 SidebarMenu {
-                    for item in items.iter() {
-                        Collapsible {
-                            default_open: item.is_active,
-                            as: move |attributes: Vec<Attribute>| rsx! {
-                                SidebarMenuItem { key: "{item.title}", attributes,
-                                    CollapsibleTrigger { class: Styles::dx_sidebar_collapsible_trigger,
-                                        as: move |attributes: Vec<Attribute>| rsx! {
-                                            SidebarMenuButton {
-                                                class: AppStyles::dx_sidebar_menu_disclosure_button,
-                                                tooltip: rsx! {
-                                                    {item.title}
-                                                },
-                                                attributes,
-                                                DemoIcon {}
-                                                span { {item.title} }
-                                                ChevronIcon {}
-                                            }
-                                        },
-                                    }
-                                    CollapsibleContent {
-                                        SidebarMenuSub {
-                                            for sub_item in item.items {
-                                                SidebarMenuSubItem { key: "{sub_item.title}",
-                                                    SidebarMenuSubButton {
-                                                        as: move |attributes: Vec<Attribute>| rsx! {
-                                                            a { href: sub_item.url, ..attributes,
-                                                                span { {sub_item.title} }
-                                                            }
-                                                        },
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                    match &*lanes.read_unchecked() {
+                        Some(Ok(projection)) => rsx! {
+                            for lane in projection.active.iter() {
+                                LaneButton {
+                                    key: "{lane.id}",
+                                    lane: lane.clone(),
+                                    selected: selected_lane_id().as_deref() == Some(lane.id.as_str()),
+                                    selected_lane_id,
+                                    selected_lane_status,
                                 }
+                                button {
+                                    class: AppStyles::dx_lane_archive_button,
+                                    aria_label: "Archive lane {lane.title}",
+                                    onclick: {
+                                        let lane_id = lane.id.clone();
+                                        move |_| {
+                                            let Some(project_id) = selected_project_id() else {
+                                                return;
+                                            };
+                                            let lane_id = lane_id.clone();
+                                            spawn(async move {
+                                                if archive_lane_api(project_id, lane_id.clone()).await.is_ok() {
+                                                    if selected_lane_id().as_deref() == Some(lane_id.as_str()) {
+                                                        selected_lane_id.set(None);
+                                                        selected_lane_status.set(None);
+                                                    }
+                                                    lanes.restart();
+                                                }
+                                            });
+                                        }
+                                    },
+                                    "archive"
+                                }
+                            }
+                            if projection.active.is_empty() {
+                                div { class: AppStyles::dx_lane_empty, "No active lanes" }
+                            }
+                            LaneButton {
+                                lane: projection.system.clone(),
+                                selected: selected_lane_id().as_deref() == Some(SYSTEM_LANE_ID),
+                                selected_lane_id,
+                                selected_lane_status,
+                            }
+                        },
+                        Some(Err(load_error)) => rsx! {
+                            div { class: AppStyles::dx_lane_error, "Unable to load lanes: {load_error}" }
+                        },
+                        None => rsx! {
+                            div { class: AppStyles::dx_lane_empty, "Loading lanes..." }
+                        },
+                    }
+                    SidebarMenuItem {
+                        form {
+                            class: AppStyles::dx_lane_create,
+                            onsubmit: move |event| {
+                                event.prevent_default();
+                                let lane_title = title().trim().to_string();
+                                if lane_title.is_empty() {
+                                    error.set(Some("Lane title is required.".to_string()));
+                                    return;
+                                }
+
+                                spawn(async move {
+                                    let Some(project_id) = selected_project_id() else {
+                                        error.set(Some("Select a project before creating a lane.".to_string()));
+                                        return;
+                                    };
+                                    match create_lane_api(project_id, lane_title).await {
+                                        Ok(lane) => {
+                                            selected_lane_id.set(Some(lane.id.clone()));
+                                            selected_lane_status.set(Some(lane.status));
+                                            title.set(String::new());
+                                            error.set(None);
+                                            lanes.restart();
+                                        }
+                                        Err(create_error) => error.set(Some(create_error.to_string())),
+                                    }
+                                });
                             },
+                            input {
+                                aria_label: "New lane title",
+                                placeholder: "New lane...",
+                                value: "{title}",
+                                oninput: move |event| title.set(event.value()),
+                            }
+                            button { r#type: "submit", "+" }
+                        }
+                        if let Some(error) = error() {
+                            div { class: AppStyles::dx_lane_error, "{error}" }
                         }
                     }
                 }
+            }
+        }
+        SidebarGroup {
+            SidebarGroupLabel { "Archived" }
+            SidebarGroupContent {
+                SidebarMenu {
+                    match &*lanes.read_unchecked() {
+                        Some(Ok(projection)) if !projection.archived.is_empty() => rsx! {
+                            for lane in projection.archived.iter() {
+                                LaneButton {
+                                    key: "{lane.id}",
+                                    lane: lane.clone(),
+                                    selected: selected_lane_id().as_deref() == Some(lane.id.as_str()),
+                                    selected_lane_id,
+                                    selected_lane_status,
+                                }
+                            }
+                        },
+                        Some(Ok(_)) => rsx! {
+                            div { class: AppStyles::dx_lane_empty, "No archived lanes" }
+                        },
+                        Some(Err(_)) | None => rsx! {},
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn LaneButton(
+    lane: WorkbenchLane,
+    selected: bool,
+    mut selected_lane_id: Signal<Option<String>>,
+    mut selected_lane_status: Signal<Option<String>>,
+) -> Element {
+    let class = if selected {
+        format!(
+            "{} {}",
+            AppStyles::dx_lane_button,
+            AppStyles::dx_lane_button_active
+        )
+    } else {
+        AppStyles::dx_lane_button.to_string()
+    };
+
+    rsx! {
+        SidebarMenuItem {
+            button {
+                class,
+                onclick: move |_| {
+                    selected_lane_id.set(Some(lane.id.clone()));
+                    selected_lane_status.set(Some(lane.status.clone()));
+                },
+                DemoIcon {}
+                span { {lane.title.clone()} }
             }
         }
     }
@@ -343,8 +400,12 @@ fn NavUser() -> Element {
 }
 
 #[component]
-fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) -> Element {
-    let mut active_project = use_signal(|| None::<String>);
+fn ProjectSwitcher(
+    mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>,
+    mut selected_project_id: Signal<Option<String>>,
+    mut selected_lane_id: Signal<Option<String>>,
+    mut selected_lane_status: Signal<Option<String>>,
+) -> Element {
     let mut dialog_open = use_signal(|| false);
     let mut combobox_open = use_signal(|| false);
     let mut project_label = use_signal(String::new);
@@ -354,11 +415,13 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
 
     use_effect(move || {
         if let Some(Ok(items)) = &*projects.read() {
-            let current = active_project();
+            let current = selected_project_id();
 
             if items.is_empty() {
                 if current.is_some() {
-                    active_project.set(None);
+                    selected_project_id.set(None);
+                    selected_lane_id.set(None);
+                    selected_lane_status.set(None);
                 }
 
                 return;
@@ -369,7 +432,9 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
                 .is_none_or(|id| !items.iter().any(|project| project.id == *id));
 
             if needs_selection {
-                active_project.set(Some(items[0].id.clone()));
+                selected_project_id.set(Some(items[0].id.clone()));
+                selected_lane_id.set(None);
+                selected_lane_status.set(None);
             }
         }
     });
@@ -379,15 +444,23 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
             SidebarMenuItem {
                 Combobox::<String> {
                     class: AppStyles::dx_project_combobox,
-                    value: Some(active_project.into()),
+                    value: Some(selected_project_id.into()),
                     on_open_change: move |open| combobox_open.set(open),
                     on_value_change: move |value: Option<String>| match value.as_deref() {
                         Some(ADD_PROJECT_VALUE) => {
                             create_error.set(None);
                             dialog_open.set(true);
                         }
-                        Some(id) => active_project.set(Some(id.to_string())),
-                        None => active_project.set(None),
+                        Some(id) => {
+                            selected_project_id.set(Some(id.to_string()));
+                            selected_lane_id.set(None);
+                            selected_lane_status.set(None);
+                        },
+                        None => {
+                            selected_project_id.set(None);
+                            selected_lane_id.set(None);
+                            selected_lane_status.set(None);
+                        },
                     },
                     placeholder: "Select project...",
                     aria_label: "Project",
@@ -456,7 +529,9 @@ fn ProjectSwitcher(mut projects: Resource<ServerFnResult<Vec<ProjectNavItem>>>) 
                             Ok(project) => {
                                 project_label.set(String::new());
                                 project_path.set(String::new());
-                                active_project.set(Some(project.id));
+                                selected_project_id.set(Some(project.id));
+                                selected_lane_id.set(None);
+                                selected_lane_status.set(None);
                                 dialog_open.set(false);
                                 projects.restart();
                             }

@@ -31,6 +31,9 @@ pub struct EventContext {
     pub run_id: String,
     /// Optional task boundary for events emitted during a task.
     pub task_id: Option<String>,
+    /// Optional primary conversation lane for branch-scoped UI projection.
+    #[serde(default)]
+    pub lane_id: Option<String>,
     /// Immediate causal event, if known.
     pub causation_id: Option<EventId>,
     /// Correlation identifier that groups related events across roles.
@@ -417,6 +420,8 @@ pub enum SemanticEvent {
         #[serde(default)]
         related_lane_ids: Vec<String>,
         #[serde(default)]
+        source_event_id: Option<EventId>,
+        #[serde(default)]
         source_message_id: Option<String>,
     },
     LaneArchived {
@@ -678,6 +683,7 @@ impl EventContext {
             project_id: project_id.into(),
             run_id: run_id.into(),
             task_id: None,
+            lane_id: None,
             causation_id: None,
             correlation_id: None,
         }
@@ -686,6 +692,12 @@ impl EventContext {
     /// Attaches a task boundary to the context.
     pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
         self.task_id = Some(task_id.into());
+        self
+    }
+
+    /// Attaches a primary conversation lane boundary to the context.
+    pub fn with_lane_id(mut self, lane_id: impl Into<String>) -> Self {
+        self.lane_id = Some(lane_id.into());
         self
     }
 
@@ -709,6 +721,7 @@ impl Default for EventContext {
             project_id: "default-project".to_string(),
             run_id: "default-run".to_string(),
             task_id: None,
+            lane_id: None,
             causation_id: None,
             correlation_id: None,
         }
@@ -1240,6 +1253,7 @@ impl SemanticEvent {
         purpose: impl Into<String>,
         parent_lane_id: Option<String>,
         related_lane_ids: Vec<String>,
+        source_event_id: Option<EventId>,
         source_message_id: Option<String>,
     ) -> Self {
         Self::LaneCreated {
@@ -1254,6 +1268,7 @@ impl SemanticEvent {
             purpose: purpose.into(),
             parent_lane_id,
             related_lane_ids,
+            source_event_id,
             source_message_id,
         }
     }
@@ -1439,6 +1454,90 @@ impl SemanticEvent {
             Self::ProjectListed { event_id, .. } => *event_id,
             Self::ProjectRenamed { event_id, .. } => *event_id,
             Self::ProjectDeleted { event_id, .. } => *event_id,
+        }
+    }
+
+    /// Returns the source agent that produced this event.
+    pub fn source_agent(&self) -> &RoleId {
+        match self {
+            Self::ToolExecuted { source_agent, .. }
+            | Self::ClaimMade { source_agent, .. }
+            | Self::DecisionRecorded { source_agent, .. }
+            | Self::MemoryProposed { source_agent, .. }
+            | Self::MemoryAccepted { source_agent, .. }
+            | Self::MemoryRejected { source_agent, .. }
+            | Self::MemorySuperseded { source_agent, .. }
+            | Self::EvidenceChainBroken { source_agent, .. }
+            | Self::ProcessSkipped { source_agent, .. }
+            | Self::PolicyViolationDetected { source_agent, .. }
+            | Self::TaskAssigned { source_agent, .. }
+            | Self::TaskStarted { source_agent, .. }
+            | Self::TaskCompleted { source_agent, .. }
+            | Self::TaskFailed { source_agent, .. }
+            | Self::ReviewRequested { source_agent, .. }
+            | Self::ReviewCompleted { source_agent, .. }
+            | Self::EscalationRequested { source_agent, .. }
+            | Self::HumanFeedbackRequested { source_agent, .. }
+            | Self::HumanFeedbackReceived { source_agent, .. }
+            | Self::ArtefactProduced { source_agent, .. }
+            | Self::BudgetWarning { source_agent, .. }
+            | Self::EscalationAccepted { source_agent, .. }
+            | Self::RoleStateChanged { source_agent, .. }
+            | Self::OrganisationStarted { source_agent, .. }
+            | Self::OrganisationStopped { source_agent, .. }
+            | Self::Heartbeat { source_agent, .. }
+            | Self::LaneCreated { source_agent, .. }
+            | Self::LaneArchived { source_agent, .. }
+            | Self::LanePaused { source_agent, .. }
+            | Self::ActionRequestCreated { source_agent, .. }
+            | Self::ActionRequestResolved { source_agent, .. }
+            | Self::ActionRequestCancelled { source_agent, .. }
+            | Self::ProjectCreated { source_agent, .. }
+            | Self::ProjectListed { source_agent, .. }
+            | Self::ProjectRenamed { source_agent, .. }
+            | Self::ProjectDeleted { source_agent, .. } => source_agent,
+        }
+    }
+
+    /// Returns the nanosecond timestamp attached to this event.
+    pub fn timestamp_ns(&self) -> u64 {
+        match self {
+            Self::ToolExecuted { timestamp_ns, .. }
+            | Self::ClaimMade { timestamp_ns, .. }
+            | Self::DecisionRecorded { timestamp_ns, .. }
+            | Self::MemoryProposed { timestamp_ns, .. }
+            | Self::MemoryAccepted { timestamp_ns, .. }
+            | Self::MemoryRejected { timestamp_ns, .. }
+            | Self::MemorySuperseded { timestamp_ns, .. }
+            | Self::EvidenceChainBroken { timestamp_ns, .. }
+            | Self::ProcessSkipped { timestamp_ns, .. }
+            | Self::PolicyViolationDetected { timestamp_ns, .. }
+            | Self::TaskAssigned { timestamp_ns, .. }
+            | Self::TaskStarted { timestamp_ns, .. }
+            | Self::TaskCompleted { timestamp_ns, .. }
+            | Self::TaskFailed { timestamp_ns, .. }
+            | Self::ReviewRequested { timestamp_ns, .. }
+            | Self::ReviewCompleted { timestamp_ns, .. }
+            | Self::EscalationRequested { timestamp_ns, .. }
+            | Self::HumanFeedbackRequested { timestamp_ns, .. }
+            | Self::HumanFeedbackReceived { timestamp_ns, .. }
+            | Self::ArtefactProduced { timestamp_ns, .. }
+            | Self::BudgetWarning { timestamp_ns, .. }
+            | Self::EscalationAccepted { timestamp_ns, .. }
+            | Self::RoleStateChanged { timestamp_ns, .. }
+            | Self::OrganisationStarted { timestamp_ns, .. }
+            | Self::OrganisationStopped { timestamp_ns, .. }
+            | Self::Heartbeat { timestamp_ns, .. }
+            | Self::LaneCreated { timestamp_ns, .. }
+            | Self::LaneArchived { timestamp_ns, .. }
+            | Self::LanePaused { timestamp_ns, .. }
+            | Self::ActionRequestCreated { timestamp_ns, .. }
+            | Self::ActionRequestResolved { timestamp_ns, .. }
+            | Self::ActionRequestCancelled { timestamp_ns, .. }
+            | Self::ProjectCreated { timestamp_ns, .. }
+            | Self::ProjectListed { timestamp_ns, .. }
+            | Self::ProjectRenamed { timestamp_ns, .. }
+            | Self::ProjectDeleted { timestamp_ns, .. } => *timestamp_ns,
         }
     }
 
@@ -2026,6 +2125,7 @@ impl SemanticEvent {
                 purpose,
                 parent_lane_id,
                 related_lane_ids,
+                source_event_id,
                 source_message_id,
                 ..
             } => Self::LaneCreated {
@@ -2040,6 +2140,7 @@ impl SemanticEvent {
                 purpose,
                 parent_lane_id,
                 related_lane_ids,
+                source_event_id,
                 source_message_id,
             },
             Self::LaneArchived {
@@ -2345,6 +2446,41 @@ mod tests {
                 assert_eq!(host_work_dir, "/workspace");
             }
             other => panic!("expected ProjectCreated, got {}", other.variant_name()),
+        }
+    }
+
+    #[test]
+    fn lane_created_records_branch_provenance() {
+        let source_event_id = EventId::new();
+        let event = SemanticEvent::new_lane_created(
+            RoleId::new("tool:create_lane"),
+            "lane-child",
+            "Child lane",
+            "conversation",
+            "",
+            "Explore a branch",
+            Some("lane-parent".to_string()),
+            vec!["lane-related".to_string()],
+            Some(source_event_id),
+            Some("message-1".to_string()),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let back: SemanticEvent = serde_json::from_str(&json).unwrap();
+
+        match back {
+            SemanticEvent::LaneCreated {
+                parent_lane_id,
+                related_lane_ids,
+                source_event_id: actual_source_event_id,
+                source_message_id,
+                ..
+            } => {
+                assert_eq!(parent_lane_id.as_deref(), Some("lane-parent"));
+                assert_eq!(related_lane_ids, vec!["lane-related"]);
+                assert_eq!(actual_source_event_id, Some(source_event_id));
+                assert_eq!(source_message_id.as_deref(), Some("message-1"));
+            }
+            other => panic!("expected LaneCreated, got {}", other.variant_name()),
         }
     }
 }
