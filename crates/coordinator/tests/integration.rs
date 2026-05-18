@@ -308,7 +308,6 @@ fn test_config() -> Option<OrganisationConfig> {
         database_url: std::env::var("MMAT_DB_URL").ok()?,
         host_work_dir: None,
         llm_api_key: None,
-        llm_base_url: None,
         llm_model: None,
         llm_timeout: Duration::from_secs(60),
     })
@@ -934,12 +933,10 @@ data: [DONE]
     let handle = WorkbenchRuntimeHandle::standalone(
         pool.clone(),
         16,
-        Some(WorkbenchAssistantConfig::new(
-            "sk-test",
-            Some(server.uri()),
-            "test-model",
-            Duration::from_secs(5),
-        )),
+        Some(
+            WorkbenchAssistantConfig::new("sk-test", "test-model", Duration::from_secs(5))
+                .with_base_url(server.uri()),
+        ),
     );
     let mut stream = handle
         .start_assistant_stream(AssistantStreamRequest {

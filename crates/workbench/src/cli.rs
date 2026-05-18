@@ -56,15 +56,11 @@ struct Cli {
     )]
     qdrant_vector_dimensions: u64,
 
-    /// LLM API key for runtime-backed assistant streaming
+    /// LLM API key for role-level LLM and workbench assistant streaming
     #[arg(long = "llm-key", env = "MMAT_LLM_API_KEY")]
     llm_api_key: Option<String>,
 
-    /// OpenAI-compatible LLM base URL
-    #[arg(long = "llm-base-url", env = "MMAT_LLM_BASE_URL")]
-    llm_base_url: Option<String>,
-
-    /// LLM model for runtime-backed assistant streaming
+    /// LLM model identifier
     #[arg(long = "llm-model", env = "MMAT_LLM_MODEL")]
     llm_model: Option<String>,
 
@@ -76,22 +72,8 @@ struct Cli {
     )]
     llm_timeout_secs: u64,
 
-    /// OpenCode API key
-    #[arg(
-        long = "key",
-        env = "MMAT_OPENCODE_KEY",
-        required_unless_present = "config",
-        requires_all = ["project_root"],
-    )]
-    opencode_zen_api_key: Option<String>,
-
     /// Directory to store project repositories
-    #[arg(
-        long = "proj",
-        env = "MMAT_PROJECT_ROOT",
-        required_unless_present = "config",
-        requires_all = ["opencode_zen_api_key"],
-    )]
+    #[arg(long = "proj", env = "MMAT_PROJECT_ROOT")]
     project_root: Option<PathBuf>,
 
     /// Increase log verbosity (repeat for more: -v, -vv, -vvv)
@@ -103,167 +85,180 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-#[allow(dead_code)]
+// ── Config-file sections ───────────────────────────────────────────
+
 #[derive(Debug, Clone, Deserialize)]
 struct ConfigFile {
+    mmat: Option<MmatSection>,
+    postgres: Option<PostgresSection>,
+    qdrant: Option<QdrantSection>,
+    llm: Option<LlmSection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MmatSection {
     bind_addr: Option<String>,
-    pg_dsn: Option<String>,
-    qdrant_url: Option<String>,
-    qdrant_api_key: Option<String>,
-    qdrant_collection: Option<String>,
-    qdrant_vector_dimension: Option<u64>,
-    llm_api_key: Option<String>,
-    llm_base_url: Option<String>,
-    llm_model: Option<String>,
-    llm_timeout_secs: Option<u64>,
-    llm: Option<LlmConfigFile>,
-    opencode_zen_api_key: Option<String>,
     project_root: Option<PathBuf>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-struct LlmConfigFile {
+struct PostgresSection {
+    dsn: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct QdrantSection {
+    url: Option<String>,
     api_key: Option<String>,
-    base_url: Option<String>,
+    collection: Option<String>,
+    vector_dimension: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LlmSection {
+    api_key: Option<String>,
     model: Option<String>,
     timeout_secs: Option<u64>,
 }
 
+// ── Resolved config (hierarchical) ──────────────────────────────────
+
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct Config {
-    pub bind_addr: String,
-    pub pg_dsn: String,
-    pub qdrant_url: String,
-    pub qdrant_api_key: Option<String>,
-    pub qdrant_collection: String,
-    pub qdrant_vector_dimension: u64,
-    pub llm_api_key: Option<String>,
-    pub llm_base_url: Option<String>,
-    pub llm_model: Option<String>,
-    pub llm_timeout_secs: u64,
-    pub opencode_zen_api_key: String,
-    pub project_root: PathBuf,
+    pub mmat: MmatConfig,
+    pub postgres: PostgresConfig,
+    pub qdrant: QdrantConfig,
+    pub llm: LlmConfig,
     pub verbosity: u8,
 }
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct MmatConfig {
+    pub bind_addr: String,
+    pub project_root: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct PostgresConfig {
+    pub dsn: String,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct QdrantConfig {
+    pub url: String,
+    pub api_key: Option<String>,
+    pub collection: String,
+    pub vector_dimension: u64,
+}
+
+#[derive(Debug)]
+pub struct LlmConfig {
+    pub api_key: String,
+    pub model: String,
+    pub timeout_secs: u64,
+}
+
+// ── Entry point ────────────────────────────────────────────────────
 
 #[allow(dead_code)]
 pub fn load_config() -> Result<Config> {
     let cli = Cli::parse();
 
-    let cf = match &cli.config {
-        Some(path) => Some(toml::from_str::<ConfigFile>(&std::fs::read_to_string(
-            path,
-        )?)?),
+    let cf: Option<ConfigFile> = match &cli.config {
+        Some(path) => Some(toml::from_str(&std::fs::read_to_string(path)?)?),
         None => None,
     };
 
     let config = resolve_config(cli, cf)?;
 
-    let _ = PG_DSN.set(config.pg_dsn.clone());
-    let _ = LLM_CONFIG.set(assistant_config_from_values(
-        config.llm_api_key.clone(),
-        config.llm_base_url.clone(),
-        config.llm_model.clone(),
-        config.llm_timeout_secs,
-    ));
+    let _ = PG_DSN.set(config.postgres.dsn.clone());
+    let _ = LLM_CONFIG.set(Some(mmat_coordinator::WorkbenchAssistantConfig::new(
+        config.llm.api_key.clone(),
+        config.llm.model.clone(),
+        std::time::Duration::from_secs(config.llm.timeout_secs),
+    )));
 
     Ok(config)
 }
 
 fn resolve_config(cli: Cli, cf: Option<ConfigFile>) -> Result<Config> {
-    let opencode_zen_api_key = cli
-        .opencode_zen_api_key
-        .or_else(|| cf.as_ref().and_then(|c| c.opencode_zen_api_key.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "opencode_zen_api_key must be provided via --key/MMAT_OPENCODE_KEY or config file"
-            )
-        })?;
-
-    let project_root = cli
-        .project_root
-        .or_else(|| cf.as_ref().and_then(|c| c.project_root.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "project_root must be provided via --proj/MMAT_PROJECT_ROOT or config file"
-            )
-        })?;
-
-    let config = Config {
-        bind_addr: cf
-            .as_ref()
-            .and_then(|c| c.bind_addr.clone())
-            .unwrap_or(cli.bind_addr),
-        pg_dsn: cf
-            .as_ref()
-            .and_then(|c| c.pg_dsn.clone())
-            .unwrap_or(cli.pg_dsn),
-        qdrant_url: cf
-            .as_ref()
-            .and_then(|c| c.qdrant_url.clone())
-            .unwrap_or(cli.qdrant_url),
-        qdrant_api_key: cf
-            .as_ref()
-            .and_then(|c| c.qdrant_api_key.clone())
-            .or(cli.qdrant_api_key),
-        qdrant_collection: cf
-            .as_ref()
-            .and_then(|c| c.qdrant_collection.clone())
-            .unwrap_or(cli.qdrant_collection),
-        qdrant_vector_dimension: cf
-            .as_ref()
-            .and_then(|c| c.qdrant_vector_dimension)
-            .unwrap_or(cli.qdrant_vector_dimensions),
-        llm_api_key: cf
-            .as_ref()
-            .and_then(config_file_llm_api_key)
-            .or(cli.llm_api_key),
-        llm_base_url: cf
-            .as_ref()
-            .and_then(config_file_llm_base_url)
-            .or(cli.llm_base_url),
-        llm_model: cf
-            .as_ref()
-            .and_then(config_file_llm_model)
-            .or(cli.llm_model),
-        llm_timeout_secs: cf
-            .as_ref()
-            .and_then(config_file_llm_timeout_secs)
-            .unwrap_or(cli.llm_timeout_secs),
-        opencode_zen_api_key,
-        project_root,
-        verbosity: cli.verbosity,
+    let mmat = {
+        let s = cf.as_ref().and_then(|c| c.mmat.as_ref());
+        let bind_addr = s.and_then(|s| s.bind_addr.clone()).unwrap_or(cli.bind_addr);
+        let project_root = cli
+            .project_root
+            .or_else(|| s.and_then(|s| s.project_root.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mmat.project_root must be provided via --proj/MMAT_PROJECT_ROOT or [mmat] section in config file"
+                )
+            })?;
+        MmatConfig {
+            bind_addr,
+            project_root,
+        }
     };
 
-    Ok(config)
-}
+    let postgres = {
+        let dsn = cf
+            .as_ref()
+            .and_then(|c| c.postgres.as_ref())
+            .and_then(|s| s.dsn.clone())
+            .unwrap_or(cli.pg_dsn);
+        PostgresConfig { dsn }
+    };
 
-fn config_file_llm_api_key(config: &ConfigFile) -> Option<String> {
-    config
-        .llm_api_key
-        .clone()
-        .or_else(|| config.llm.as_ref().and_then(|llm| llm.api_key.clone()))
-}
+    let qdrant = {
+        let s = cf.as_ref().and_then(|c| c.qdrant.as_ref());
+        QdrantConfig {
+            url: s.and_then(|s| s.url.clone()).unwrap_or(cli.qdrant_url),
+            api_key: s.and_then(|s| s.api_key.clone()).or(cli.qdrant_api_key),
+            collection: s
+                .and_then(|s| s.collection.clone())
+                .unwrap_or(cli.qdrant_collection),
+            vector_dimension: s
+                .and_then(|s| s.vector_dimension)
+                .unwrap_or(cli.qdrant_vector_dimensions),
+        }
+    };
 
-fn config_file_llm_base_url(config: &ConfigFile) -> Option<String> {
-    config
-        .llm_base_url
-        .clone()
-        .or_else(|| config.llm.as_ref().and_then(|llm| llm.base_url.clone()))
-}
+    let llm = {
+        let s = cf.as_ref().and_then(|c| c.llm.as_ref());
+        let api_key = cli
+            .llm_api_key
+            .or_else(|| s.and_then(|s| s.api_key.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "llm.api_key must be provided via --llm-key/MMAT_LLM_API_KEY or [llm] section in config file"
+                )
+            })?;
+        let model = cli
+            .llm_model
+            .or_else(|| s.and_then(|s| s.model.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "llm.model must be provided via --llm-model/MMAT_LLM_MODEL or [llm] section in config file"
+                )
+            })?;
+        LlmConfig {
+            api_key,
+            model,
+            timeout_secs: s
+                .and_then(|s| s.timeout_secs)
+                .unwrap_or(cli.llm_timeout_secs),
+        }
+    };
 
-fn config_file_llm_model(config: &ConfigFile) -> Option<String> {
-    config
-        .llm_model
-        .clone()
-        .or_else(|| config.llm.as_ref().and_then(|llm| llm.model.clone()))
-}
-
-fn config_file_llm_timeout_secs(config: &ConfigFile) -> Option<u64> {
-    config
-        .llm_timeout_secs
-        .or_else(|| config.llm.as_ref().and_then(|llm| llm.timeout_secs))
+    Ok(Config {
+        mmat,
+        postgres,
+        qdrant,
+        llm,
+        verbosity: cli.verbosity,
+    })
 }
 
 pub fn pg_dsn() -> String {
@@ -276,30 +271,17 @@ pub fn pg_dsn() -> String {
 
 pub fn llm_config() -> Option<mmat_coordinator::WorkbenchAssistantConfig> {
     LLM_CONFIG.get().cloned().flatten().or_else(|| {
-        assistant_config_from_values(
-            std::env::var("MMAT_LLM_API_KEY").ok(),
-            std::env::var("MMAT_LLM_BASE_URL").ok(),
-            std::env::var("MMAT_LLM_MODEL").ok(),
-            std::env::var("MMAT_LLM_TIMEOUT_SECS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(60),
-        )
+        Some(mmat_coordinator::WorkbenchAssistantConfig::new(
+            std::env::var("MMAT_LLM_API_KEY").ok()?,
+            std::env::var("MMAT_LLM_MODEL").ok()?,
+            std::time::Duration::from_secs(
+                std::env::var("MMAT_LLM_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(60),
+            ),
+        ))
     })
-}
-
-fn assistant_config_from_values(
-    api_key: Option<String>,
-    base_url: Option<String>,
-    model: Option<String>,
-    timeout_secs: u64,
-) -> Option<mmat_coordinator::WorkbenchAssistantConfig> {
-    Some(mmat_coordinator::WorkbenchAssistantConfig::new(
-        api_key?,
-        base_url,
-        model?,
-        std::time::Duration::from_secs(timeout_secs),
-    ))
 }
 
 #[cfg(test)]
@@ -317,10 +299,8 @@ mod tests {
             qdrant_collection: "mmat".to_string(),
             qdrant_vector_dimensions: 64,
             llm_api_key: None,
-            llm_base_url: None,
             llm_model: None,
             llm_timeout_secs: 60,
-            opencode_zen_api_key: None,
             project_root: None,
             verbosity: 0,
             config: Some(PathBuf::from("mmat.toml")),
@@ -328,54 +308,109 @@ mod tests {
     }
 
     #[test]
-    fn resolves_nested_llm_config_table() {
-        let config_file = toml::from_str::<ConfigFile>(
-            r#"
-opencode_zen_api_key = "sk-opencode"
-project_root = "/tmp/projects"
-
-[llm]
-api_key = "sk-llm"
-base_url = "https://llm.example/v1"
-model = "test-model"
-timeout_secs = 45
-"#,
-        )
-        .unwrap();
-
-        let config = resolve_config(cli(), Some(config_file)).unwrap();
-
-        assert_eq!(config.llm_api_key.as_deref(), Some("sk-llm"));
-        assert_eq!(
-            config.llm_base_url.as_deref(),
-            Some("https://llm.example/v1")
+    fn errors_on_missing_required_fields() {
+        // project_root is checked first, so that is the error we see.
+        let result = resolve_config(cli(), None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("mmat.project_root")
         );
-        assert_eq!(config.llm_model.as_deref(), Some("test-model"));
-        assert_eq!(config.llm_timeout_secs, 45);
+
+        // When project_root is provided but LLM is missing, error shifts to LLM.
+        let mut with_proj = cli();
+        with_proj.project_root = Some(PathBuf::from("/tmp/projects"));
+        let result = resolve_config(with_proj, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("llm.api_key"));
     }
 
     #[test]
-    fn resolves_flat_llm_config_keys() {
+    fn full_hierarchical_config() {
         let config_file = toml::from_str::<ConfigFile>(
             r#"
-opencode_zen_api_key = "sk-opencode"
-project_root = "/tmp/projects"
-llm_api_key = "sk-llm"
-llm_base_url = "https://llm.example/v1"
-llm_model = "test-model"
-llm_timeout_secs = 45
+[mmat]
+bind_addr = "0.0.0.0:9090"
+project_root = "/data/projects"
+
+[postgres]
+dsn = "postgres://user:pass@host/db"
+
+[qdrant]
+url = "https://qdrant.example:6334"
+api_key = "qd-secret"
+collection = "my-collection"
+vector_dimension = 128
+
+[llm]
+api_key = "sk-llm"
+model = "gpt-4o"
+timeout_secs = 120
 "#,
         )
         .unwrap();
 
-        let config = resolve_config(cli(), Some(config_file)).unwrap();
+        let cfg = resolve_config(cli(), Some(config_file)).unwrap();
 
-        assert_eq!(config.llm_api_key.as_deref(), Some("sk-llm"));
-        assert_eq!(
-            config.llm_base_url.as_deref(),
-            Some("https://llm.example/v1")
-        );
-        assert_eq!(config.llm_model.as_deref(), Some("test-model"));
-        assert_eq!(config.llm_timeout_secs, 45);
+        assert_eq!(cfg.mmat.bind_addr, "0.0.0.0:9090");
+        assert_eq!(cfg.mmat.project_root, PathBuf::from("/data/projects"));
+        assert_eq!(cfg.postgres.dsn, "postgres://user:pass@host/db");
+        assert_eq!(cfg.qdrant.url, "https://qdrant.example:6334");
+        assert_eq!(cfg.qdrant.api_key.as_deref(), Some("qd-secret"));
+        assert_eq!(cfg.qdrant.collection, "my-collection");
+        assert_eq!(cfg.qdrant.vector_dimension, 128);
+        assert_eq!(cfg.llm.api_key, "sk-llm");
+        assert_eq!(cfg.llm.model, "gpt-4o");
+        assert_eq!(cfg.llm.timeout_secs, 120);
+    }
+
+    #[test]
+    fn cli_llm_values_override_config_file() {
+        let mut my_cli = cli();
+        my_cli.project_root = Some(PathBuf::from("/cli/projects"));
+        my_cli.llm_api_key = Some("cli-key".to_string());
+        my_cli.llm_model = Some("cli-model".to_string());
+
+        let config_file = toml::from_str::<ConfigFile>(
+            r#"
+[mmat]
+project_root = "/file/projects"
+
+[llm]
+api_key = "file-key"
+model = "file-model"
+"#,
+        )
+        .unwrap();
+
+        let cfg = resolve_config(my_cli, Some(config_file)).unwrap();
+        assert_eq!(cfg.mmat.project_root, PathBuf::from("/cli/projects"));
+        assert_eq!(cfg.llm.api_key, "cli-key");
+        assert_eq!(cfg.llm.model, "cli-model");
+    }
+
+    #[test]
+    fn minimal_config_provides_defaults() {
+        let config_file = toml::from_str::<ConfigFile>(
+            r#"
+[mmat]
+project_root = "/tmp/projects"
+
+[llm]
+api_key = "sk-test"
+model = "test-model"
+"#,
+        )
+        .unwrap();
+
+        let cfg = resolve_config(cli(), Some(config_file)).unwrap();
+        assert_eq!(cfg.mmat.bind_addr, "127.0.0.1:8080");
+        assert_eq!(cfg.postgres.dsn, DEFAULT_PG_DSN);
+        assert_eq!(cfg.qdrant.url, "http://localhost:6334");
+        assert_eq!(cfg.qdrant.collection, "mmat");
+        assert_eq!(cfg.qdrant.vector_dimension, 64);
+        assert_eq!(cfg.llm.timeout_secs, 60);
     }
 }

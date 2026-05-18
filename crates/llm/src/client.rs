@@ -18,6 +18,9 @@ pub trait LlmClient: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
 }
 
+/// Default base URL for OpenAI-compatible chat completions.
+pub const DEFAULT_CHAT_BASE_URL: &str = "https://api.openai.com/v1";
+
 /// Configuration for connecting to an OpenAI-compatible API.
 #[derive(Clone, Debug)]
 pub struct OpenAiConfig {
@@ -72,14 +75,14 @@ impl OpenAiConfigBuilder {
 
     /// Consume the builder and produce an [`OpenAiConfig`].
     ///
-    /// Defaults to `https://api.openai.com/v1` for the base URL and 60 seconds
+    /// Defaults to [`DEFAULT_CHAT_BASE_URL`] for the base URL and 60 seconds
     /// for the timeout if not set.
     pub fn build(self) -> OpenAiConfig {
         OpenAiConfig {
             api_key: self.api_key.unwrap_or_default(),
             base_url: self
                 .base_url
-                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+                .unwrap_or_else(|| DEFAULT_CHAT_BASE_URL.into()),
             timeout: self.timeout.unwrap_or_else(|| Duration::from_secs(60)),
         }
     }

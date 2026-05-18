@@ -9,7 +9,7 @@ use mmat_event_stream::{
     event_store::EventStore,
 };
 use mmat_llm::{
-    client::{OpenAiClient, OpenAiConfig},
+    client::{DEFAULT_CHAT_BASE_URL, OpenAiClient, OpenAiConfig},
     message::{CompletionRequest, Message},
 };
 use mmat_memory::{artefact_store::ArtefactStore, store::MemoryStore};
@@ -43,8 +43,6 @@ pub struct OrganisationConfig {
     pub host_work_dir: Option<PathBuf>,
     /// Optional assistant LLM API key for runtime-backed workbench streaming.
     pub llm_api_key: Option<String>,
-    /// OpenAI-compatible base URL for assistant streaming.
-    pub llm_base_url: Option<String>,
     /// Model used for assistant streaming.
     pub llm_model: Option<String>,
     /// Timeout for assistant streaming requests.
@@ -52,6 +50,9 @@ pub struct OrganisationConfig {
 }
 
 /// Configuration for runtime-backed workbench assistant streaming.
+///
+/// Base URL is not user-configurable; it defaults to [`DEFAULT_CHAT_BASE_URL`]
+/// and is set via [`with_base_url`](Self::with_base_url) only for tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkbenchAssistantConfig {
     pub api_key: String,
@@ -114,7 +115,6 @@ impl OrganisationConfig {
             database_url: database_url.into(),
             host_work_dir: None,
             llm_api_key: None,
-            llm_base_url: None,
             llm_model: None,
             llm_timeout: Duration::from_secs(60),
         }
@@ -124,7 +124,6 @@ impl OrganisationConfig {
     pub fn workbench_assistant_config(&self) -> Option<WorkbenchAssistantConfig> {
         Some(WorkbenchAssistantConfig::new(
             self.llm_api_key.clone()?,
-            self.llm_base_url.clone(),
             self.llm_model.clone()?,
             self.llm_timeout,
         ))
@@ -597,19 +596,22 @@ impl WorkbenchRuntimeHandle {
 }
 
 impl WorkbenchAssistantConfig {
-    /// Builds assistant configuration from explicit values, applying runtime defaults.
-    pub fn new(
-        api_key: impl Into<String>,
-        base_url: Option<String>,
-        model: impl Into<String>,
-        timeout: Duration,
-    ) -> Self {
+    /// Builds assistant configuration from explicit values.
+    ///
+    /// Base URL defaults to [`DEFAULT_CHAT_BASE_URL`].
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>, timeout: Duration) -> Self {
         Self {
             api_key: api_key.into(),
-            base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            base_url: DEFAULT_CHAT_BASE_URL.to_string(),
             model: model.into(),
             timeout,
         }
+    }
+
+    /// Overrides the base URL (used in integration tests against a mock server).
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
     }
 }
 

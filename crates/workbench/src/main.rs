@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = if dioxus::cli_config::is_cli_enabled() {
         dioxus::cli_config::fullstack_address_or_localhost().to_string()
     } else {
-        cfg.bind_addr
+        cfg.mmat.bind_addr
     };
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     axum::serve(listener, router).await?;
