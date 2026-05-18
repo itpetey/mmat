@@ -590,7 +590,7 @@ mod tests {
             .source_agent(RoleId::new("user"))
             .build()
             .unwrap();
-        store.insert(&memory).unwrap();
+        let memory = store.insert(&memory).unwrap();
         let before = store
             .get_by_id(memory.id)
             .unwrap()

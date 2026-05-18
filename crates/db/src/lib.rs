@@ -1,4 +1,4 @@
-use diesel::{QueryResult, prelude::*};
+use diesel::{QueryResult, prelude::*, sql_types};
 use diesel_async::{
     AsyncConnection, RunQueryDsl, SimpleAsyncConnection,
     pooled_connection::{AsyncDieselConnectionManager, PoolError},
@@ -38,6 +38,9 @@ pub enum DbError {
 
     #[error("transaction error: {0}")]
     Transaction(String),
+
+    #[error("duplicate event id: {0}")]
+    DuplicateEventId(EventId),
 }
 
 impl From<PoolError> for DbError {
@@ -249,8 +252,14 @@ pub async fn append_event(
     connection: &mut AsyncPgConnection,
     event: &SemanticEvent,
 ) -> Result<Event> {
+    if row_for_event_id(connection, event.event_id())
+        .await?
+        .is_some()
+    {
+        return Err(DbError::DuplicateEventId(event.event_id()));
+    }
+
     let row = NewEvent {
-        id: event.event_id().0,
         variant: event.variant_name().to_string(),
         payload: serde_json::to_value(event)?,
         timestamp_ns: event.timestamp_ns() as i64,
@@ -317,27 +326,36 @@ pub async fn row_for_event_id(
     connection: &mut AsyncPgConnection,
     event_id: EventId,
 ) -> QueryResult<Option<i64>> {
-    use crate::schema::events::dsl::{events, id, rowid};
+    #[derive(QueryableByName)]
+    struct EventRowId {
+        #[diesel(sql_type = sql_types::BigInt)]
+        rowid: i64,
+    }
 
-    events
-        .filter(id.eq(event_id.0))
-        .select(rowid)
-        .first::<i64>(connection)
+    diesel::sql_query("SELECT rowid FROM events WHERE payload->>'event_id' = $1 LIMIT 1")
+        .bind::<sql_types::Text, _>(event_id.to_string())
+        .get_result::<EventRowId>(connection)
         .await
         .optional()
+        .map(|row| row.map(|row| row.rowid))
 }
 
 pub async fn get_event_by_id(
     connection: &mut AsyncPgConnection,
     event_id: EventId,
 ) -> Result<Option<SemanticEvent>> {
-    use crate::schema::events::dsl::{events, id};
+    #[derive(QueryableByName)]
+    struct EventPayload {
+        #[diesel(sql_type = sql_types::Jsonb)]
+        payload: serde_json::Value,
+    }
 
-    let row = events
-        .filter(id.eq(event_id.0))
-        .first::<Event>(connection)
-        .await
-        .optional()?;
+    let row =
+        diesel::sql_query("SELECT payload FROM events WHERE payload->>'event_id' = $1 LIMIT 1")
+            .bind::<sql_types::Text, _>(event_id.to_string())
+            .get_result::<EventPayload>(connection)
+            .await
+            .optional()?;
 
     row.map(|event| serde_json::from_value(event.payload).map_err(DbError::from))
         .transpose()

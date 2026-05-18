@@ -41,7 +41,6 @@ impl PgMemoryStore {
 
     fn memory_to_new_memory(&self, memory: &Memory) -> Result<NewMemory> {
         Ok(NewMemory {
-            id: memory.id.0,
             memory_type: memory.memory_type.discriminant_str().to_string(),
             content: memory.content.clone(),
             scope: memory.scope.discriminant_str().to_string(),
@@ -76,7 +75,7 @@ impl PgMemoryStore {
         .map_err(|e| crate::error::Error::Store(e.to_string()))
     }
 
-    fn insert(&self, memory: &Memory) -> Result<()> {
+    fn insert(&self, memory: &Memory) -> Result<Memory> {
         let new_memory = self.memory_to_new_memory(memory)?;
         let pool = self.pool.clone();
 
@@ -84,10 +83,10 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            mmat_db::insert_memory(&mut conn, &new_memory)
+            let row = mmat_db::insert_memory(&mut conn, &new_memory)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            Ok(())
+            Self::db_memory_to_domain(row)
         })
     }
 
@@ -302,7 +301,7 @@ impl PgMemoryStore {
         &self,
         memory: &Memory,
         qdrant: &dyn VectorMemoryBackend,
-    ) -> Result<()> {
+    ) -> Result<Memory> {
         let new_memory = self.memory_to_new_memory(memory)?;
 
         let mut conn =
@@ -314,15 +313,15 @@ impl PgMemoryStore {
             .await
             .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
 
-        if mmat_db::insert_memory(&mut conn, &new_memory)
-            .await
-            .is_err()
-        {
-            let _ = mmat_db::rollback_transaction(&mut conn).await;
-            return Err(crate::error::Error::Store(
-                "failed to insert memory".to_string(),
-            ));
-        }
+        let inserted = match mmat_db::insert_memory(&mut conn, &new_memory).await {
+            Ok(row) => Self::db_memory_to_domain(row)?,
+            Err(_) => {
+                let _ = mmat_db::rollback_transaction(&mut conn).await;
+                return Err(crate::error::Error::Store(
+                    "failed to insert memory".to_string(),
+                ));
+            }
+        };
 
         if let Some(ref embedding) = memory.embedding {
             let mut payload = std::collections::HashMap::new();
@@ -333,7 +332,7 @@ impl PgMemoryStore {
             payload.insert("scope".to_string(), memory.scope.discriminant_str().into());
             payload.insert("content".to_string(), memory.content.clone().into());
 
-            if let Err(e) = qdrant.upsert(memory.id, embedding.clone(), payload).await {
+            if let Err(e) = qdrant.upsert(inserted.id, embedding.clone(), payload).await {
                 let _ = mmat_db::rollback_transaction(&mut conn).await;
                 return Err(e);
             }
@@ -342,7 +341,7 @@ impl PgMemoryStore {
         mmat_db::commit_transaction(&mut conn)
             .await
             .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-        Ok(())
+        Ok(inserted)
     }
 
     async fn search_similar(
@@ -394,7 +393,7 @@ impl MemoryStore {
         }
     }
 
-    pub fn insert(&self, memory: &Memory) -> Result<()> {
+    pub fn insert(&self, memory: &Memory) -> Result<Memory> {
         self.inner.insert(memory)
     }
 
@@ -438,7 +437,7 @@ impl MemoryStore {
         &self,
         memory: &Memory,
         qdrant: &dyn VectorMemoryBackend,
-    ) -> Result<()> {
+    ) -> Result<Memory> {
         self.inner.insert_with_embedding(memory, qdrant).await
     }
 
@@ -601,7 +600,7 @@ pub(crate) mod tests {
         {
             let store = MemoryStore::new_with_pool(pool.clone());
             let memory = test_memory();
-            store.insert(&memory).unwrap();
+            let memory = store.insert(&memory).unwrap();
 
             let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
             assert_eq!(retrieved.id, memory.id);
@@ -651,9 +650,9 @@ pub(crate) mod tests {
                 .build()
                 .unwrap();
 
-            store.insert(&a).unwrap();
-            store.insert(&b).unwrap();
-            store.insert(&c).unwrap();
+            let a = store.insert(&a).unwrap();
+            let b = store.insert(&b).unwrap();
+            let c = store.insert(&c).unwrap();
 
             store.supersede(a.id, b.id).unwrap();
             store.supersede(b.id, c.id).unwrap();
@@ -677,9 +676,9 @@ pub(crate) mod tests {
                 .build()
                 .unwrap();
 
-            store.insert(&memory).unwrap();
+            let memory = store.insert(&memory).unwrap();
 
-            let bad_id = MemoryId(Uuid::new_v4());
+            let bad_id = MemoryId(Uuid::nil());
             let err = store.supersede(memory.id, bad_id).unwrap_err();
             assert!(err.to_string().contains("missing memory"));
 

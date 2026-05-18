@@ -220,7 +220,7 @@ async fn integration_contradiction_higher_authority() {
         .build()
         .unwrap();
 
-    store.insert(&old_memory).unwrap();
+    let old_memory = store.insert(&old_memory).unwrap();
 
     let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_secs(3600));
     let mut accepted_rx = bus.subscribe(&[EventType::MemoryAccepted]);
@@ -277,7 +277,7 @@ async fn integration_decay_scan_supersedes_stale() {
         .build()
         .unwrap();
 
-    store.insert(&stale_memory).unwrap();
+    let stale_memory = store.insert(&stale_memory).unwrap();
     let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_millis(25));
     let mut superseded_rx = bus.subscribe(&[EventType::MemorySuperseded]);
     let handle = tokio::spawn({
@@ -357,7 +357,7 @@ async fn integration_memory_lifecycle() {
         .build()
         .unwrap();
 
-    store.insert(&memory).unwrap();
+    let memory = store.insert(&memory).unwrap();
 
     let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
     assert_eq!(retrieved.content, memory.content);
@@ -382,7 +382,7 @@ async fn integration_near_duplicate_suppression() {
         .source_agent(RoleId::new("user"))
         .build()
         .unwrap();
-    store.insert(&memory).unwrap();
+    let memory = store.insert(&memory).unwrap();
     qdrant.results.lock().push((memory.id, 0.99));
     let before = store
         .get_by_id(memory.id)
@@ -476,7 +476,7 @@ async fn integration_provenance_trace() {
         .build()
         .unwrap();
 
-    store.insert(&memory).unwrap();
+    let memory = store.insert(&memory).unwrap();
 
     let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
     assert_eq!(retrieved.evidence_refs.len(), 1);
@@ -492,7 +492,7 @@ async fn postgres_artefact_store_round_trip_and_transactional_event() {
         return;
     };
 
-    let store = ArtefactStore::new_postgres(&database_url).unwrap();
+    let store = ArtefactStore::connect(&database_url).await.unwrap();
     let bus = EventBus::new(16);
     let mut artefact_rx = bus.subscribe(&[EventType::ArtefactProduced]);
     let payload = r#"{"summary":"ok"}"#;
@@ -535,6 +535,7 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
         .source_agent(RoleId::new("user"))
         .build()
         .unwrap();
+    let old = store.insert(&old).unwrap();
     let new = Memory::builder()
         .memory_type(MemoryType::Fact)
         .content("The API returns 204 for health checks")
@@ -546,8 +547,7 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
         .build()
         .unwrap();
 
-    store.insert(&old).unwrap();
-    store.insert(&new).unwrap();
+    let new = store.insert(&new).unwrap();
     store.supersede(old.id, new.id).unwrap();
 
     assert_eq!(

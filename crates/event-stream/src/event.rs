@@ -1080,12 +1080,13 @@ impl SemanticEvent {
         producer_role: RoleId,
     ) -> Self {
         let storage_uri = storage_uri.into();
+        let artefact_id = storage_uri.clone();
         Self::ArtefactProduced {
             event_id: EventId::new(),
             source_agent,
             timestamp_ns: now_ns(),
             context: EventContext::default(),
-            artefact_id: format!("artefact-{}", Uuid::new_v4()),
+            artefact_id,
             artefact_type: artefact_type.into(),
             content_hash: stable_content_hash(&storage_uri),
             storage_uri,

@@ -299,7 +299,8 @@ impl Librarian {
         let mut memory_with_embedding = memory.clone();
         memory_with_embedding.embedding = Some(embedding.clone());
 
-        self.store
+        let memory = self
+            .store
             .insert_with_embedding(&memory_with_embedding, self.qdrant.as_ref())
             .await?;
 
@@ -562,7 +563,7 @@ impl Librarian {
             .source_agent(RoleId::new("librarian-001"))
             .build()?;
 
-        self.store.insert(&marker)?;
+        let marker = self.store.insert(&marker)?;
         self.store.supersede(memory.id, marker.id)?;
         if let Err(e) = self.qdrant.delete(memory.id).await {
             tracing::warn!("Failed to delete audit-flagged memory vector: {}", e);
@@ -598,7 +599,7 @@ impl Librarian {
                 .source_agent(RoleId::new("librarian"))
                 .build()?;
 
-            self.store.insert(&marker)?;
+            let marker = self.store.insert(&marker)?;
             self.store.supersede(memory.id, marker.id)?;
             if let Err(e) = self.qdrant.delete(memory.id).await {
                 tracing::warn!("Failed to delete decayed memory vector: {}", e);
@@ -924,7 +925,7 @@ mod tests {
             .source_agent(RoleId::new("llm"))
             .build()
             .unwrap();
-        store.insert(&old_memory).unwrap();
+        let old_memory = store.insert(&old_memory).unwrap();
 
         let qdrant = Arc::new(FakeVectorBackend {
             fail_upsert: true,
@@ -973,7 +974,7 @@ mod tests {
             .source_agent(RoleId::new("llm"))
             .build()
             .unwrap();
-        store.insert(&old_memory).unwrap();
+        let old_memory = store.insert(&old_memory).unwrap();
 
         let qdrant = Arc::new(FakeVectorBackend::default());
         qdrant.results.lock().push((old_memory.id, 0.99));
@@ -1025,7 +1026,7 @@ mod tests {
             .source_agent(RoleId::new("user"))
             .build()
             .unwrap();
-        store.insert(&stale).unwrap();
+        let stale = store.insert(&stale).unwrap();
 
         librarian.run_decay_scan(&bus).await.unwrap();
         assert!(store.query_decayed().unwrap().is_empty());

@@ -443,11 +443,10 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
         validation_passed: bool,
         evidence_refs: Vec<EvidenceRef>,
     ) -> Result<ArtefactRef, RoleError> {
-        let artefact_id = format!("implementation_patch-{}", uuid::Uuid::new_v4());
         let storage_uri = format!(
             "repo://worktrees/{}/{}",
             worktree.branch_name(),
-            artefact_id
+            stable_content_hash(&output.patch)
         );
         let validation_summary = if validation_passed {
             Some("validation passed".to_string())
@@ -464,12 +463,27 @@ Output file paths and contents in the format: FILE: <path>\\n<content>",
             revision: None,
         };
 
+        let Some(artefact_store) = &ctx.artefact_store else {
+            return Err(RoleError::Internal(
+                "artefact store is required to publish implementation output".to_string(),
+            ));
+        };
+        let payload = serde_json::json!({
+            "patch": &output.patch,
+            "repository_output": &repository_output,
+        })
+        .to_string();
+        let stored = artefact_store
+            .store("implementation_patch", &payload)
+            .await
+            .map_err(|e| RoleError::Internal(format!("Failed to store artefact: {e}")))?;
+
         let event = SemanticEvent::new_code_output_ref(
             EventRoleId(self.id.0.clone()),
             "implementation_patch",
             StoredArtefactRef {
-                artefact_id: artefact_id.clone(),
-                content_hash: stable_content_hash(&output.patch),
+                artefact_id: stored.artefact_id,
+                content_hash: stored.content_hash,
                 storage_uri: storage_uri.clone(),
             },
             EventRoleId(self.id.0.clone()),
@@ -727,7 +741,7 @@ mod tests {
             .as_nanos()
     }
 
-    async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
+    async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String, String)> {
         let base_url = std::env::var("MMAT_DB_URL").ok()?;
         let schema = format!("{}_{}", prefix, now_nanos());
         let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
@@ -746,7 +760,7 @@ mod tests {
         )
         .await
         .ok()?;
-        Some((pool, schema))
+        Some((pool, schema, database_url))
     }
 
     async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
@@ -857,7 +871,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_repo_path_with_host_work_dir_and_project_id() {
-        let Some((pool, schema)) = postgres_test_database("worker_repo").await else {
+        let Some((pool, schema, database_url)) = postgres_test_database("worker_repo").await else {
             return;
         };
         let host_dir = tempdir().unwrap();
@@ -918,7 +932,11 @@ mod tests {
             receiver,
             memory_store,
             coordinator: mmat_coordinator::CoordinatorHandle::new(coordinator),
-            artefact_store: Some(Arc::new(mmat_memory::artefact_store::ArtefactStore::new())),
+            artefact_store: Some(Arc::new(
+                mmat_memory::artefact_store::ArtefactStore::connect(&database_url)
+                    .await
+                    .unwrap(),
+            )),
             tools: Box::new(()),
             host_work_dir: Some(host_dir.path().to_path_buf()),
         };
@@ -943,7 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_to_cwd_when_host_work_dir_is_none() {
-        let Some((pool, schema)) = postgres_test_database("worker_cwd").await else {
+        let Some((pool, schema, database_url)) = postgres_test_database("worker_cwd").await else {
             return;
         };
         let worker = Arc::new(
@@ -1000,7 +1018,11 @@ mod tests {
             receiver,
             memory_store,
             coordinator: mmat_coordinator::CoordinatorHandle::new(coordinator),
-            artefact_store: Some(Arc::new(mmat_memory::artefact_store::ArtefactStore::new())),
+            artefact_store: Some(Arc::new(
+                mmat_memory::artefact_store::ArtefactStore::connect(&database_url)
+                    .await
+                    .unwrap(),
+            )),
             tools: Box::new(()),
             host_work_dir: None,
         };

@@ -507,8 +507,8 @@ async fn project_manager_deduplicates_adrs() {
     drop_postgres_schema(&pool, &schema).await;
 }
 
-    #[tokio::test]
-    async fn project_manager_marks_failed_task_in_delivery_graph() {
+#[tokio::test]
+async fn project_manager_marks_failed_task_in_delivery_graph() {
     let Some((pool, schema)) = postgres_test_database("pm_fail").await else {
         return;
     };
