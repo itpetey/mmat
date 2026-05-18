@@ -28,7 +28,7 @@ pub struct NewEvent {
 #[diesel(table_name = crate::schema::lanes)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Lane {
-    pub id: String,
+    pub id: Uuid,
     pub project_id: String,
     pub title: String,
     pub summary: String,
@@ -45,7 +45,6 @@ pub struct Lane {
 #[derive(Debug, Clone, Insertable, Serialize, Deserialize)]
 #[diesel(table_name = crate::schema::lanes)]
 pub struct NewLane {
-    pub id: String,
     pub project_id: String,
     pub title: String,
     pub summary: String,

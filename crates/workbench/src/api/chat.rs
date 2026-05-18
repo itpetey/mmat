@@ -108,13 +108,13 @@ pub async fn load_lanes(project_id: String) -> ServerFnResult<LaneProjection> {
         .await
         .map_err(super::db_connection_error)?;
     ensure_project_exists(&mut connection, &project_id).await?;
-    let active = mmat_db::load_lanes_by_status(&mut connection, &project_id, "active")
+    let active = mmat_db::lane::load_lanes_by_status(&mut connection, &project_id, "active")
         .await
         .map_err(|error| ServerFnError::new(format!("could not load active lanes: {error}")))?
         .into_iter()
         .map(lane_from_row)
         .collect();
-    let archived = mmat_db::load_lanes_by_status(&mut connection, &project_id, "archived")
+    let archived = mmat_db::lane::load_lanes_by_status(&mut connection, &project_id, "archived")
         .await
         .map_err(|error| ServerFnError::new(format!("could not load archived lanes: {error}")))?
         .into_iter()
@@ -138,9 +138,7 @@ pub async fn create_lane(project_id: String, title: String) -> ServerFnResult<Wo
         .map_err(super::db_connection_error)?;
     ensure_project_exists(&mut connection, &project_id).await?;
     let now = mmat_db::now_timestamp_string();
-    let lane_id = mmat_db::new_lane_id();
     let lane = mmat_db::models::NewLane {
-        id: lane_id.clone(),
         project_id: project_id.clone(),
         title: title.clone(),
         summary: String::new(),
@@ -153,10 +151,12 @@ pub async fn create_lane(project_id: String, title: String) -> ServerFnResult<Wo
         updated_at: now,
         archived_at: None,
     };
-    let event = lane_created_event(&lane_id, &title, &project_id);
-    let lane = mmat_db::create_lane_with_event(&mut connection, lane, event.clone())
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not create lane: {error}")))?;
+    let (lane, event) = mmat_db::lane::create_lane_with_event(&mut connection, lane, |lane| {
+        lane_created_event(&lane.id.to_string(), &title, &project_id)
+    })
+    .await
+    .map_err(|error| ServerFnError::new(format!("could not create lane: {error}")))?;
+
     let _ = workbench_bus().publish(event);
 
     Ok(lane_from_row(lane))
@@ -175,9 +175,9 @@ pub async fn archive_lane(project_id: String, lane_id: String) -> ServerFnResult
         .map_err(super::db_connection_error)?;
     let lane = validate_lane(&mut connection, &project_id, &lane_id, false).await?;
     let event = lane_archived_event(&lane_id, &project_id);
-    let lane = mmat_db::archive_lane_with_event(
+    let lane = mmat_db::lane::archive_lane_with_event(
         &mut connection,
-        &lane.id,
+        &lane.id.to_string(),
         mmat_db::now_timestamp_string(),
         event.clone(),
     )
@@ -198,7 +198,7 @@ pub async fn load_transcript(
         .await
         .map_err(super::db_connection_error)?;
     ensure_project_exists(&mut connection, &project_id).await?;
-    let events = mmat_db::replay_events(&mut connection, 0, None)
+    let events = mmat_db::event::replay_events(&mut connection, 0, None)
         .await
         .map_err(|error| ServerFnError::new(format!("could not replay events: {error}")))?;
 
@@ -360,7 +360,7 @@ async fn handle_user_message(
             .with_lane_id(lane_id.clone()),
         );
     let message_id = event.event_id().to_string();
-    if let Err(error) = mmat_db::append_event(&mut connection, &event).await {
+    if let Err(error) = mmat_db::event::append_event(&mut connection, &event).await {
         socket
             .send(ChatServerMessage::Error {
                 message: format!("Could not persist message: {error}"),
@@ -442,7 +442,7 @@ async fn validate_lane(
     lane_id: &str,
     require_active: bool,
 ) -> ServerFnResult<mmat_db::models::Lane> {
-    let lane = mmat_db::get_lane(connection, lane_id)
+    let lane = mmat_db::lane::get_lane(connection, lane_id)
         .await
         .map_err(|error| ServerFnError::new(format!("could not load lane: {error}")))?
         .ok_or_else(|| ServerFnError::new("Lane does not exist."))?;
@@ -466,7 +466,7 @@ async fn ensure_project_exists(
     connection: &mut mmat_db::AsyncPgConnection,
     project_id: &str,
 ) -> ServerFnResult<()> {
-    let exists = mmat_db::project_exists(connection, project_id)
+    let exists = mmat_db::project::project_exists(connection, project_id)
         .await
         .map_err(|error| ServerFnError::new(format!("could not validate project: {error}")))?;
 
@@ -537,7 +537,7 @@ fn system_lane() -> WorkbenchLane {
 #[cfg(feature = "server")]
 fn lane_from_row(lane: mmat_db::models::Lane) -> WorkbenchLane {
     WorkbenchLane {
-        id: lane.id,
+        id: lane.id.to_string(),
         title: lane.title,
         status: lane.status,
         system: false,
@@ -618,7 +618,7 @@ mod tests {
 
     fn lane_row(id: &str, status: &str) -> mmat_db::models::Lane {
         mmat_db::models::Lane {
-            id: id.to_string(),
+            id: uuid::Uuid::parse_str(id).unwrap(),
             project_id: "project-1".to_string(),
             title: id.to_string(),
             summary: String::new(),
@@ -635,15 +635,17 @@ mod tests {
 
     #[test]
     fn lane_projection_groups_active_archived_and_system_lanes() {
+        let active_lane_id = "00000000-0000-0000-0000-000000000001";
+        let archived_lane_id = "00000000-0000-0000-0000-000000000002";
         let projection = lane_projection_from_rows(
-            vec![lane_from_row(lane_row("active-lane", "active"))],
-            vec![lane_from_row(lane_row("archived-lane", "archived"))],
+            vec![lane_from_row(lane_row(active_lane_id, "active"))],
+            vec![lane_from_row(lane_row(archived_lane_id, "archived"))],
         );
 
         assert_eq!(projection.active.len(), 1);
-        assert_eq!(projection.active[0].id, "active-lane");
+        assert_eq!(projection.active[0].id, active_lane_id);
         assert_eq!(projection.archived.len(), 1);
-        assert_eq!(projection.archived[0].id, "archived-lane");
+        assert_eq!(projection.archived[0].id, archived_lane_id);
         assert_eq!(projection.system.id, SYSTEM_LANE_ID);
         assert!(projection.system.system);
     }
@@ -663,16 +665,17 @@ mod tests {
 
     #[test]
     fn blank_lane_can_exist_without_transcript_items() {
-        let lane = lane_from_row(lane_row("blank-lane", "active"));
+        let blank_lane_id = "00000000-0000-0000-0000-000000000003";
+        let lane = lane_from_row(lane_row(blank_lane_id, "active"));
         let projection = lane_projection_from_rows(vec![lane], Vec::new());
         let transcript = Vec::<SemanticEvent>::new()
             .iter()
-            .filter(|event| transcript_matches_lane(event, Some("blank-lane")))
+            .filter(|event| transcript_matches_lane(event, Some(blank_lane_id)))
             .filter_map(transcript_item_from_event)
             .collect::<Vec<_>>();
 
         assert_eq!(projection.active.len(), 1);
-        assert_eq!(projection.active[0].id, "blank-lane");
+        assert_eq!(projection.active[0].id, blank_lane_id);
         assert!(transcript.is_empty());
     }
 }

@@ -197,9 +197,6 @@ fn LaneNavigation(
                                     "archive"
                                 }
                             }
-                            if projection.active.is_empty() {
-                                div { class: AppStyles::dx_lane_empty, "No active lanes" }
-                            }
                             LaneButton {
                                 lane: projection.system.clone(),
                                 selected: selected_lane_id().as_deref() == Some(SYSTEM_LANE_ID),

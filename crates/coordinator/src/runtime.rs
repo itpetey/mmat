@@ -348,7 +348,7 @@ impl OrganisationRuntime {
     }
 
     async fn hydrate_event_store(&self, connection: &mut AsyncPgConnection) -> Result<()> {
-        let events = mmat_db::replay_events(connection, 0, None)
+        let events = mmat_db::event::replay_events(connection, 0, None)
             .await
             .map_err(|e| Error::Runtime(format!("failed to replay persisted events: {e}")))?;
 
@@ -422,7 +422,6 @@ async fn persist_semantic_event(
     event: &SemanticEvent,
 ) -> std::result::Result<(), mmat_db::DbError> {
     if let SemanticEvent::LaneCreated {
-        lane_id,
         name,
         purpose,
         parent_lane_id,
@@ -435,7 +434,6 @@ async fn persist_semantic_event(
     {
         let now = mmat_db::now_timestamp_string();
         let lane = mmat_db::models::NewLane {
-            id: lane_id.clone(),
             project_id: event.context().project_id.clone(),
             title: name.clone(),
             summary: purpose.clone(),
@@ -448,10 +446,48 @@ async fn persist_semantic_event(
             updated_at: now,
             archived_at: None,
         };
-        mmat_db::create_lane_with_event(connection, lane, event.clone()).await?;
+        mmat_db::lane::create_lane_with_event(connection, lane, |lane| {
+            lane_created_event_with_id(event, lane.id.to_string())
+        })
+        .await?;
     } else {
-        mmat_db::append_event(connection, event).await?;
+        mmat_db::event::append_event(connection, event).await?;
     }
 
     Ok(())
+}
+
+fn lane_created_event_with_id(event: &SemanticEvent, generated_lane_id: String) -> SemanticEvent {
+    match event {
+        SemanticEvent::LaneCreated {
+            event_id,
+            source_agent,
+            timestamp_ns,
+            context,
+            name,
+            kind,
+            colour,
+            purpose,
+            parent_lane_id,
+            related_lane_ids,
+            source_event_id,
+            source_message_id,
+            ..
+        } => SemanticEvent::LaneCreated {
+            event_id: *event_id,
+            source_agent: source_agent.clone(),
+            timestamp_ns: *timestamp_ns,
+            context: context.clone(),
+            lane_id: generated_lane_id,
+            name: name.clone(),
+            kind: kind.clone(),
+            colour: colour.clone(),
+            purpose: purpose.clone(),
+            parent_lane_id: parent_lane_id.clone(),
+            related_lane_ids: related_lane_ids.clone(),
+            source_event_id: *source_event_id,
+            source_message_id: source_message_id.clone(),
+        },
+        _ => event.clone(),
+    }
 }

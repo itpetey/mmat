@@ -83,7 +83,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let row = mmat_db::insert_memory(&mut conn, &new_memory)
+            let row = mmat_db::memory::insert_memory(&mut conn, &new_memory)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             Self::db_memory_to_domain(row)
@@ -98,7 +98,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let row = mmat_db::get_memory_by_id(&mut conn, id_uuid)
+            let row = mmat_db::memory::get_memory_by_id(&mut conn, id_uuid)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             match row {
@@ -116,7 +116,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let rows = mmat_db::query_memories_not_superseded_by_type(&mut conn, &type_str)
+            let rows = mmat_db::memory::query_memories_not_superseded_by_type(&mut conn, &type_str)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             rows.into_iter().map(Self::db_memory_to_domain).collect()
@@ -131,9 +131,10 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let rows = mmat_db::query_memories_not_superseded_by_scope(&mut conn, &scope_str)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+            let rows =
+                mmat_db::memory::query_memories_not_superseded_by_scope(&mut conn, &scope_str)
+                    .await
+                    .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             rows.into_iter().map(Self::db_memory_to_domain).collect()
         })
     }
@@ -145,7 +146,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let rows = mmat_db::query_memories_not_superseded(&mut conn)
+            let rows = mmat_db::memory::query_memories_not_superseded(&mut conn)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             let mut memories = Vec::new();
@@ -166,7 +167,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let rows = mmat_db::query_memories_not_superseded(&mut conn)
+            let rows = mmat_db::memory::query_memories_not_superseded(&mut conn)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             let mut memories = Vec::new();
@@ -190,10 +191,10 @@ impl PgMemoryStore {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
 
-            let old_exists = mmat_db::memory_exists(&mut conn, old_uuid)
+            let old_exists = mmat_db::memory::memory_exists(&mut conn, old_uuid)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            let new_exists = mmat_db::memory_exists(&mut conn, new_uuid)
+            let new_exists = mmat_db::memory::memory_exists(&mut conn, new_uuid)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
 
@@ -214,13 +215,14 @@ impl PgMemoryStore {
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             if let Err(e) =
-                mmat_db::update_memory_superseded_by(&mut conn, old_uuid, Some(new_uuid)).await
+                mmat_db::memory::update_memory_superseded_by(&mut conn, old_uuid, Some(new_uuid))
+                    .await
             {
                 let _ = mmat_db::rollback_transaction(&mut conn).await;
                 return Err(crate::error::Error::Database(mmat_db::DbError::Diesel(e)));
             }
             if let Err(e) =
-                mmat_db::update_memory_supersedes(&mut conn, new_uuid, Some(old_uuid)).await
+                mmat_db::memory::update_memory_supersedes(&mut conn, new_uuid, Some(old_uuid)).await
             {
                 let _ = mmat_db::rollback_transaction(&mut conn).await;
                 return Err(crate::error::Error::Database(mmat_db::DbError::Diesel(e)));
@@ -274,7 +276,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            mmat_db::update_memory_last_accessed(&mut conn, id_uuid, &now)
+            mmat_db::memory::update_memory_last_accessed(&mut conn, id_uuid, &now)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             Ok(())
@@ -290,7 +292,7 @@ impl PgMemoryStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            mmat_db::update_memory_content(&mut conn, id_uuid, &content_owned)
+            mmat_db::memory::update_memory_content(&mut conn, id_uuid, &content_owned)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             Ok(())
@@ -313,7 +315,7 @@ impl PgMemoryStore {
             .await
             .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
 
-        let inserted = match mmat_db::insert_memory(&mut conn, &new_memory).await {
+        let inserted = match mmat_db::memory::insert_memory(&mut conn, &new_memory).await {
             Ok(row) => Self::db_memory_to_domain(row)?,
             Err(_) => {
                 let _ = mmat_db::rollback_transaction(&mut conn).await;

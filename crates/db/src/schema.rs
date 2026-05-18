@@ -22,7 +22,7 @@ diesel::table! {
 
 diesel::table! {
     lanes (id) {
-        id -> Text,
+        id -> Uuid,
         project_id -> Text,
         title -> Text,
         summary -> Text,

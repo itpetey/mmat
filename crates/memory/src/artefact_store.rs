@@ -71,7 +71,7 @@ impl ArtefactStore {
             .get()
             .await
             .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
-        let artefact = mmat_db::insert_artefact(&mut conn, &new_artefact)
+        let artefact = mmat_db::artefact::insert_artefact(&mut conn, &new_artefact)
             .await
             .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
 
@@ -112,7 +112,7 @@ impl ArtefactStore {
             let mut conn = pool.get().await.map_err(|e| {
                 crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
             })?;
-            let payload = mmat_db::get_artefact_payload(&mut conn, id)
+            let payload = mmat_db::artefact::get_artefact_payload(&mut conn, id)
                 .await
                 .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
             return Ok(payload);
@@ -170,7 +170,7 @@ impl ArtefactStore {
             .await
             .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
 
-        let artefact = match mmat_db::insert_artefact(&mut conn, &new_artefact).await {
+        let artefact = match mmat_db::artefact::insert_artefact(&mut conn, &new_artefact).await {
             Ok(artefact) => artefact,
             Err(e) => {
                 let _ = mmat_db::rollback_transaction(&mut conn).await;
@@ -189,7 +189,7 @@ impl ArtefactStore {
             vec![],
         );
 
-        if let Err(e) = mmat_db::append_event(&mut conn, &event).await {
+        if let Err(e) = mmat_db::event::append_event(&mut conn, &event).await {
             let _ = mmat_db::rollback_transaction(&mut conn).await;
             return Err(crate::error::Error::Database(e));
         }
