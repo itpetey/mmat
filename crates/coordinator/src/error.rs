@@ -1,12 +1,13 @@
 //! Error types for the coordinator crate.
 
+use mmat_db::RunError;
 use thiserror::Error;
 
 /// Alias for a `Result` with the crate's [`enum@Error`] type.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during coordinator operations.
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug)]
 pub enum Error {
     /// The requested role was not found in the registry.
     #[error("Role not found: {0}")]
@@ -39,6 +40,9 @@ pub enum Error {
     /// A general runtime error occurred.
     #[error("Runtime error: {0}")]
     Runtime(String),
+
+    #[error("Database error: {0}")]
+    Database(#[from] RunError),
 }
 
 impl From<std::io::Error> for Error {

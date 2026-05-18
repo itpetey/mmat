@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     rowid BIGSERIAL NOT NULL,
@@ -48,3 +50,20 @@ CREATE TABLE IF NOT EXISTS projects (
     label VARCHAR NOT NULL,
     path VARCHAR NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS lanes (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    creator TEXT NOT NULL,
+    parent_lane_id TEXT NULL,
+    origin_event_id UUID NULL,
+    origin_message_id TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lanes_project_status ON lanes(project_id, status);

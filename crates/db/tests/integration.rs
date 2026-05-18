@@ -1,17 +1,18 @@
-use diesel_async::SimpleAsyncConnection;
+use diesel_async::{AsyncConnection, SimpleAsyncConnection};
+use mmat_db::AsyncPgConnection;
 use mmat_event_stream::event::{EventContext, RoleId, SemanticEvent, TaskContract};
 
-async fn test_database(prefix: &str) -> Option<(mmat_db::AsyncPgConnection, String)> {
+async fn test_database(prefix: &str) -> Option<(AsyncPgConnection, String)> {
     let base_url = std::env::var("MMAT_DB_URL").ok()?;
     let schema = format!("{}_{}", prefix, now_nanos());
-    let mut admin = mmat_db::connect(&base_url).await.ok()?;
+    let mut admin = AsyncPgConnection::establish(&base_url).await.ok()?;
     admin
         .batch_execute(&format!("CREATE SCHEMA \"{schema}\""))
         .await
         .ok()?;
     let separator = if base_url.contains('?') { '&' } else { '?' };
     let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
-    let connection = mmat_db::connect(&database_url).await.ok()?;
+    let connection = AsyncPgConnection::establish(&database_url).await.ok()?;
     Some((connection, schema))
 }
 
@@ -19,12 +20,19 @@ async fn drop_schema(schema: &str) {
     let Ok(base_url) = std::env::var("MMAT_DB_URL") else {
         return;
     };
-    let Ok(mut connection) = mmat_db::connect(&base_url).await else {
+    let Ok(mut connection) = AsyncPgConnection::establish(&base_url).await else {
         return;
     };
     let _ = connection
         .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
         .await;
+}
+
+async fn run_migration(connection: &mut mmat_db::AsyncPgConnection) {
+    connection
+        .batch_execute(include_str!("../migrations/2026-05-14-000001_init/up.sql"))
+        .await
+        .unwrap();
 }
 
 fn now_nanos() -> u128 {
@@ -39,7 +47,7 @@ async fn event_crud_replay_and_variant_queries() {
     let Some((mut connection, schema)) = test_database("db_events").await else {
         return;
     };
-    mmat_db::ensure_schema(&mut connection).await.unwrap();
+    run_migration(&mut connection).await;
 
     let task = SemanticEvent::new_task_assigned(
         RoleId::new("pm"),
@@ -111,7 +119,7 @@ async fn lane_crud_archive_and_event_persistence() {
     let Some((mut connection, schema)) = test_database("db_lanes").await else {
         return;
     };
-    mmat_db::ensure_schema(&mut connection).await.unwrap();
+    run_migration(&mut connection).await;
 
     let source_event =
         SemanticEvent::new_human_feedback_received(RoleId::new("human"), "split this out")

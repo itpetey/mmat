@@ -5,36 +5,31 @@ pub mod projects;
 use std::sync::OnceLock;
 
 #[cfg(feature = "server")]
-static DB: OnceLock<tokio::sync::Mutex<mmat_db::AsyncPgConnection>> = OnceLock::new();
+type DbPool = mmat_db::Pool<mmat_db::AsyncPgConnection>;
 
 #[cfg(feature = "server")]
-type DbGuard = tokio::sync::MutexGuard<'static, mmat_db::AsyncPgConnection>;
+static DB: OnceLock<DbPool> = OnceLock::new();
 
 #[cfg(feature = "server")]
-pub async fn db() -> dioxus::prelude::ServerFnResult<DbGuard> {
-    if let Some(connection) = DB.get() {
-        return Ok(connection.lock().await);
+pub async fn db() -> dioxus::prelude::ServerFnResult<&'static DbPool> {
+    if let Some(pool) = DB.get() {
+        return Ok(pool);
     }
 
     let url = crate::cli::pg_dsn();
-    let mut connection = mmat_db::connect(&url).await.map_err(|error| {
-        dioxus::prelude::ServerFnError::new(format!("could not connect to database: {error}"))
+    let pool = mmat_db::new_pool(&url).await.map_err(|error| {
+        dioxus::prelude::ServerFnError::new(format!("could not create database pool: {error}"))
     })?;
-    mmat_db::ensure_schema(&mut connection)
-        .await
-        .map_err(|error| {
-            dioxus::prelude::ServerFnError::new(format!(
-                "could not initialise database schema: {error}"
-            ))
-        })?;
 
-    if DB.set(tokio::sync::Mutex::new(connection)).is_err() {
-        // Another request initialised the shared connection first.
+    if DB.set(pool).is_err() {
+        // Another request initialised the shared pool first.
     }
 
-    let connection = DB.get().ok_or_else(|| {
-        dioxus::prelude::ServerFnError::new("database connection was not initialised")
-    })?;
+    DB.get()
+        .ok_or_else(|| dioxus::prelude::ServerFnError::new("database pool was not initialised"))
+}
 
-    Ok(connection.lock().await)
+#[cfg(feature = "server")]
+pub fn db_connection_error(error: impl std::fmt::Display) -> dioxus::prelude::ServerFnError {
+    dioxus::prelude::ServerFnError::new(format!("could not get database connection: {error}"))
 }

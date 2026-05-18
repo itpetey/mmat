@@ -1,20 +1,29 @@
-use diesel::{ConnectionResult, QueryResult, prelude::*};
-use diesel_async::{AsyncConnection, RunQueryDsl, SimpleAsyncConnection};
+use diesel::{QueryResult, prelude::*};
+use diesel_async::{
+    AsyncConnection, RunQueryDsl, SimpleAsyncConnection,
+    pooled_connection::{AsyncDieselConnectionManager, PoolError},
+};
 use mmat_event_stream::event::{EventId, SemanticEvent};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::models::{Event, Lane, NewEvent, NewLane, NewProject, Project};
 
-pub use diesel_async::AsyncPgConnection;
+pub use diesel_async::{
+    AsyncPgConnection,
+    pooled_connection::bb8::{Pool, PooledConnection, RunError},
+};
 
 pub mod models;
 pub mod schema;
 
-pub type Result<T> = std::result::Result<T, DbError>;
+type Result<T, E = DbError> = std::result::Result<T, E>;
 
 #[derive(Debug, Error)]
 pub enum DbError {
+    #[error("database connection error: {0}")]
+    DbConnection(#[from] ConnectionError),
+
     #[error("database error: {0}")]
     Diesel(#[from] diesel::result::Error),
 
@@ -25,62 +34,13 @@ pub enum DbError {
     Uuid(#[from] uuid::Error),
 }
 
-pub async fn connect(url: &str) -> ConnectionResult<AsyncPgConnection> {
-    AsyncPgConnection::establish(url).await
+pub async fn connect(url: &str) -> Result<AsyncPgConnection> {
+    Ok(AsyncPgConnection::establish(url).await?)
 }
 
-pub async fn ensure_schema(connection: &mut AsyncPgConnection) -> QueryResult<()> {
-    diesel::sql_query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-        .execute(connection)
-        .await?;
-    diesel::sql_query(
-        "CREATE TABLE IF NOT EXISTS projects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            label VARCHAR NOT NULL,
-            path VARCHAR NOT NULL
-        )",
-    )
-    .execute(connection)
-    .await?;
-    diesel::sql_query(
-        "CREATE TABLE IF NOT EXISTS events (
-            id UUID PRIMARY KEY,
-            rowid BIGSERIAL NOT NULL UNIQUE,
-            variant TEXT NOT NULL,
-            payload JSONB NOT NULL,
-            timestamp_ns BIGINT NOT NULL,
-            source_agent TEXT NOT NULL
-        )",
-    )
-    .execute(connection)
-    .await?;
-    diesel::sql_query("CREATE INDEX IF NOT EXISTS idx_events_variant ON events(variant)")
-        .execute(connection)
-        .await?;
-    diesel::sql_query(
-        "CREATE TABLE IF NOT EXISTS lanes (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            summary TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL,
-            creator TEXT NOT NULL,
-            parent_lane_id TEXT NULL,
-            origin_event_id UUID NULL,
-            origin_message_id TEXT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            archived_at TEXT NULL
-        )",
-    )
-    .execute(connection)
-    .await?;
-    diesel::sql_query(
-        "CREATE INDEX IF NOT EXISTS idx_lanes_project_status ON lanes(project_id, status)",
-    )
-    .execute(connection)
-    .await?;
-    Ok(())
+pub async fn new_pool(url: &str) -> Result<Pool<AsyncPgConnection>, PoolError> {
+    let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(url);
+    Ok(Pool::builder().build(config).await?)
 }
 
 pub async fn insert_project(

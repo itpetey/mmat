@@ -2,9 +2,10 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+use mmat_db::{AsyncPgConnection, Pool, PooledConnection};
 use mmat_event_stream::{
     event::{EventType, RoleId, SemanticEvent},
-    event_bus::{EventBus, RecvError},
+    event_bus::{EventBus, EventReceiver, RecvError},
     event_store::EventStore,
 };
 use mmat_memory::{artefact_store::ArtefactStore, store::MemoryStore};
@@ -173,13 +174,18 @@ impl OrganisationRuntime {
     /// and runs background tasks for the scheduler, coordinator message processing,
     /// budget monitoring, and heartbeats. Blocks until a shutdown signal is received
     /// (Ctrl+C or explicit [`shutdown`](Self::shutdown) call), then gracefully stops all roles.
-    pub async fn run(mut self) -> Result<()> {
-        self.hydrate_event_store_from_db().await?;
+    pub async fn run(mut self, db_pool: &Pool<AsyncPgConnection>) -> Result<()> {
+        let mut conn = db_pool.get().await?;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        self.hydrate_event_store(&mut conn).await?;
 
         // Startup replay
         self.replay_events().await?;
 
-        let persistence_handle = self.spawn_event_persistence_task();
+        let conn2 = db_pool.get_owned().await?;
+        let receiver = self.bus.subscribe(&[]);
+        let persistence_handle = spawn_event_persistence_task(conn2, self.shutdown_tx, receiver);
 
         // Publish organisation started
         self.bus
@@ -289,8 +295,6 @@ impl OrganisationRuntime {
         });
 
         // Main event loop: wait for shutdown signal
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-
         #[cfg(not(target_arch = "wasm32"))]
         {
             tokio::select! {
@@ -343,14 +347,8 @@ impl OrganisationRuntime {
         Ok(())
     }
 
-    async fn hydrate_event_store_from_db(&self) -> Result<()> {
-        let mut connection = mmat_db::connect(&self.config.database_url)
-            .await
-            .map_err(|e| Error::Runtime(format!("failed to connect to event database: {e}")))?;
-        mmat_db::ensure_schema(&mut connection)
-            .await
-            .map_err(|e| Error::Runtime(format!("failed to initialise event schema: {e}")))?;
-        let events = mmat_db::replay_events(&mut connection, 0, None)
+    async fn hydrate_event_store(&self, connection: &mut AsyncPgConnection) -> Result<()> {
+        let events = mmat_db::replay_events(connection, 0, None)
             .await
             .map_err(|e| Error::Runtime(format!("failed to replay persisted events: {e}")))?;
 
@@ -362,52 +360,34 @@ impl OrganisationRuntime {
 
         Ok(())
     }
-
-    fn spawn_event_persistence_task(&self) -> tokio::task::JoinHandle<()> {
-        let database_url = self.config.database_url.clone();
-        let shutdown_tx = self.shutdown_tx.clone();
-        let mut receiver = self.bus.subscribe(&[]);
-
-        tokio::spawn(async move {
-            let mut connection = match mmat_db::connect(&database_url).await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    warn!("failed to connect to event database for persistence: {error}");
-                    let _ = shutdown_tx.send(());
-                    return;
-                }
-            };
-
-            if let Err(error) = mmat_db::ensure_schema(&mut connection).await {
-                warn!("failed to initialise event database schema: {error}");
-                let _ = shutdown_tx.send(());
-                return;
-            }
-
-            loop {
-                match receiver.recv().await {
-                    Ok(event) => {
-                        if let Err(error) =
-                            persist_semantic_event(&mut connection, event.as_ref()).await
-                        {
-                            warn!("failed to persist semantic event: {error}");
-                            let _ = shutdown_tx.send(());
-                            break;
-                        }
-                    }
-                    Err(RecvError::Lagged(skipped)) => {
-                        warn!(
-                            "event persistence subscriber lagged by {skipped} events; shutting down"
-                        );
-                        let _ = shutdown_tx.send(());
+}
+fn spawn_event_persistence_task(
+    mut conn: PooledConnection<'static, AsyncPgConnection>,
+    tx: broadcast::Sender<()>,
+    mut receiver: EventReceiver,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if let Err(error) = persist_semantic_event(&mut conn, event.as_ref()).await {
+                        warn!("failed to persist semantic event: {error}");
+                        let _ = tx.send(());
                         break;
                     }
-                    Err(RecvError::Closed) => break,
                 }
+                Err(RecvError::Lagged(skipped)) => {
+                    warn!("event persistence subscriber lagged by {skipped} events; shutting down");
+                    let _ = tx.send(());
+                    break;
+                }
+                Err(RecvError::Closed) => break,
             }
-        })
-    }
+        }
+    })
+}
 
+impl OrganisationRuntime {
     async fn replay_events(&mut self) -> Result<()> {
         let events = self
             .event_store

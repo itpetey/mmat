@@ -19,7 +19,11 @@ pub async fn create_project(label: String, path: String) -> ServerFnResult<Proje
         return Err(ServerFnError::new("Project name and path are required."));
     }
 
-    let mut connection = super::db().await?;
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
 
     mmat_db::insert_project(&mut connection, &NewProject { label, path })
         .await
@@ -33,7 +37,11 @@ pub async fn create_project(label: String, path: String) -> ServerFnResult<Proje
 
 #[server]
 pub async fn list_projects() -> ServerFnResult<Vec<ProjectNavItem>> {
-    let mut connection = super::db().await?;
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
 
     mmat_db::load_projects(&mut connection)
         .await

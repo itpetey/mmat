@@ -6,6 +6,9 @@ readme.workspace = true
 repository.workspace = true
 license-file.workspace = true
 
+[package.metadata.cargo-shear]
+ignored = ["serde_json", "tracing", "tracing-subscriber", "uuid"]
+
 [dependencies]
 anyhow = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }

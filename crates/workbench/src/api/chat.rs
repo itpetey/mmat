@@ -102,7 +102,11 @@ pub async fn connect_chat(
 
 #[server]
 pub async fn load_lanes(project_id: String) -> ServerFnResult<LaneProjection> {
-    let mut connection = super::db().await?;
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
     ensure_project_exists(&mut connection, &project_id).await?;
     let active = mmat_db::load_lanes_by_status(&mut connection, &project_id, "active")
         .await
@@ -127,7 +131,11 @@ pub async fn create_lane(project_id: String, title: String) -> ServerFnResult<Wo
         return Err(ServerFnError::new("Lane title is required."));
     }
 
-    let mut connection = super::db().await?;
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
     ensure_project_exists(&mut connection, &project_id).await?;
     let now = mmat_db::now_timestamp_string();
     let lane_id = mmat_db::new_lane_id();
@@ -160,7 +168,11 @@ pub async fn archive_lane(project_id: String, lane_id: String) -> ServerFnResult
         return Err(ServerFnError::new("The System lane cannot be archived."));
     }
 
-    let mut connection = super::db().await?;
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
     let lane = validate_lane(&mut connection, &project_id, &lane_id, false).await?;
     let event = lane_archived_event(&lane_id, &project_id);
     let lane = mmat_db::archive_lane_with_event(
@@ -180,7 +192,11 @@ pub async fn load_transcript(
     project_id: String,
     lane_id: Option<String>,
 ) -> ServerFnResult<Vec<TranscriptItem>> {
-    let mut connection = super::db().await?;
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
     ensure_project_exists(&mut connection, &project_id).await?;
     let events = mmat_db::replay_events(&mut connection, 0, None)
         .await
@@ -301,7 +317,18 @@ async fn handle_user_message(
         return Ok(());
     };
 
-    let mut connection = match super::db().await {
+    let pool = match super::db().await {
+        Ok(pool) => pool,
+        Err(error) => {
+            socket
+                .send(ChatServerMessage::Error {
+                    message: format!("Could not open database pool: {error}"),
+                })
+                .await?;
+            return Ok(());
+        }
+    };
+    let mut connection = match pool.get().await {
         Ok(connection) => connection,
         Err(error) => {
             socket

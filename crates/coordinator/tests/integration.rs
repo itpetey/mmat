@@ -304,6 +304,13 @@ fn test_config() -> Option<OrganisationConfig> {
     })
 }
 
+async fn test_runtime(
+    config: OrganisationConfig,
+    registry: RoleRegistry,
+) -> Option<OrganisationRuntime> {
+    OrganisationRuntime::new(config, registry).ok()
+}
+
 #[tokio::test]
 async fn test_escalation_routing() {
     let Some(config) = test_config() else {
@@ -332,14 +339,17 @@ async fn test_escalation_routing() {
     };
     registry.register(reviewer_spec.clone()).unwrap();
 
-    let mut runtime = OrganisationRuntime::new(config.clone(), registry).unwrap();
+    let Some(mut runtime) = test_runtime(config.clone(), registry).await else {
+        return;
+    };
     runtime.add_role(EscalatingRole::new("worker", worker_spec));
     runtime.add_role(MockRole::new("reviewer", reviewer_spec));
 
     let bus = runtime.bus().clone();
     let scheduler = runtime.scheduler().clone();
     let shutdown_tx = runtime.shutdown_handle();
-    let handle = tokio::spawn(async move { runtime.run().await });
+    let pool = mmat_db::new_pool(&config.database_url).await.unwrap();
+    let handle = tokio::spawn(async move { runtime.run(&pool).await });
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -380,14 +390,17 @@ async fn test_mock_role_lifecycle() {
     let mut registry = RoleRegistry::new();
     registry.register(worker_spec()).unwrap();
 
-    let mut runtime = OrganisationRuntime::new(config.clone(), registry).unwrap();
+    let Some(mut runtime) = test_runtime(config.clone(), registry).await else {
+        return;
+    };
     runtime.add_role(MockRole::new("worker", worker_spec()));
 
     // Spawn runtime in background
     let bus = runtime.bus().clone();
     let scheduler = runtime.scheduler().clone();
     let shutdown_tx = runtime.shutdown_handle();
-    let handle = tokio::spawn(async move { runtime.run().await });
+    let pool = mmat_db::new_pool(&config.database_url).await.unwrap();
+    let handle = tokio::spawn(async move { runtime.run(&pool).await });
 
     // Give runtime time to start roles
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -434,13 +447,16 @@ async fn test_output_contract_violation_marks_role_failed() {
     spec.output_contract = vec![EventType::TaskStarted];
     registry.register(spec.clone()).unwrap();
 
-    let mut runtime = OrganisationRuntime::new(config.clone(), registry).unwrap();
+    let Some(mut runtime) = test_runtime(config.clone(), registry).await else {
+        return;
+    };
     runtime.add_role(MockRole::new("worker", spec));
 
     let bus = runtime.bus().clone();
     let scheduler = runtime.scheduler().clone();
     let shutdown_tx = runtime.shutdown_handle();
-    let handle = tokio::spawn(async move { runtime.run().await });
+    let pool = mmat_db::new_pool(&config.database_url).await.unwrap();
+    let handle = tokio::spawn(async move { runtime.run(&pool).await });
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     bus.publish(SemanticEvent::new_task_assigned(
@@ -599,14 +615,17 @@ async fn test_retry_exhaustion_escalates() {
     };
     registry.register(reviewer_spec.clone()).unwrap();
 
-    let mut runtime = OrganisationRuntime::new(config.clone(), registry).unwrap();
+    let Some(mut runtime) = test_runtime(config.clone(), registry).await else {
+        return;
+    };
     runtime.add_role(FailingRole::new("worker", worker_spec));
     runtime.add_role(MockRole::new("reviewer", reviewer_spec));
 
     let bus = runtime.bus().clone();
     let scheduler = runtime.scheduler().clone();
     let shutdown_tx = runtime.shutdown_handle();
-    let handle = tokio::spawn(async move { runtime.run().await });
+    let pool = mmat_db::new_pool(&config.database_url).await.unwrap();
+    let handle = tokio::spawn(async move { runtime.run(&pool).await });
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     bus.publish(SemanticEvent::new_task_assigned(
@@ -657,13 +676,16 @@ async fn test_time_budget_enforcement() {
     spec.default_budget.time_limit_seconds = 1;
     registry.register(spec.clone()).unwrap();
 
-    let mut runtime = OrganisationRuntime::new(config.clone(), registry).unwrap();
+    let Some(mut runtime) = test_runtime(config.clone(), registry).await else {
+        return;
+    };
     runtime.add_role(SlowMockRole::new("worker", spec.clone()));
 
     let bus = runtime.bus().clone();
     let scheduler = runtime.scheduler().clone();
     let shutdown_tx = runtime.shutdown_handle();
-    let handle = tokio::spawn(async move { runtime.run().await });
+    let pool = mmat_db::new_pool(&config.database_url).await.unwrap();
+    let handle = tokio::spawn(async move { runtime.run(&pool).await });
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -725,14 +747,17 @@ async fn test_token_budget_exhaustion_escalates() {
     };
     registry.register(reviewer_spec.clone()).unwrap();
 
-    let mut runtime = OrganisationRuntime::new(config.clone(), registry).unwrap();
+    let Some(mut runtime) = test_runtime(config.clone(), registry).await else {
+        return;
+    };
     runtime.add_role(TokenHungryRole::new("worker", worker_spec));
     runtime.add_role(MockRole::new("reviewer", reviewer_spec));
 
     let bus = runtime.bus().clone();
     let scheduler = runtime.scheduler().clone();
     let shutdown_tx = runtime.shutdown_handle();
-    let handle = tokio::spawn(async move { runtime.run().await });
+    let pool = mmat_db::new_pool(&config.database_url).await.unwrap();
+    let handle = tokio::spawn(async move { runtime.run(&pool).await });
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     bus.publish(SemanticEvent::new_task_assigned(

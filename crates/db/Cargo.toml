@@ -8,12 +8,11 @@ license-file.workspace = true
 
 [dependencies]
 diesel = { workspace = true, features = ["serde_json", "uuid"] }
-diesel-async = { workspace = true, features = ["postgres"] }
+diesel-async = { workspace = true, features = ["bb8", "postgres"] }
 mmat-event-stream.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
-tracing.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
