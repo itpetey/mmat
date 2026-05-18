@@ -864,8 +864,11 @@ mod tests {
 
     #[tokio::test]
     async fn ungrounded_llm_fact_is_downgraded_and_flagged() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+        let Some((pool, schema)) = crate::store::tests::postgres_test_database("ungrounded").await
+        else {
+            return;
+        };
+        let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
         let qdrant = Arc::new(FakeVectorBackend::default());
         let librarian = Librarian::new(store.clone(), qdrant, Duration::from_secs(3600));
         let bus = EventBus::new(16);
@@ -900,12 +903,18 @@ mod tests {
             SemanticEvent::PolicyViolationDetected { violation_type, .. }
                 if violation_type == "authority_downgrade"
         ));
+
+        crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }
 
     #[tokio::test]
     async fn failed_acceptance_does_not_supersede_existing_memory() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+        let Some((pool, schema)) =
+            crate::store::tests::postgres_test_database("failed_accept").await
+        else {
+            return;
+        };
+        let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
         let old_memory = Memory::builder()
             .memory_type(MemoryType::Fact)
             .content("The API endpoint returns status 200 as of the latest test")
@@ -943,12 +952,18 @@ mod tests {
         let old = store.get_by_id(old_memory.id).unwrap().unwrap();
         assert!(old.superseded_by.is_none());
         assert_eq!(store.query_by_type(MemoryType::Fact).unwrap().len(), 1);
+
+        crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }
 
     #[tokio::test]
     async fn contradiction_is_resolved_before_duplicate_gate() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+        let Some((pool, schema)) =
+            crate::store::tests::postgres_test_database("contradiction").await
+        else {
+            return;
+        };
+        let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
         let old_memory = Memory::builder()
             .memory_type(MemoryType::Fact)
             .content("The API endpoint returns status 200 as of the latest test")
@@ -985,12 +1000,17 @@ mod tests {
         assert!(old.superseded_by.is_some());
         let chain = store.get_supersession_chain(old_memory.id).unwrap();
         assert_eq!(chain.len(), 2);
+
+        crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }
 
     #[tokio::test]
     async fn decay_marker_is_not_decayed_again() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+        let Some((pool, schema)) = crate::store::tests::postgres_test_database("decay").await
+        else {
+            return;
+        };
+        let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
         let qdrant = Arc::new(FakeVectorBackend::default());
         let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_secs(3600));
         let bus = EventBus::new(16);
@@ -1013,5 +1033,7 @@ mod tests {
 
         librarian.run_decay_scan(&bus).await.unwrap();
         assert_eq!(store.query_by_type(MemoryType::Fact).unwrap().len(), 1);
+
+        crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }
 }

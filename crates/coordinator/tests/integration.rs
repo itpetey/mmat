@@ -4,6 +4,7 @@ use mmat_coordinator::{
     AuthorityScope, Budget, OrganisationConfig, OrganisationRuntime, RetrievalPlanner, Role,
     RoleContext, RoleError, RoleLifecycleState, RoleRegistry, RoleSpec, RoleType, Severity,
 };
+use mmat_db::AsyncPgConnection;
 use mmat_event_stream::event::{ArtefactRef, EventType, RoleId, SemanticEvent, TaskContract};
 use mmat_memory::{
     error::Result as MemoryResult,
@@ -12,6 +13,8 @@ use mmat_memory::{
     vector_backend::VectorMemoryBackend,
 };
 use qdrant_client::qdrant::Value;
+
+type PgPool = mmat_db::Pool<AsyncPgConnection>;
 
 const CONTRACT_1: &str = "00000000-0000-0000-0000-000000000001";
 const CONTRACT_ESCALATION: &str = "00000000-0000-0000-0000-000000000003";
@@ -311,6 +314,45 @@ async fn test_runtime(
     OrganisationRuntime::new(config, registry).ok()
 }
 
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+    let mut conn = admin_pool.get().await.ok()?;
+    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let pool = mmat_db::new_pool(&database_url).await.ok()?;
+    let migrate_pool = pool.clone();
+    let mut migrator_conn = migrate_pool.get().await.ok()?;
+    mmat_db::execute_sql(
+        &mut migrator_conn,
+        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+    )
+    .await
+    .ok()?;
+    Some((pool, schema))
+}
+
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
+}
+
 #[tokio::test]
 async fn test_escalation_routing() {
     let Some(config) = test_config() else {
@@ -485,8 +527,10 @@ async fn test_output_contract_violation_marks_role_failed() {
 
 #[tokio::test]
 async fn test_retrieval_planner_profiles() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = MemoryStore::open(tmp.path().join("mem.db")).unwrap();
+    let Some((pool, schema)) = postgres_test_database("retrieval_planner").await else {
+        return;
+    };
+    let store = MemoryStore::new_with_pool(pool.clone());
 
     // Insert memories of different scopes and types
     let project_fact = Memory::builder()
@@ -539,12 +583,16 @@ async fn test_retrieval_planner_profiles() {
             .any(|m| m.content == "Organisational lesson"),
         "Scholar should see organisational lessons"
     );
+
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_retrieval_semantic_search() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = MemoryStore::open(tmp.path().join("mem.db")).unwrap();
+    let Some((pool, schema)) = postgres_test_database("retrieval_search").await else {
+        return;
+    };
+    let store = MemoryStore::new_with_pool(pool.clone());
 
     let project_fact = Memory::builder()
         .memory_type(MemoryType::Fact)
@@ -588,6 +636,8 @@ async fn test_retrieval_semantic_search() {
         2,
         "structured and semantic results should merge"
     );
+
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]

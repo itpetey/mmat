@@ -25,4 +25,3 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 qdrant-client.workspace = true
-tempfile.workspace = true

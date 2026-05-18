@@ -712,10 +712,52 @@ impl Default for Worker {
 #[cfg(test)]
 mod tests {
     use mmat_coordinator::{AuthorityScope, Role, RoleType};
+    use mmat_db::AsyncPgConnection;
     use mmat_event_stream::event::EventType;
     use tempfile::tempdir;
 
     use super::*;
+
+    type PgPool = mmat_db::Pool<AsyncPgConnection>;
+
+    fn now_nanos() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    }
+
+    async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
+        let base_url = std::env::var("MMAT_DB_URL").ok()?;
+        let schema = format!("{}_{}", prefix, now_nanos());
+        let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+        let mut conn = admin_pool.get().await.ok()?;
+        mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
+            .await
+            .ok()?;
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+        let pool = mmat_db::new_pool(&database_url).await.ok()?;
+        let migrate_pool = pool.clone();
+        let mut migrator_conn = migrate_pool.get().await.ok()?;
+        mmat_db::execute_sql(
+            &mut migrator_conn,
+            include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+        )
+        .await
+        .ok()?;
+        Some((pool, schema))
+    }
+
+    async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+        if let Ok(mut conn) = pool.get().await {
+            let _ = mmat_db::execute_sql(
+                &mut conn,
+                &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+            )
+            .await;
+        }
+    }
 
     #[test]
     fn creates_with_default_id() {
@@ -815,6 +857,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_repo_path_with_host_work_dir_and_project_id() {
+        let Some((pool, schema)) = postgres_test_database("worker_repo").await else {
+            return;
+        };
         let host_dir = tempdir().unwrap();
         let project_id = "my-app";
         let repo_path = host_dir.path().join(project_id);
@@ -828,7 +873,7 @@ mod tests {
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
         let (coordinator, _coordinator_rx) =
             tokio::sync::mpsc::channel::<mmat_coordinator::role::CoordinatorMessage>(10);
-        let memory_store = Arc::new(mmat_memory::store::MemoryStore::open(":memory:").unwrap());
+        let memory_store = Arc::new(mmat_memory::store::MemoryStore::new_with_pool(pool.clone()));
 
         let bus_clone = bus.clone();
         let handle = tokio::spawn(async move {
@@ -893,10 +938,14 @@ mod tests {
             expected.display().to_string(),
             "repository path should be host_work_dir joined with project_id"
         );
+        drop_postgres_schema(&pool, &schema).await;
     }
 
     #[tokio::test]
     async fn falls_back_to_cwd_when_host_work_dir_is_none() {
+        let Some((pool, schema)) = postgres_test_database("worker_cwd").await else {
+            return;
+        };
         let worker = Arc::new(
             Worker::new()
                 .with_fallback_worktree(true)
@@ -906,7 +955,7 @@ mod tests {
         let receiver = bus.subscribe(&[EventType::TaskAssigned]);
         let (coordinator, _coordinator_rx) =
             tokio::sync::mpsc::channel::<mmat_coordinator::role::CoordinatorMessage>(10);
-        let memory_store = Arc::new(mmat_memory::store::MemoryStore::open(":memory:").unwrap());
+        let memory_store = Arc::new(mmat_memory::store::MemoryStore::new_with_pool(pool.clone()));
 
         let bus_clone = bus.clone();
         let handle = tokio::spawn(async move {
@@ -966,5 +1015,6 @@ mod tests {
 
         let repo_path = handle.await.unwrap();
         assert_eq!(repo_path, ".", "repository path should fallback to cwd");
+        drop_postgres_schema(&pool, &schema).await;
     }
 }

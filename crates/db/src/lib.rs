@@ -7,7 +7,7 @@ use mmat_event_stream::event::{EventId, SemanticEvent};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::models::{Event, Lane, NewEvent, NewLane, NewProject, Project};
+use crate::models::{Artefact, Event, Lane, Memory, NewArtefact, NewEvent, NewLane, NewMemory};
 
 pub use diesel_async::{
     AsyncPgConnection,
@@ -27,11 +27,23 @@ pub enum DbError {
     #[error("database error: {0}")]
     Diesel(#[from] diesel::result::Error),
 
+    #[error("pool error: {0}")]
+    Pool(String),
+
     #[error("event JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
     #[error("UUID error: {0}")]
     Uuid(#[from] uuid::Error),
+
+    #[error("transaction error: {0}")]
+    Transaction(String),
+}
+
+impl From<PoolError> for DbError {
+    fn from(e: PoolError) -> Self {
+        DbError::Pool(e.to_string())
+    }
 }
 
 pub async fn connect(url: &str) -> Result<AsyncPgConnection> {
@@ -40,40 +52,197 @@ pub async fn connect(url: &str) -> Result<AsyncPgConnection> {
 
 pub async fn new_pool(url: &str) -> Result<Pool<AsyncPgConnection>, PoolError> {
     let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(url);
-    Ok(Pool::builder().build(config).await?)
+    Pool::builder().build(config).await
 }
 
-pub async fn insert_project(
+/// Execute a raw SQL statement (e.g. schema setup).
+pub async fn execute_sql(connection: &mut AsyncPgConnection, sql: &str) -> QueryResult<()> {
+    SimpleAsyncConnection::batch_execute(connection, sql).await
+}
+
+pub async fn begin_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
+    execute_sql(connection, "BEGIN").await
+}
+
+pub async fn commit_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
+    execute_sql(connection, "COMMIT").await
+}
+
+pub async fn rollback_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
+    execute_sql(connection, "ROLLBACK").await
+}
+
+// ── Memory CRUD ──
+
+pub async fn insert_memory(
     connection: &mut AsyncPgConnection,
-    project: &NewProject,
-) -> QueryResult<Project> {
-    diesel::insert_into(schema::projects::table)
-        .values(project)
-        .get_result::<Project>(connection)
+    memory: &NewMemory,
+) -> QueryResult<Memory> {
+    diesel::insert_into(schema::memories::table)
+        .values(memory)
+        .get_result::<Memory>(connection)
         .await
 }
 
-pub async fn load_projects(connection: &mut AsyncPgConnection) -> QueryResult<Vec<Project>> {
-    use crate::schema::projects::dsl::{label, projects};
+pub async fn get_memory_by_id(
+    connection: &mut AsyncPgConnection,
+    memory_id: Uuid,
+) -> QueryResult<Option<Memory>> {
+    use crate::schema::memories::dsl::{id, memories};
 
-    projects
-        .order(label.asc())
-        .load::<Project>(connection)
+    memories
+        .filter(id.eq(memory_id))
+        .first::<Memory>(connection)
+        .await
+        .optional()
+}
+
+pub async fn query_memories_not_superseded_by_type(
+    connection: &mut AsyncPgConnection,
+    memory_type_filter: &str,
+) -> QueryResult<Vec<Memory>> {
+    use crate::schema::memories::dsl::{memories, superseded_by};
+
+    memories
+        .filter(crate::schema::memories::memory_type.eq(memory_type_filter))
+        .filter(superseded_by.is_null())
+        .load::<Memory>(connection)
         .await
 }
 
-pub async fn project_exists(connection: &mut AsyncPgConnection, project_id: &str) -> Result<bool> {
-    use crate::schema::projects::dsl::{id, projects};
+pub async fn query_memories_not_superseded_by_scope(
+    connection: &mut AsyncPgConnection,
+    scope_filter: &str,
+) -> QueryResult<Vec<Memory>> {
+    use crate::schema::memories::dsl::{memories, superseded_by};
 
-    let parsed_id = Uuid::parse_str(project_id)?;
-    let row = projects
-        .filter(id.eq(parsed_id))
+    memories
+        .filter(crate::schema::memories::scope.eq(scope_filter))
+        .filter(superseded_by.is_null())
+        .load::<Memory>(connection)
+        .await
+}
+
+pub async fn query_memories_not_superseded(
+    connection: &mut AsyncPgConnection,
+) -> QueryResult<Vec<Memory>> {
+    use crate::schema::memories::dsl::{memories, superseded_by};
+
+    memories
+        .filter(superseded_by.is_null())
+        .load::<Memory>(connection)
+        .await
+}
+
+pub async fn query_all_memories(connection: &mut AsyncPgConnection) -> QueryResult<Vec<Memory>> {
+    use crate::schema::memories::dsl::memories;
+
+    memories.load::<Memory>(connection).await
+}
+
+pub async fn update_memory_superseded_by(
+    connection: &mut AsyncPgConnection,
+    memory_id: Uuid,
+    new_superseded_by: Option<Uuid>,
+) -> QueryResult<usize> {
+    use crate::schema::memories::dsl::{id, memories, superseded_by};
+
+    diesel::update(memories.filter(id.eq(memory_id)))
+        .set(superseded_by.eq(new_superseded_by))
+        .execute(connection)
+        .await
+}
+
+pub async fn update_memory_supersedes(
+    connection: &mut AsyncPgConnection,
+    memory_id: Uuid,
+    supersedes_value: Option<Uuid>,
+) -> QueryResult<usize> {
+    use crate::schema::memories::dsl::{id, memories};
+
+    diesel::update(memories.filter(id.eq(memory_id)))
+        .set(crate::schema::memories::supersedes.eq(supersedes_value))
+        .execute(connection)
+        .await
+}
+
+pub async fn update_memory_last_accessed(
+    connection: &mut AsyncPgConnection,
+    memory_id: Uuid,
+    new_last_accessed_at: &str,
+) -> QueryResult<usize> {
+    use crate::schema::memories::dsl::{id, memories};
+
+    diesel::update(memories.filter(id.eq(memory_id)))
+        .set(crate::schema::memories::last_accessed_at.eq(new_last_accessed_at))
+        .execute(connection)
+        .await
+}
+
+pub async fn update_memory_content(
+    connection: &mut AsyncPgConnection,
+    memory_id: Uuid,
+    new_content: &str,
+) -> QueryResult<usize> {
+    use crate::schema::memories::dsl::{id, memories};
+
+    diesel::update(memories.filter(id.eq(memory_id)))
+        .set(crate::schema::memories::content.eq(new_content))
+        .execute(connection)
+        .await
+}
+
+pub async fn memory_exists(
+    connection: &mut AsyncPgConnection,
+    memory_id: Uuid,
+) -> QueryResult<bool> {
+    use crate::schema::memories::dsl::{id, memories};
+
+    let row = memories
+        .filter(id.eq(memory_id))
         .select(id)
         .first::<Uuid>(connection)
         .await
         .optional()?;
-
     Ok(row.is_some())
+}
+
+// ── Artefact CRUD ──
+
+pub async fn insert_artefact(
+    connection: &mut AsyncPgConnection,
+    artefact: &NewArtefact,
+) -> QueryResult<Artefact> {
+    diesel::insert_into(schema::artefacts::table)
+        .values(artefact)
+        .get_result::<Artefact>(connection)
+        .await
+}
+
+pub async fn get_artefact_payload(
+    connection: &mut AsyncPgConnection,
+    artefact_id: Uuid,
+) -> QueryResult<Option<String>> {
+    use crate::schema::artefacts::dsl::{artefacts, id, payload};
+
+    let row = artefacts
+        .filter(id.eq(artefact_id))
+        .select(payload)
+        .first::<serde_json::Value>(connection)
+        .await
+        .optional()?;
+
+    Ok(row.map(|v| v.to_string()))
+}
+
+pub async fn insert_event(
+    connection: &mut AsyncPgConnection,
+    event: &NewEvent,
+) -> QueryResult<Event> {
+    diesel::insert_into(schema::events::table)
+        .values(event)
+        .get_result::<Event>(connection)
+        .await
 }
 
 pub async fn append_event(

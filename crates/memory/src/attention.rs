@@ -576,8 +576,11 @@ mod tests {
 
     #[tokio::test]
     async fn near_duplicate_rehearses_existing_memory() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+        let Some((pool, schema)) = crate::store::tests::postgres_test_database("attention").await
+        else {
+            return;
+        };
+        let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
         let memory = Memory::builder()
             .memory_type(MemoryType::Fact)
             .content("The database schema requires a migration because a column was added")
@@ -623,5 +626,7 @@ mod tests {
             .unwrap()
             .last_accessed_at;
         assert!(after > before);
+
+        crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }
 }

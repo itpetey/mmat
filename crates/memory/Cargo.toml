@@ -9,22 +9,16 @@ license-file.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono = { workspace = true, features = ["now", "serde"] }
+mmat-db = { path = "../db" }
 mmat-event-stream = { path = "../event-stream" }
 mmat-llm = { path = "../llm" }
 parking_lot.workspace = true
 qdrant-client.workspace = true
-rusqlite.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
-sqlx = { workspace = true, features = [
-  "derive",
-  "postgres",
-  "runtime-tokio",
-] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true

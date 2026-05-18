@@ -5,6 +5,7 @@ use std::{
 };
 
 use mmat_coordinator::{CoordinatorHandle, Role, RoleContext};
+use mmat_db::AsyncPgConnection;
 use mmat_event_stream::{
     event::{ArtefactRef, EventId, EventType, EvidenceRef, RoleId as EventRoleId, SemanticEvent},
     event_bus::EventBus,
@@ -28,7 +29,6 @@ use mmat_roles::{
     artefacts::{AuditReport, EvidenceFinding, EvidencePack},
 };
 use qdrant_client::qdrant::Value;
-use tempfile::{TempDir, tempdir};
 use tokio::time::Duration;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -97,17 +97,60 @@ impl VectorMemoryBackend for FakeVectorBackend {
     }
 }
 
-fn setup_auditor_test_env() -> (TempDir, EventBus, Arc<EventStore>, Arc<MemoryStore>) {
-    let dir = tempdir().unwrap();
+type PgPool = mmat_db::Pool<AsyncPgConnection>;
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+    let mut conn = admin_pool.get().await.ok()?;
+    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let pool = mmat_db::new_pool(&database_url).await.ok()?;
+    let migrate_pool = pool.clone();
+    let mut migrator_conn = migrate_pool.get().await.ok()?;
+    mmat_db::execute_sql(
+        &mut migrator_conn,
+        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+    )
+    .await
+    .ok()?;
+    Some((pool, schema))
+}
+
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
+}
+
+async fn setup_auditor_test_env(pool: PgPool) -> (EventBus, Arc<EventStore>, Arc<MemoryStore>) {
     let event_store = Arc::new(EventStore::empty());
     let bus = EventBus::new(100).with_store(event_store.clone());
-    let memory_store = Arc::new(MemoryStore::open(dir.path().join("memory.db")).unwrap());
-    (dir, bus, event_store, memory_store)
+    let memory_store = Arc::new(MemoryStore::new_with_pool(pool));
+    (bus, event_store, memory_store)
 }
 
 #[tokio::test]
 async fn test_auditor_detects_contradiction_when_tests_fail() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -175,11 +218,15 @@ async fn test_auditor_detects_contradiction_when_tests_fail() {
         detected,
         "Auditor should detect contradiction when tests fail but claim says passed"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -235,11 +282,15 @@ async fn test_auditor_detects_evidence_chain_broken_for_missing_file() {
         detected,
         "Auditor should detect EvidenceChainBroken for missing file reference"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_detects_hallucinated_api_endpoint() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -297,11 +348,15 @@ async fn test_auditor_detects_hallucinated_api_endpoint() {
         SemanticEvent::PolicyViolationDetected { violation_type, .. }
             if violation_type == "hallucinated_capability"
     ));
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_detects_memory_contamination_without_mutation() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -382,11 +437,15 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
         retrieved.content, "derived from broken claim",
         "Auditor must NOT mutate memory"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_detects_process_skipped_when_tests_not_run() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -439,11 +498,15 @@ async fn test_auditor_detects_process_skipped_when_tests_not_run() {
         detected,
         "Auditor should detect ProcessSkipped for 'tests passed' without cargo test"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_does_not_accept_uncited_stale_test_run() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -495,11 +558,15 @@ async fn test_auditor_does_not_accept_uncited_stale_test_run() {
         detected,
         "Uncited stale test runs must not satisfy process adherence"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_does_not_flag_valid_claim() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -569,11 +636,15 @@ async fn test_auditor_does_not_flag_valid_claim() {
         !any_flag,
         "Auditor should NOT flag a valid claim with proper evidence"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_flags_authority_violation() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -625,11 +696,15 @@ async fn test_auditor_flags_authority_violation() {
         detected,
         "Auditor should flag authority violation when Worker publishes DecisionRecorded"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_flags_unjustified_confidence() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -682,11 +757,15 @@ async fn test_auditor_flags_unjustified_confidence() {
         detected,
         "Auditor should flag unjustified high confidence with no evidence"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let bus = Arc::new(bus);
     let qdrant = Arc::new(FakeVectorBackend::default());
     let librarian = Librarian::new(
@@ -774,11 +853,15 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
         "Librarian should consume the audit violation and act on contaminated memory"
     );
     assert_eq!(qdrant.deleted.lock().as_slice(), &[memory.id]);
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_auditor_rejects_non_tool_evidence_ref() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -830,6 +913,7 @@ async fn test_auditor_rejects_non_tool_evidence_ref() {
         detected,
         "Claim evidence must reference ToolExecuted events"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
@@ -841,7 +925,10 @@ async fn test_auditor_verifies_scholar_web_sources() {
         .mount(&server)
         .await;
 
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new().with_source_verification(true));
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -889,11 +976,15 @@ async fn test_auditor_verifies_scholar_web_sources() {
         .is_ok();
     run_handle.abort();
     assert!(detected, "Unreachable Scholar source should be flagged");
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let llm = Arc::new(MockLlmClient::default());
     let auditor = Arc::new(Auditor::new().with_llm_client(llm.clone()).with_llm_config(
         AuditorLlmConfig {
@@ -969,11 +1060,15 @@ async fn test_llm_semantic_check_is_budgeted_and_flags_inconsistency() {
         1,
         "LLM semantic checks must honour the per-cycle budget"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn test_low_confidence_with_strong_evidence_is_report_only() {
-    let (_dir, bus, _event_store, memory_store) = setup_auditor_test_env();
+    let Some((pool, schema)) = postgres_test_database("auditor").await else {
+        return;
+    };
+    let (bus, _event_store, memory_store) = setup_auditor_test_env(pool.clone()).await;
     let auditor = Arc::new(Auditor::new());
 
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -1069,4 +1164,5 @@ async fn test_low_confidence_with_strong_evidence_is_report_only() {
         no_policy_violation,
         "Low confidence with strong evidence is report-only"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }

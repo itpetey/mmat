@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use mmat_coordinator::{CoordinatorHandle, Role, RoleContext};
+use mmat_db::AsyncPgConnection;
 use mmat_event_stream::{
     event::{ArtefactRef, EventType, RoleId as EventRoleId, SemanticEvent, TaskContract},
     event_bus::EventBus,
@@ -19,7 +20,47 @@ use mmat_roles::{
 };
 use parking_lot::Mutex;
 use qdrant_client::qdrant::Value;
-use tempfile::{TempDir, tempdir};
+
+type PgPool = mmat_db::Pool<AsyncPgConnection>;
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+    let mut conn = admin_pool.get().await.ok()?;
+    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let pool = mmat_db::new_pool(&database_url).await.ok()?;
+    let migrate_pool = pool.clone();
+    let mut migrator_conn = migrate_pool.get().await.ok()?;
+    mmat_db::execute_sql(
+        &mut migrator_conn,
+        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+    )
+    .await
+    .ok()?;
+    Some((pool, schema))
+}
+
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
+}
 
 #[derive(Default)]
 struct FakeVectorBackend {
@@ -54,7 +95,10 @@ impl VectorMemoryBackend for FakeVectorBackend {
 
 #[tokio::test]
 async fn architect_receives_task_and_produces_adr() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("arch_adr").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let architect = Arc::new(Architect::new());
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::TaskAssigned]);
@@ -133,6 +177,7 @@ async fn architect_receives_task_and_produces_adr() {
         received_artefact,
         "Architect should publish ArtefactProduced"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 fn coordinator_pair() -> (
@@ -145,7 +190,10 @@ fn coordinator_pair() -> (
 
 #[tokio::test]
 async fn intent_lead_turns_initial_prompt_into_brief_and_dispatches_roles() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("intent_brief").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let intent_lead = Arc::new(IntentLead::new());
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::HumanFeedbackReceived]);
@@ -246,11 +294,15 @@ async fn intent_lead_turns_initial_prompt_into_brief_and_dispatches_roles() {
     assert!(dispatched_scholar);
     assert!(dispatched_ops);
     assert!(proposed_preference);
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn ops_manager_creates_sop_on_task() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("ops_sop").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let ops_manager = Arc::new(OpsManager::new());
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::TaskAssigned]);
@@ -302,13 +354,17 @@ async fn ops_manager_creates_sop_on_task() {
         sop_published,
         "SOP MemoryProposed events should have been published"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn ops_manager_sop_memory_is_accepted_by_librarian() {
-    let dir = tempdir().unwrap();
+    let Some((pool, schema)) = postgres_test_database("ops_lib_sop").await else {
+        return;
+    };
+    let pool_for_store = pool.clone();
     let bus = Arc::new(EventBus::new(100));
-    let memory_store = Arc::new(MemoryStore::open(dir.path().join("test.db")).unwrap());
+    let memory_store = Arc::new(MemoryStore::new_with_pool(pool_for_store));
     let qdrant = Arc::new(FakeVectorBackend::default());
     let librarian = Librarian::new(
         memory_store.clone(),
@@ -361,11 +417,15 @@ async fn ops_manager_sop_memory_is_accepted_by_librarian() {
     role_handle.abort();
     librarian_handle.abort();
     assert!(accepted, "Librarian should accept at least one SOP memory");
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn project_manager_deduplicates_adrs() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("pm_dedup").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let project_manager = Arc::new(ProjectManager::new());
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::DecisionRecorded]);
@@ -430,23 +490,29 @@ async fn project_manager_deduplicates_adrs() {
         "Duplicate ADRs should produce exactly one TaskAssigned event"
     );
 
-    let graph = project_manager.delivery_graph();
-    let graph = graph.read();
-    let task = graph
-        .nodes
-        .values()
-        .next()
-        .expect("PM should create a task");
-    assert_eq!(
-        task.task_card.adr_references,
-        vec!["adr-dedup-001".to_string()],
-        "PM should preserve the real ADR artefact id rather than synthetic DecisionRecorded id"
-    );
+    {
+        let graph = project_manager.delivery_graph();
+        let graph = graph.read();
+        let task = graph
+            .nodes
+            .values()
+            .next()
+            .expect("PM should create a task");
+        assert_eq!(
+            task.task_card.adr_references,
+            vec!["adr-dedup-001".to_string()],
+            "PM should preserve the real ADR artefact id rather than synthetic DecisionRecorded id"
+        );
+    }
+    drop_postgres_schema(&pool, &schema).await;
 }
 
-#[tokio::test]
-async fn project_manager_marks_failed_task_in_delivery_graph() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    #[tokio::test]
+    async fn project_manager_marks_failed_task_in_delivery_graph() {
+    let Some((pool, schema)) = postgres_test_database("pm_fail").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let project_manager = Arc::new(ProjectManager::new());
 
     let task = TaskCard {
@@ -495,18 +561,24 @@ async fn project_manager_marks_failed_task_in_delivery_graph() {
     )
     .await;
 
-    let graph = project_manager.delivery_graph();
-    let graph = graph.read();
-    assert_eq!(
-        graph.nodes["task-failed-001"].status,
-        TaskStatus::Failed,
-        "TaskFailed events should update delivery graph status"
-    );
+    {
+        let graph = project_manager.delivery_graph();
+        let graph = graph.read();
+        assert_eq!(
+            graph.nodes["task-failed-001"].status,
+            TaskStatus::Failed,
+            "TaskFailed events should update delivery graph status"
+        );
+    }
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn reviewer_extracts_implementation_from_task_completed() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("reviewer").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let reviewer = Arc::new(Reviewer::new());
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::TaskCompleted]);
@@ -580,11 +652,15 @@ async fn reviewer_extracts_implementation_from_task_completed() {
         !missing_implementation_finding,
         "Reviewer should see implementation content, not complain about missing it"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn scholar_budget_exhaustion_requests_escalation() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("scholar_esc").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let scholar = Arc::new(Scholar::new().with_budget(1, 0, 1));
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::TaskAssigned]);
@@ -630,11 +706,15 @@ async fn scholar_budget_exhaustion_requests_escalation() {
         received_escalation,
         "Scholar should escalate on budget exhaustion"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn scholar_receives_task_and_completes_research_outputs() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("scholar_res").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let scholar = Arc::new(Scholar::new());
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::TaskAssigned]);
@@ -696,18 +776,21 @@ async fn scholar_receives_task_and_completes_research_outputs() {
     assert!(artefacts.contains(&"research_brief".to_string()));
     assert!(artefacts.contains(&"evidence_pack".to_string()));
     assert!(artefacts.contains(&"open_questions".to_string()));
+    drop_postgres_schema(&pool, &schema).await;
 }
 
-fn setup_role_test_env() -> (TempDir, EventBus, Arc<MemoryStore>) {
-    let dir = tempdir().unwrap();
+async fn setup_role_test_env(pool: PgPool) -> (EventBus, Arc<MemoryStore>) {
     let bus = EventBus::new(100);
-    let memory_store = Arc::new(MemoryStore::open(dir.path().join("test.db")).unwrap());
-    (dir, bus, memory_store)
+    let memory_store = Arc::new(MemoryStore::new_with_pool(pool));
+    (bus, memory_store)
 }
 
 #[tokio::test]
 async fn worker_does_not_fallback_by_default() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("worker_fb").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let worker = Arc::new(Worker::new().with_validation_commands(vec![]));
     let (coordinator, _coordinator_rx) = coordinator_pair();
     let receiver = bus.subscribe(&[EventType::TaskAssigned]);
@@ -745,11 +828,15 @@ async fn worker_does_not_fallback_by_default() {
         "Worker should return the git worktree error when fallback is disabled: {:?}",
         result
     );
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn worker_receives_task_and_completes() {
-    let (_dir, bus, memory_store) = setup_role_test_env();
+    let Some((pool, schema)) = postgres_test_database("worker_comp").await else {
+        return;
+    };
+    let (bus, memory_store) = setup_role_test_env(pool.clone()).await;
     let worker = Arc::new(
         Worker::new()
             .with_validation_commands(vec![])
@@ -845,4 +932,5 @@ async fn worker_receives_task_and_completes() {
         artefact,
         "Worker should publish ArtefactProduced with patch"
     );
+    drop_postgres_schema(&pool, &schema).await;
 }

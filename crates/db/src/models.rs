@@ -82,6 +82,7 @@ pub struct Memory {
 #[derive(Debug, Clone, Insertable, Serialize, Deserialize)]
 #[diesel(table_name = crate::schema::memories)]
 pub struct NewMemory {
+    pub id: Uuid,
     pub memory_type: String,
     pub content: String,
     pub scope: String,
@@ -111,6 +112,7 @@ pub struct Artefact {
 #[derive(Debug, Clone, Insertable, Serialize, Deserialize)]
 #[diesel(table_name = crate::schema::artefacts)]
 pub struct NewArtefact {
+    pub id: Uuid,
     pub artefact_type: String,
     pub content_hash: String,
     pub payload: Value,

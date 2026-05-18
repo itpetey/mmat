@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use mmat_db::AsyncPgConnection;
 use mmat_event_stream::{
     event::{EventId, EventType, EvidenceRef, RoleId, SemanticEvent},
     event_bus::EventBus,
@@ -22,7 +23,8 @@ use mmat_memory::{
 };
 use parking_lot::Mutex;
 use qdrant_client::qdrant::Value;
-use sqlx::postgres::PgPoolOptions;
+
+type PgPool = mmat_db::Pool<AsyncPgConnection>;
 
 #[derive(Default)]
 struct FakeVectorBackend {
@@ -68,11 +70,49 @@ impl VectorMemoryBackend for FakeVectorBackend {
     }
 }
 
-async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
-        .execute(pool)
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+    let mut conn = admin_pool.get().await.ok()?;
+    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
         .await
-        .unwrap();
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let pool = mmat_db::new_pool(&database_url).await.ok()?;
+    let migrate_pool = pool.clone();
+    let mut migrator_conn = migrate_pool.get().await.ok()?;
+    mmat_db::execute_sql(
+        &mut migrator_conn,
+        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+    )
+    .await
+    .ok()?;
+    Some((pool, schema, database_url))
+}
+
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
+}
+
+async fn create_test_store(prefix: &str) -> Option<(Arc<MemoryStore>, PgPool, String)> {
+    let (pool, schema, _url) = postgres_test_database(prefix).await?;
+    let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
+    Some((store, pool, schema))
 }
 
 #[tokio::test]
@@ -102,8 +142,10 @@ async fn integration_attention_proposal_carries_metadata() {
 
 #[tokio::test]
 async fn integration_attention_to_librarian_accepts_and_indexes_memory() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let (store, pool, schema) = match create_test_store("attention_accept").await {
+        Some(v) => v,
+        None => return,
+    };
     let qdrant = Arc::new(FakeVectorBackend::default());
     let bus = Arc::new(EventBus::new(64));
     let attention = AttentionEngine::new(AttentionConfig {
@@ -156,12 +198,15 @@ async fn integration_attention_to_librarian_accepts_and_indexes_memory() {
 
     attention_handle.abort();
     librarian_handle.abort();
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn integration_contradiction_higher_authority() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let (store, pool, schema) = match create_test_store("contradiction").await {
+        Some(v) => v,
+        None => return,
+    };
     let qdrant = Arc::new(FakeVectorBackend::default());
     let bus = Arc::new(EventBus::new(64));
 
@@ -210,12 +255,14 @@ async fn integration_contradiction_higher_authority() {
     assert_eq!(chain[0].id, old_memory.id);
     assert_eq!(chain[1].supersedes, Some(old_memory.id));
     handle.abort();
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn integration_decay_scan_supersedes_stale() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let Some((store, pool, schema)) = create_test_store("decay").await else {
+        return;
+    };
     let qdrant = Arc::new(FakeVectorBackend::default());
     let bus = Arc::new(EventBus::new(64));
 
@@ -248,12 +295,14 @@ async fn integration_decay_scan_supersedes_stale() {
     assert!(decayed.is_empty());
     assert_eq!(qdrant.deleted.lock().as_slice(), &[stale_memory.id]);
     handle.abort();
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn integration_grounding_gate_rejects_ungrounded_llm() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let Some((store, pool, schema)) = create_test_store("grounding").await else {
+        return;
+    };
     let qdrant = Arc::new(FakeVectorBackend::default());
     let bus = Arc::new(EventBus::new(64));
     let librarian = Librarian::new(store.clone(), qdrant, Duration::from_secs(3600));
@@ -290,13 +339,23 @@ async fn integration_grounding_gate_rejects_ungrounded_llm() {
             .is_empty()
     );
     handle.abort();
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn integration_memory_lifecycle() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = MemoryStore::open(tmp.path()).unwrap();
-    let memory = make_test_memory();
+    let Some((store, pool, schema)) = create_test_store("lifecycle").await else {
+        return;
+    };
+    let memory = Memory::builder()
+        .memory_type(MemoryType::Fact)
+        .content("This is a durable test fact with sufficient length")
+        .scope(MemoryScope::Project)
+        .authority(Authority::UserInstruction)
+        .confidence(Confidence::new(0.9).unwrap())
+        .source_agent(RoleId::new("user"))
+        .build()
+        .unwrap();
 
     store.insert(&memory).unwrap();
 
@@ -304,15 +363,25 @@ async fn integration_memory_lifecycle() {
     assert_eq!(retrieved.content, memory.content);
     assert_eq!(retrieved.memory_type, MemoryType::Fact);
     assert_eq!(retrieved.scope, MemoryScope::Project);
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn integration_near_duplicate_suppression() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = Arc::new(MemoryStore::open(tmp.path()).unwrap());
+    let Some((store, pool, schema)) = create_test_store("near_dup").await else {
+        return;
+    };
     let qdrant = Arc::new(FakeVectorBackend::default());
 
-    let memory = make_test_memory();
+    let memory = Memory::builder()
+        .memory_type(MemoryType::Fact)
+        .content("This is a durable test fact with sufficient length")
+        .scope(MemoryScope::Project)
+        .authority(Authority::UserInstruction)
+        .confidence(Confidence::new(0.9).unwrap())
+        .source_agent(RoleId::new("user"))
+        .build()
+        .unwrap();
     store.insert(&memory).unwrap();
     qdrant.results.lock().push((memory.id, 0.99));
     let before = store
@@ -359,12 +428,14 @@ async fn integration_near_duplicate_suppression() {
             .is_err()
     );
     handle.abort();
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test]
 async fn integration_provenance_trace() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let store = MemoryStore::open(tmp.path()).unwrap();
+    let Some((store, pool, schema)) = create_test_store("provenance").await else {
+        return;
+    };
     let event_store = Arc::new(EventStore::empty());
 
     let engine = ProvenanceEngine::new();
@@ -412,31 +483,12 @@ async fn integration_provenance_trace() {
 
     let trace = engine.trace_memory(&retrieved, &event_store).unwrap();
     assert!(!trace.is_empty());
-}
-
-fn make_test_memory() -> Memory {
-    Memory::builder()
-        .memory_type(MemoryType::Fact)
-        .content("This is a durable test fact with sufficient length")
-        .scope(MemoryScope::Project)
-        .authority(Authority::UserInstruction)
-        .confidence(Confidence::new(0.9).unwrap())
-        .source_agent(RoleId::new("user"))
-        .build()
-        .unwrap()
-}
-
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_artefact_store_round_trip_and_transactional_event() {
-    let Some((database_url, admin_pool, schema)) = postgres_test_database("artefact_store").await
-    else {
+    let Some((pool, schema, database_url)) = postgres_test_database("artefact_store").await else {
         return;
     };
 
@@ -462,13 +514,12 @@ async fn postgres_artefact_store_round_trip_and_transactional_event() {
         "ArtefactProduced"
     );
 
-    drop_postgres_schema(&admin_pool, &schema).await;
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_memory_store_crud_queries_and_supersession() {
-    let Some((database_url, admin_pool, schema)) = postgres_test_database("memory_store").await
-    else {
+    let Some((pool, schema, database_url)) = postgres_test_database("memory_store").await else {
         return;
     };
 
@@ -519,22 +570,5 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
     assert_eq!(chain[0].id, old.id);
     assert_eq!(chain[1].id, new.id);
 
-    drop_postgres_schema(&admin_pool, &schema).await;
-}
-
-async fn postgres_test_database(prefix: &str) -> Option<(String, sqlx::PgPool, String)> {
-    let base_url = std::env::var("MMAT_DB_URL").ok()?;
-    let schema = format!("{}_{}", prefix, now_nanos());
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&base_url)
-        .await
-        .ok()?;
-    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
-        .execute(&admin_pool)
-        .await
-        .ok()?;
-    let separator = if base_url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
-    Some((database_url, admin_pool, schema))
+    drop_postgres_schema(&pool, &schema).await;
 }

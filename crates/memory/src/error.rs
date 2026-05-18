@@ -1,5 +1,6 @@
 //! Error types for the memory crate.
 
+use mmat_db::DbError;
 use mmat_event_stream::event_store::EventStoreError;
 use thiserror::Error;
 
@@ -49,13 +50,9 @@ pub enum Error {
     #[error("Event bus error: {0}")]
     EventBus(String),
 
-    /// An error occurred in the SQLite database layer.
-    #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-
-    /// An error occurred in the Postgres database layer.
-    #[error("Postgres error: {0}")]
-    Postgres(#[from] sqlx::Error),
+    /// An error occurred in the database layer.
+    #[error("Database error: {0}")]
+    Database(#[from] DbError),
 
     /// An error occurred during JSON serialisation or deserialisation.
     #[error("JSON error: {0}")]
