@@ -1,7 +1,7 @@
-use diesel::{QueryResult, prelude::*};
+use diesel::{QueryResult, connection::CacheSize, prelude::*};
 use diesel_async::{
     AsyncConnection, SimpleAsyncConnection,
-    pooled_connection::{AsyncDieselConnectionManager, PoolError},
+    pooled_connection::{AsyncDieselConnectionManager, ManagerConfig, PoolError},
 };
 use mmat_event_stream::event::EventId;
 use thiserror::Error;
@@ -54,12 +54,21 @@ impl From<PoolError> for DbError {
 }
 
 pub async fn connect(url: &str) -> Result<AsyncPgConnection> {
-    Ok(AsyncPgConnection::establish(url).await?)
+    Ok(connect_without_statement_cache(url).await?)
 }
 
 pub async fn new_pool(url: &str) -> Result<Pool<AsyncPgConnection>, PoolError> {
-    let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(url);
+    let mut manager_config = ManagerConfig::default();
+    manager_config.custom_setup = Box::new(|url| Box::pin(connect_without_statement_cache(url)));
+    let config =
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(url, manager_config);
     Pool::builder().build(config).await
+}
+
+async fn connect_without_statement_cache(url: &str) -> diesel::ConnectionResult<AsyncPgConnection> {
+    let mut connection = AsyncPgConnection::establish(url).await?;
+    connection.set_prepared_statement_cache_size(CacheSize::Disabled);
+    Ok(connection)
 }
 
 /// Execute a raw SQL statement (e.g. schema setup).

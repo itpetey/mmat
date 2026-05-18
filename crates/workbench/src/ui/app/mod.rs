@@ -1,5 +1,6 @@
 use dioxus::{document::Link, prelude::*};
 use dioxus_icons::lucide::{ChevronRight, Circle, Plus};
+use dioxus_primitives::dioxus_attributes::attributes;
 
 use crate::{
     api::chat::{
@@ -21,8 +22,8 @@ use crate::{
             sidebar::{
                 Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup,
                 SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
-                SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem, SidebarProvider,
-                SidebarRail, SidebarSide, SidebarTrigger, SidebarVariant,
+                SidebarMenuAction, SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuItem,
+                SidebarProvider, SidebarRail, SidebarSide, SidebarTrigger, SidebarVariant,
             },
             tabs::{TabContent, TabList, TabTrigger, Tabs},
         },
@@ -166,42 +167,30 @@ fn LaneNavigation(
                     match &*lanes.read_unchecked() {
                         Some(Ok(projection)) => rsx! {
                             for lane in projection.active.iter() {
-                                LaneButton {
+                                SidebarMenuItem {
                                     key: "{lane.id}",
-                                    lane: lane.clone(),
-                                    selected: selected_lane_id().as_deref() == Some(lane.id.as_str()),
+                                    LaneButton {
+                                        lane: lane.clone(),
+                                        selected: selected_lane_id().as_deref() == Some(lane.id.as_str()),
+                                        selected_lane_id,
+                                        selected_lane_status,
+                                    }
+                                    ArchiveLaneButton {
+                                        lane: lane.clone(),
+                                        selected_project_id,
+                                        selected_lane_id,
+                                        selected_lane_status,
+                                        lanes_revision,
+                                    }
+                                }
+                            }
+                            SidebarMenuItem {
+                                LaneButton {
+                                    lane: projection.system.clone(),
+                                    selected: selected_lane_id().as_deref() == Some(SYSTEM_LANE_ID),
                                     selected_lane_id,
                                     selected_lane_status,
                                 }
-                                button {
-                                    class: AppStyles::dx_lane_archive_button,
-                                    aria_label: "Archive lane {lane.title}",
-                                    onclick: {
-                                        let lane_id = lane.id.clone();
-                                        move |_| {
-                                            let Some(project_id) = selected_project_id() else {
-                                                return;
-                                            };
-                                            let lane_id = lane_id.clone();
-                                            spawn(async move {
-                                                if archive_lane_api(project_id, lane_id.clone()).await.is_ok() {
-                                                    if selected_lane_id().as_deref() == Some(lane_id.as_str()) {
-                                                        selected_lane_id.set(None);
-                                                        selected_lane_status.set(None);
-                                                    }
-                                                    lanes.restart();
-                                                }
-                                            });
-                                        }
-                                    },
-                                    "archive"
-                                }
-                            }
-                            LaneButton {
-                                lane: projection.system.clone(),
-                                selected: selected_lane_id().as_deref() == Some(SYSTEM_LANE_ID),
-                                selected_lane_id,
-                                selected_lane_status,
                             }
                         },
                         Some(Err(load_error)) => rsx! {
@@ -261,12 +250,14 @@ fn LaneNavigation(
                     match &*lanes.read_unchecked() {
                         Some(Ok(projection)) if !projection.archived.is_empty() => rsx! {
                             for lane in projection.archived.iter() {
-                                LaneButton {
+                                SidebarMenuItem {
                                     key: "{lane.id}",
-                                    lane: lane.clone(),
-                                    selected: selected_lane_id().as_deref() == Some(lane.id.as_str()),
-                                    selected_lane_id,
-                                    selected_lane_status,
+                                    LaneButton {
+                                        lane: lane.clone(),
+                                        selected: selected_lane_id().as_deref() == Some(lane.id.as_str()),
+                                        selected_lane_id,
+                                        selected_lane_status,
+                                    }
                                 }
                             }
                         },
@@ -282,33 +273,71 @@ fn LaneNavigation(
 }
 
 #[component]
+fn ArchiveLaneButton(
+    lane: WorkbenchLane,
+    selected_project_id: Signal<Option<String>>,
+    mut selected_lane_id: Signal<Option<String>>,
+    mut selected_lane_status: Signal<Option<String>>,
+    mut lanes_revision: Signal<u64>,
+) -> Element {
+    let lane_id = lane.id.clone();
+    let lane_title = lane.title.clone();
+    let attributes = attributes!(button {
+        onclick: move |_| {
+            let Some(project_id) = selected_project_id() else {
+                return;
+            };
+            let lane_id = lane_id.clone();
+            spawn(async move {
+                if archive_lane_api(project_id, lane_id.clone()).await.is_ok() {
+                    if selected_lane_id().as_deref() == Some(lane_id.as_str()) {
+                        selected_lane_id.set(None);
+                        selected_lane_status.set(None);
+                    }
+                    lanes_revision.set(lanes_revision() + 1);
+                }
+            });
+        },
+    });
+
+    rsx! {
+        SidebarMenuAction {
+            show_on_hover: true,
+            class: AppStyles::dx_lane_archive_button,
+            aria_label: "Archive lane {lane_title}",
+            attributes,
+            "X"
+        }
+    }
+}
+
+#[component]
 fn LaneButton(
     lane: WorkbenchLane,
     selected: bool,
     mut selected_lane_id: Signal<Option<String>>,
     mut selected_lane_status: Signal<Option<String>>,
 ) -> Element {
-    let class = if selected {
-        format!(
-            "{} {}",
-            AppStyles::dx_lane_button,
-            AppStyles::dx_lane_button_active
-        )
-    } else {
-        AppStyles::dx_lane_button.to_string()
-    };
+    let mut class = AppStyles::dx_lane_button.to_string();
+    if selected {
+        class = format!("{class} {}", AppStyles::dx_lane_button_active);
+    }
+    if lane.id == SYSTEM_LANE_ID {
+        class = format!("{class} italic");
+    }
+    let attributes = attributes!(button {
+        onclick: move |_| {
+            selected_lane_id.set(Some(lane.id.clone()));
+            selected_lane_status.set(Some(lane.status.clone()));
+        },
+    });
 
     rsx! {
-        SidebarMenuItem {
-            button {
-                class,
-                onclick: move |_| {
-                    selected_lane_id.set(Some(lane.id.clone()));
-                    selected_lane_status.set(Some(lane.status.clone()));
-                },
-                DemoIcon {}
-                span { {lane.title.clone()} }
-            }
+        SidebarMenuButton {
+            class,
+            attributes,
+            DemoIcon {}
+            {lane.title}
         }
     }
 }
