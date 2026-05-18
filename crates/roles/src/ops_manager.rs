@@ -557,6 +557,7 @@ impl OpsManager {
             let sops = ctx
                 .memory_store
                 .query_by_type(MemoryType::SOP)
+                .await
                 .map_err(|e| RoleError::Internal(format!("Failed to query SOPs: {e}")))?;
 
             let now = Utc::now();
@@ -591,9 +592,12 @@ impl OpsManager {
                         ))
                     })?;
                 } else {
-                    ctx.memory_store.update_last_accessed(sop.id).map_err(|e| {
-                        RoleError::Internal(format!("Failed to update last accessed: {e}"))
-                    })?;
+                    ctx.memory_store
+                        .update_last_accessed(sop.id)
+                        .await
+                        .map_err(|e| {
+                            RoleError::Internal(format!("Failed to update last accessed: {e}"))
+                        })?;
                 }
             }
         }

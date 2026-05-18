@@ -43,13 +43,6 @@ impl ArtefactStore {
         })
     }
 
-    /// Creates a Postgres-backed artefact store from synchronous contexts.
-    pub fn new_postgres(database_url: &str) -> Result<Self> {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| crate::error::Error::Runtime(e.to_string()))?;
-        tokio::task::block_in_place(|| rt.block_on(Self::connect(database_url)))
-    }
-
     /// Stores an artefact payload and returns a reference with a `db://` URI.
     pub async fn store(&self, artefact_type: &str, payload: &str) -> Result<StoredArtefactRef> {
         let Some(pool) = &self.pool else {

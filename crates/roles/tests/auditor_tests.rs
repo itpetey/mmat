@@ -406,7 +406,7 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
         .source_agent(EventRoleId("worker-001".to_string()))
         .build()
         .unwrap();
-    memory_store.insert(&memory).unwrap();
+    memory_store.insert(&memory).await.unwrap();
 
     let accepted = SemanticEvent::new_memory_accepted(
         EventRoleId("librarian-001".to_string()),
@@ -432,7 +432,7 @@ async fn test_auditor_detects_memory_contamination_without_mutation() {
     run_handle.abort();
     assert!(detected, "Auditor should detect memory contamination");
 
-    let retrieved = memory_store.get_by_id(memory.id).unwrap().unwrap();
+    let retrieved = memory_store.get_by_id(memory.id).await.unwrap().unwrap();
     assert_eq!(
         retrieved.content, "derived from broken claim",
         "Auditor must NOT mutate memory"
@@ -823,7 +823,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
         .source_agent(EventRoleId("worker-001".to_string()))
         .build()
         .unwrap();
-    memory_store.insert(&memory).unwrap();
+    memory_store.insert(&memory).await.unwrap();
     bus.publish(SemanticEvent::new_memory_accepted(
         EventRoleId("librarian-001".to_string()),
         mmat_event_stream::event::MemoryId(memory.id.0),
@@ -846,6 +846,7 @@ async fn test_auditor_memory_contamination_is_consumed_by_librarian() {
     assert!(
         memory_store
             .get_by_id(memory.id)
+            .await
             .unwrap()
             .unwrap()
             .superseded_by

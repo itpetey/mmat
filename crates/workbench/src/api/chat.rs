@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 #[cfg(feature = "server")]
-static WORKBENCH_BUS: OnceLock<mmat_event_stream::event_bus::EventBus> = OnceLock::new();
+static WORKBENCH_RUNTIME: OnceLock<mmat_coordinator::WorkbenchRuntimeHandle> = OnceLock::new();
+#[cfg(feature = "server")]
+static WORKBENCH_RUNTIME_OWNER: OnceLock<mmat_coordinator::OrganisationRuntime> = OnceLock::new();
 
 pub const SYSTEM_LANE_ID: &str = "__system__";
 
@@ -75,8 +77,29 @@ pub enum ChatServerMessage {
         content: String,
         timestamp_ms: u64,
     },
-    /// Reports that assistant streaming is not yet connected to an LLM runtime.
-    AssistantStreamUnavailable {
+    /// Signals that an assistant stream has started.
+    AssistantStreamStarted {
+        lane_id: String,
+        message_id: String,
+        reply_to_message_id: String,
+        timestamp_ms: u64,
+    },
+    /// Carries a live assistant content delta.
+    AssistantStreamDelta {
+        lane_id: String,
+        message_id: String,
+        delta: String,
+    },
+    /// Signals that an assistant stream completed and was persisted.
+    AssistantStreamCompleted {
+        lane_id: String,
+        message_id: String,
+        reply_to_message_id: String,
+        content: String,
+        finish_reason: String,
+    },
+    /// Signals that an assistant stream failed before completion.
+    AssistantStreamFailed {
         lane_id: String,
         message_id: String,
         reply_to_message_id: String,
@@ -157,7 +180,10 @@ pub async fn create_lane(project_id: String, title: String) -> ServerFnResult<Wo
     .await
     .map_err(|error| ServerFnError::new(format!("could not create lane: {error}")))?;
 
-    let _ = workbench_bus().publish(event);
+    runtime_handle()
+        .await?
+        .broadcast_persisted(event)
+        .map_err(|error| ServerFnError::new(format!("could not publish lane event: {error}")))?;
 
     Ok(lane_from_row(lane))
 }
@@ -183,7 +209,10 @@ pub async fn archive_lane(project_id: String, lane_id: String) -> ServerFnResult
     )
     .await
     .map_err(|error| ServerFnError::new(format!("could not archive lane: {error}")))?;
-    let _ = workbench_bus().publish(event);
+    runtime_handle()
+        .await?
+        .broadcast_persisted(event)
+        .map_err(|error| ServerFnError::new(format!("could not publish lane event: {error}")))?;
     Ok(lane_from_row(lane))
 }
 
@@ -214,8 +243,20 @@ pub async fn load_transcript(
 async fn handle_chat_socket(
     mut socket: dioxus::fullstack::TypedWebsocket<ChatClientMessage, ChatServerMessage>,
 ) {
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+
     let session_id = next_id("chat-session");
-    let mut workbench_events = workbench_bus().subscribe(&[]);
+    let Ok(runtime) = runtime_handle().await else {
+        return;
+    };
+    let runtime = runtime.clone();
+    let mut workbench_events = runtime.subscribe(&[]);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<ChatServerMessage>(128);
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+    let _shutdown_guard = SocketShutdown::new(shutdown_tx.clone());
+    let local_messages = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let cancelled_streams = Arc::new(Mutex::new(HashSet::<String>::new()));
 
     if socket
         .send(ChatServerMessage::Connected { session_id })
@@ -240,16 +281,33 @@ async fn handle_chat_socket(
                         client_message_id,
                         content,
                     } => {
-                        if handle_user_message(&mut socket, project_id, lane_id, client_message_id, content)
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
+                        let runtime = runtime.clone();
+                        let out_tx = out_tx.clone();
+                        let shutdown_rx = shutdown_tx.subscribe();
+                        let local_messages = Arc::clone(&local_messages);
+                        let cancelled_streams = Arc::clone(&cancelled_streams);
+                        tokio::spawn(async move {
+                            handle_user_message(
+                                UserMessageContext {
+                                    runtime,
+                                    out_tx,
+                                    shutdown_rx,
+                                    local_messages,
+                                    cancelled_streams,
+                                },
+                                project_id,
+                                lane_id,
+                                client_message_id,
+                                content,
+                            )
+                            .await;
+                        });
                     }
                     ChatClientMessage::Cancel {
                         assistant_message_id,
                     } => {
+                        mark_cancelled_stream(&cancelled_streams, assistant_message_id.clone());
+                        runtime.cancel_assistant_stream(&assistant_message_id).await;
                         if socket
                             .send(ChatServerMessage::Cancelled {
                                 assistant_message_id,
@@ -278,9 +336,20 @@ async fn handle_chat_socket(
                     Err(mmat_event_stream::event_bus::RecvError::Closed) => return,
                 };
 
-                if let Some(message) = chat_server_message_from_event(event.as_ref())
-                    && socket.send(message).await.is_err()
-                {
+                if let Some(message) = chat_server_message_from_event(event.as_ref()) {
+                    if is_suppressed_local_message(&local_messages, &message) {
+                        continue;
+                    }
+                    if socket.send(message).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            outbound = out_rx.recv() => {
+                let Some(outbound) = outbound else {
+                    return;
+                };
+                if socket.send(outbound).await.is_err() {
                     return;
                 }
             }
@@ -289,64 +358,91 @@ async fn handle_chat_socket(
 }
 
 #[cfg(feature = "server")]
+struct UserMessageContext {
+    runtime: mmat_coordinator::WorkbenchRuntimeHandle,
+    out_tx: tokio::sync::mpsc::Sender<ChatServerMessage>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    local_messages: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    cancelled_streams: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+#[cfg(feature = "server")]
 async fn handle_user_message(
-    socket: &mut dioxus::fullstack::TypedWebsocket<ChatClientMessage, ChatServerMessage>,
+    ctx: UserMessageContext,
     project_id: String,
     lane_id: Option<String>,
     client_message_id: Option<String>,
     content: String,
-) -> Result<(), dioxus::fullstack::WebsocketError> {
+) {
     use mmat_event_stream::event::{EventContext, RoleId, SemanticEvent};
+
+    let UserMessageContext {
+        runtime,
+        out_tx,
+        mut shutdown_rx,
+        local_messages,
+        cancelled_streams,
+    } = ctx;
 
     let content = content.trim().to_string();
     if content.is_empty() {
-        socket
-            .send(ChatServerMessage::Error {
+        send_chat(
+            &out_tx,
+            ChatServerMessage::Error {
                 message: "Message content is required.".to_string(),
-            })
-            .await?;
-        return Ok(());
+            },
+        )
+        .await;
+        return;
     }
 
     let Some(lane_id) = lane_id.filter(|id| id != SYSTEM_LANE_ID) else {
-        socket
-            .send(ChatServerMessage::Error {
+        send_chat(
+            &out_tx,
+            ChatServerMessage::Error {
                 message: "Select or create a lane before sending a message.".to_string(),
-            })
-            .await?;
-        return Ok(());
+            },
+        )
+        .await;
+        return;
     };
 
     let pool = match super::db().await {
         Ok(pool) => pool,
         Err(error) => {
-            socket
-                .send(ChatServerMessage::Error {
+            send_chat(
+                &out_tx,
+                ChatServerMessage::Error {
                     message: format!("Could not open database pool: {error}"),
-                })
-                .await?;
-            return Ok(());
+                },
+            )
+            .await;
+            return;
         }
     };
     let mut connection = match pool.get().await {
         Ok(connection) => connection,
         Err(error) => {
-            socket
-                .send(ChatServerMessage::Error {
+            send_chat(
+                &out_tx,
+                ChatServerMessage::Error {
                     message: format!("Could not open database connection: {error}"),
-                })
-                .await?;
-            return Ok(());
+                },
+            )
+            .await;
+            return;
         }
     };
 
     if let Err(error) = validate_lane(&mut connection, &project_id, &lane_id, true).await {
-        socket
-            .send(ChatServerMessage::Error {
+        send_chat(
+            &out_tx,
+            ChatServerMessage::Error {
                 message: error.to_string(),
-            })
-            .await?;
-        return Ok(());
+            },
+        )
+        .await;
+        return;
     }
 
     let event = SemanticEvent::new_human_feedback_received(RoleId::new("human"), &content)
@@ -354,40 +450,285 @@ async fn handle_user_message(
             EventContext::new(
                 "default-organisation",
                 "default-workspace",
-                project_id,
+                project_id.clone(),
                 "default-run",
             )
             .with_lane_id(lane_id.clone()),
         );
     let message_id = event.event_id().to_string();
-    if let Err(error) = mmat_db::event::append_event(&mut connection, &event).await {
-        socket
-            .send(ChatServerMessage::Error {
+    suppress_local_message(&local_messages, message_id.clone());
+    if let Err(error) = runtime.publish_durable(event).await {
+        send_chat(
+            &out_tx,
+            ChatServerMessage::Error {
                 message: format!("Could not persist message: {error}"),
-            })
-            .await?;
-        return Ok(());
+            },
+        )
+        .await;
+        return;
     }
-    let _ = workbench_bus().publish(event);
 
-    socket
-        .send(ChatServerMessage::UserMessageAccepted {
+    if !send_chat(
+        &out_tx,
+        ChatServerMessage::UserMessageAccepted {
             lane_id: lane_id.clone(),
             client_message_id,
             message_id: message_id.clone(),
-            content,
+            content: content.clone(),
             timestamp_ms: now_ms(),
-        })
-        .await?;
+        },
+    )
+    .await
+    {
+        return;
+    }
 
-    socket
-        .send(ChatServerMessage::AssistantStreamUnavailable {
-            lane_id,
-            message_id: next_id("assistant-message"),
-            reply_to_message_id: message_id,
-            reason: "LLM streaming is not connected to the workbench runtime yet.".to_string(),
-        })
-        .await
+    let assistant_message_id = next_id("assistant-message");
+    let stream_request = mmat_coordinator::AssistantStreamRequest {
+        project_id: project_id.clone(),
+        lane_id: lane_id.clone(),
+        assistant_message_id: assistant_message_id.clone(),
+        reply_to_message_id: message_id.clone(),
+        user_content: content,
+    };
+    let mut stream = match runtime.start_assistant_stream(stream_request).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            send_chat(
+                &out_tx,
+                ChatServerMessage::Error {
+                    message: format!("Assistant stream could not start: {error}"),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+
+    if !send_chat(
+        &out_tx,
+        ChatServerMessage::AssistantStreamStarted {
+            lane_id: lane_id.clone(),
+            message_id: assistant_message_id.clone(),
+            reply_to_message_id: message_id.clone(),
+            timestamp_ms: now_ms(),
+        },
+    )
+    .await
+    {
+        runtime.cancel_assistant_stream(&assistant_message_id).await;
+        return;
+    }
+
+    let mut assistant_content = String::new();
+    loop {
+        let update = tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    runtime.cancel_assistant_stream(&assistant_message_id).await;
+                    return;
+                }
+                continue;
+            }
+            update = stream.recv() => update,
+        };
+
+        let Some(update) = update else {
+            if consume_cancelled_stream(&cancelled_streams, &assistant_message_id) {
+                return;
+            }
+            send_chat(
+                &out_tx,
+                ChatServerMessage::AssistantStreamFailed {
+                    lane_id: lane_id.clone(),
+                    message_id: assistant_message_id.clone(),
+                    reply_to_message_id: message_id.clone(),
+                    reason: "Assistant stream ended before completion.".to_string(),
+                },
+            )
+            .await;
+            return;
+        };
+
+        match update {
+            mmat_coordinator::AssistantStreamEvent::Delta { content } => {
+                assistant_content.push_str(&content);
+                if !send_chat(
+                    &out_tx,
+                    ChatServerMessage::AssistantStreamDelta {
+                        lane_id: lane_id.clone(),
+                        message_id: assistant_message_id.clone(),
+                        delta: content,
+                    },
+                )
+                .await
+                {
+                    runtime.cancel_assistant_stream(&assistant_message_id).await;
+                    return;
+                }
+            }
+            mmat_coordinator::AssistantStreamEvent::Finished { finish_reason } => {
+                if *shutdown_rx.borrow() {
+                    runtime.cancel_assistant_stream(&assistant_message_id).await;
+                    return;
+                }
+                let event = SemanticEvent::new_assistant_message_produced(
+                    RoleId::new("assistant"),
+                    &assistant_message_id,
+                    &message_id,
+                    &assistant_content,
+                    &finish_reason,
+                )
+                .with_context(
+                    EventContext::new(
+                        "default-organisation",
+                        "default-workspace",
+                        project_id.clone(),
+                        "default-run",
+                    )
+                    .with_lane_id(lane_id.clone()),
+                );
+                suppress_local_message(&local_messages, assistant_message_id.clone());
+                let publish_result = tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            runtime.cancel_assistant_stream(&assistant_message_id).await;
+                            return;
+                        }
+                        continue;
+                    }
+                    result = runtime.publish_durable(event) => result,
+                };
+                if let Err(error) = publish_result {
+                    send_chat(
+                        &out_tx,
+                        ChatServerMessage::AssistantStreamFailed {
+                            lane_id: lane_id.clone(),
+                            message_id: assistant_message_id.clone(),
+                            reply_to_message_id: message_id.clone(),
+                            reason: format!("Could not persist assistant message: {error}"),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                if !send_chat(
+                    &out_tx,
+                    ChatServerMessage::AssistantStreamCompleted {
+                        lane_id: lane_id.clone(),
+                        message_id: assistant_message_id.clone(),
+                        reply_to_message_id: message_id.clone(),
+                        content: assistant_content,
+                        finish_reason,
+                    },
+                )
+                .await
+                {
+                    return;
+                }
+                return;
+            }
+            mmat_coordinator::AssistantStreamEvent::Failed { message } => {
+                send_chat(
+                    &out_tx,
+                    ChatServerMessage::AssistantStreamFailed {
+                        lane_id: lane_id.clone(),
+                        message_id: assistant_message_id.clone(),
+                        reply_to_message_id: message_id.clone(),
+                        reason: message,
+                    },
+                )
+                .await;
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+async fn send_chat(
+    out_tx: &tokio::sync::mpsc::Sender<ChatServerMessage>,
+    message: ChatServerMessage,
+) -> bool {
+    out_tx.send(message).await.is_ok()
+}
+
+#[cfg(feature = "server")]
+struct SocketShutdown {
+    tx: tokio::sync::watch::Sender<bool>,
+}
+
+#[cfg(feature = "server")]
+impl SocketShutdown {
+    fn new(tx: tokio::sync::watch::Sender<bool>) -> Self {
+        Self { tx }
+    }
+}
+
+#[cfg(feature = "server")]
+impl Drop for SocketShutdown {
+    fn drop(&mut self) {
+        if self.tx.send(true).is_err() {
+            // All stream tasks have already stopped.
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+fn suppress_local_message(
+    local_messages: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    message_id: String,
+) {
+    if let Ok(mut local_messages) = local_messages.lock() {
+        local_messages.insert(message_id);
+    }
+}
+
+#[cfg(feature = "server")]
+fn is_suppressed_local_message(
+    local_messages: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    message: &ChatServerMessage,
+) -> bool {
+    let Some(message_id) = server_message_id(message) else {
+        return false;
+    };
+    local_messages
+        .lock()
+        .map(|mut local_messages| local_messages.remove(message_id))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "server")]
+fn mark_cancelled_stream(
+    cancelled_streams: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    assistant_message_id: String,
+) {
+    if let Ok(mut cancelled_streams) = cancelled_streams.lock() {
+        cancelled_streams.insert(assistant_message_id);
+    }
+}
+
+#[cfg(feature = "server")]
+fn consume_cancelled_stream(
+    cancelled_streams: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    assistant_message_id: &str,
+) -> bool {
+    cancelled_streams
+        .lock()
+        .map(|mut cancelled_streams| cancelled_streams.remove(assistant_message_id))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "server")]
+fn server_message_id(message: &ChatServerMessage) -> Option<&str> {
+    match message {
+        ChatServerMessage::UserMessageAccepted { message_id, .. }
+        | ChatServerMessage::AssistantStreamStarted { message_id, .. }
+        | ChatServerMessage::AssistantStreamDelta { message_id, .. }
+        | ChatServerMessage::AssistantStreamCompleted { message_id, .. }
+        | ChatServerMessage::AssistantStreamFailed { message_id, .. } => Some(message_id),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "server")]
@@ -419,8 +760,31 @@ fn lane_created_event(
 }
 
 #[cfg(feature = "server")]
-fn workbench_bus() -> &'static mmat_event_stream::event_bus::EventBus {
-    WORKBENCH_BUS.get_or_init(|| mmat_event_stream::event_bus::EventBus::new(1024))
+async fn runtime_handle() -> ServerFnResult<&'static mmat_coordinator::WorkbenchRuntimeHandle> {
+    if let Some(runtime) = WORKBENCH_RUNTIME.get() {
+        return Ok(runtime);
+    }
+
+    let pool = (*super::db().await?).clone();
+    let runtime_owner = mmat_coordinator::OrganisationRuntime::new_workbench_boundary(
+        mmat_coordinator::OrganisationConfig::new(crate::cli::pg_dsn()),
+    )
+    .await
+    .map_err(|error| ServerFnError::new(format!("could not initialise runtime: {error}")))?;
+    if WORKBENCH_RUNTIME_OWNER.set(runtime_owner).is_err() {
+        // Another request initialised the shared runtime first.
+    }
+    let runtime_owner = WORKBENCH_RUNTIME_OWNER
+        .get()
+        .ok_or_else(|| ServerFnError::new("runtime owner was not initialised"))?;
+    let runtime = runtime_owner.workbench_handle(pool, crate::cli::llm_config());
+    if WORKBENCH_RUNTIME.set(runtime).is_err() {
+        // Another request initialised the shared runtime first.
+    }
+
+    WORKBENCH_RUNTIME
+        .get()
+        .ok_or_else(|| ServerFnError::new("runtime handle was not initialised"))
 }
 
 #[cfg(feature = "server")]
@@ -494,6 +858,20 @@ fn chat_server_message_from_event(
             message_id: event_id.to_string(),
             content: answer.clone(),
             timestamp_ms: timestamp_ns / 1_000_000,
+        }),
+        mmat_event_stream::event::SemanticEvent::AssistantMessageProduced {
+            context,
+            assistant_message_id,
+            reply_to_message_id,
+            content,
+            finish_reason,
+            ..
+        } => Some(ChatServerMessage::AssistantStreamCompleted {
+            lane_id: context.lane_id.clone()?,
+            message_id: assistant_message_id.clone(),
+            reply_to_message_id: reply_to_message_id.clone(),
+            content: content.clone(),
+            finish_reason: finish_reason.clone(),
         }),
         mmat_event_stream::event::SemanticEvent::LaneCreated { context, .. }
         | mmat_event_stream::event::SemanticEvent::LaneArchived { context, .. } => {
@@ -580,6 +958,13 @@ fn transcript_item_from_event(
             lane_id: event.context().lane_id.clone(),
             speaker: "You".to_string(),
             content: answer.clone(),
+            kind: TranscriptItemKind::Message,
+        }),
+        SemanticEvent::AssistantMessageProduced { content, .. } => Some(TranscriptItem {
+            id: event.event_id().to_string(),
+            lane_id: event.context().lane_id.clone(),
+            speaker: "Assistant".to_string(),
+            content: content.clone(),
             kind: TranscriptItemKind::Message,
         }),
         SemanticEvent::HumanFeedbackRequested {
@@ -677,5 +1062,71 @@ mod tests {
         assert_eq!(projection.active.len(), 1);
         assert_eq!(projection.active[0].id, blank_lane_id);
         assert!(transcript.is_empty());
+    }
+
+    #[test]
+    fn assistant_messages_project_into_matching_lane_only() {
+        let assistant = SemanticEvent::new_assistant_message_produced(
+            RoleId::new("assistant"),
+            "assistant-message-1",
+            "user-message-1",
+            "Assistant reply",
+            "stop",
+        )
+        .with_context(
+            EventContext::new("org", "workspace", "project-1", "run-1").with_lane_id("lane-1"),
+        );
+
+        assert!(transcript_matches_lane(&assistant, Some("lane-1")));
+        assert!(!transcript_matches_lane(&assistant, Some("lane-2")));
+
+        let item = transcript_item_from_event(&assistant).unwrap();
+        assert_eq!(item.id, assistant.event_id().to_string());
+        assert_eq!(item.lane_id.as_deref(), Some("lane-1"));
+        assert_eq!(item.speaker, "Assistant");
+        assert_eq!(item.content, "Assistant reply");
+        assert_eq!(item.kind, TranscriptItemKind::Message);
+    }
+
+    #[test]
+    fn local_broadcast_suppression_consumes_only_matching_message() {
+        let local_messages = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashSet::<String>::new(),
+        ));
+        suppress_local_message(&local_messages, "message-1".to_string());
+
+        let own_message = ChatServerMessage::UserMessageAccepted {
+            lane_id: "lane-1".to_string(),
+            client_message_id: None,
+            message_id: "message-1".to_string(),
+            content: "hello".to_string(),
+            timestamp_ms: 1,
+        };
+        let other_message = ChatServerMessage::UserMessageAccepted {
+            lane_id: "lane-1".to_string(),
+            client_message_id: None,
+            message_id: "message-2".to_string(),
+            content: "hello".to_string(),
+            timestamp_ms: 1,
+        };
+
+        assert!(is_suppressed_local_message(&local_messages, &own_message));
+        assert!(!is_suppressed_local_message(&local_messages, &own_message));
+        assert!(!is_suppressed_local_message(
+            &local_messages,
+            &other_message
+        ));
+    }
+
+    #[test]
+    fn cancelled_stream_marker_is_consumed_once() {
+        let cancelled_streams = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashSet::<String>::new(),
+        ));
+        mark_cancelled_stream(&cancelled_streams, "assistant-1".to_string());
+
+        assert!(consume_cancelled_stream(&cancelled_streams, "assistant-1"));
+        assert!(!consume_cancelled_stream(&cancelled_streams, "assistant-1"));
+        assert!(!consume_cancelled_stream(&cancelled_streams, "assistant-2"));
     }
 }

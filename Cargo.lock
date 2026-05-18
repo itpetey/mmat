@@ -2838,6 +2838,7 @@ dependencies = [
  "async-trait",
  "mmat-db",
  "mmat-event-stream",
+ "mmat-llm",
  "mmat-memory",
  "qdrant-client",
  "serde",
@@ -2845,6 +2846,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -2959,6 +2961,7 @@ dependencies = [
  "dioxus",
  "dioxus-icons",
  "dioxus-primitives",
+ "mmat-coordinator",
  "mmat-db",
  "mmat-event-stream",
  "serde",

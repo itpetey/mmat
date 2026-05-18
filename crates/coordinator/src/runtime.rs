@@ -1,6 +1,6 @@
 //! Organisation runtime managing role execution, event processing, and shutdown.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use mmat_db::{AsyncPgConnection, Pool, PooledConnection};
 use mmat_event_stream::{
@@ -8,10 +8,14 @@ use mmat_event_stream::{
     event_bus::{EventBus, EventReceiver, RecvError},
     event_store::EventStore,
 };
+use mmat_llm::{
+    client::{OpenAiClient, OpenAiConfig},
+    message::{CompletionRequest, Message},
+};
 use mmat_memory::{artefact_store::ArtefactStore, store::MemoryStore};
 use tokio::{
     signal,
-    sync::{broadcast, mpsc},
+    sync::{Mutex, broadcast, mpsc},
     time::{interval, timeout},
 };
 use tracing::{info, warn};
@@ -37,6 +41,50 @@ pub struct OrganisationConfig {
     pub database_url: String,
     /// Host working directory where all project directories reside.
     pub host_work_dir: Option<PathBuf>,
+    /// Optional assistant LLM API key for runtime-backed workbench streaming.
+    pub llm_api_key: Option<String>,
+    /// OpenAI-compatible base URL for assistant streaming.
+    pub llm_base_url: Option<String>,
+    /// Model used for assistant streaming.
+    pub llm_model: Option<String>,
+    /// Timeout for assistant streaming requests.
+    pub llm_timeout: Duration,
+}
+
+/// Configuration for runtime-backed workbench assistant streaming.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkbenchAssistantConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    pub timeout: Duration,
+}
+
+/// Request for a lane-scoped assistant stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssistantStreamRequest {
+    pub project_id: String,
+    pub lane_id: String,
+    pub assistant_message_id: String,
+    pub reply_to_message_id: String,
+    pub user_content: String,
+}
+
+/// Events produced by the runtime assistant stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssistantStreamEvent {
+    Delta { content: String },
+    Finished { finish_reason: String },
+    Failed { message: String },
+}
+
+/// Coordinator-owned facade used by the workbench server.
+#[derive(Clone)]
+pub struct WorkbenchRuntimeHandle {
+    bus: EventBus,
+    db_pool: Pool<AsyncPgConnection>,
+    assistant_config: Option<WorkbenchAssistantConfig>,
+    streams: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 /// Runtime that owns and orchestrates the entire organisation: roles, event bus,
@@ -65,7 +113,21 @@ impl OrganisationConfig {
             shutdown_grace_period: Duration::from_secs(10),
             database_url: database_url.into(),
             host_work_dir: None,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            llm_timeout: Duration::from_secs(60),
         }
+    }
+
+    /// Returns assistant configuration when all required LLM settings are present.
+    pub fn workbench_assistant_config(&self) -> Option<WorkbenchAssistantConfig> {
+        Some(WorkbenchAssistantConfig::new(
+            self.llm_api_key.clone()?,
+            self.llm_base_url.clone(),
+            self.llm_model.clone()?,
+            self.llm_timeout,
+        ))
     }
 }
 
@@ -74,7 +136,20 @@ impl OrganisationRuntime {
     ///
     /// Opens the event store and memory store, validates the registry is non-empty,
     /// and initialises the scheduler.
-    pub fn new(config: OrganisationConfig, registry: RoleRegistry) -> Result<Self> {
+    pub async fn new(config: OrganisationConfig, registry: RoleRegistry) -> Result<Self> {
+        Self::build(config, registry, true).await
+    }
+
+    /// Creates a runtime boundary for embedding without registered roles.
+    pub async fn new_workbench_boundary(config: OrganisationConfig) -> Result<Self> {
+        Self::build(config, RoleRegistry::new(), false).await
+    }
+
+    async fn build(
+        config: OrganisationConfig,
+        registry: RoleRegistry,
+        require_roles: bool,
+    ) -> Result<Self> {
         if config.database_url.trim().is_empty() {
             return Err(Error::Runtime(
                 "database_url is required for organisation runtime durability".into(),
@@ -85,16 +160,17 @@ impl OrganisationRuntime {
         let bus = EventBus::new(config.event_bus_capacity).with_store(Arc::clone(&event_store));
         let memory_store = Arc::new(
             MemoryStore::new(&config.database_url)
+                .await
                 .map_err(|e| Error::Runtime(format!("failed to connect to Postgres: {e}")))?,
         );
 
         let artefact_store = Arc::new(
-            ArtefactStore::new_postgres(&config.database_url)
+            ArtefactStore::connect(&config.database_url)
+                .await
                 .map_err(|e| Error::Runtime(format!("failed to create artefact store: {e}")))?,
         );
 
-        // Validate registry
-        if registry.all_roles().is_empty() {
+        if require_roles && registry.all_roles().is_empty() {
             return Err(Error::Runtime("role registry is empty".into()));
         }
 
@@ -131,6 +207,15 @@ impl OrganisationRuntime {
     /// Returns a reference to the event bus.
     pub fn bus(&self) -> &EventBus {
         &self.bus
+    }
+
+    /// Returns a workbench integration handle backed by this runtime's event bus.
+    pub fn workbench_handle(
+        &self,
+        db_pool: Pool<AsyncPgConnection>,
+        assistant_config: Option<WorkbenchAssistantConfig>,
+    ) -> WorkbenchRuntimeHandle {
+        WorkbenchRuntimeHandle::new(self.bus.clone(), db_pool, assistant_config)
     }
 
     /// Returns a reference to the event store.
@@ -361,6 +446,173 @@ impl OrganisationRuntime {
         Ok(())
     }
 }
+
+impl WorkbenchRuntimeHandle {
+    /// Creates a workbench integration handle from a runtime-owned event bus.
+    pub fn new(
+        bus: EventBus,
+        db_pool: Pool<AsyncPgConnection>,
+        assistant_config: Option<WorkbenchAssistantConfig>,
+    ) -> Self {
+        Self {
+            bus,
+            db_pool,
+            assistant_config,
+            streams: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Creates a standalone handle for workbench processes that own no full runtime yet.
+    pub fn standalone(
+        db_pool: Pool<AsyncPgConnection>,
+        event_bus_capacity: usize,
+        assistant_config: Option<WorkbenchAssistantConfig>,
+    ) -> Self {
+        Self::new(EventBus::new(event_bus_capacity), db_pool, assistant_config)
+    }
+
+    /// Subscribes to runtime events visible to workbench WebSocket connections.
+    pub fn subscribe(&self, filter: &[EventType]) -> EventReceiver {
+        self.bus.subscribe(filter)
+    }
+
+    /// Persists an event exactly once, then broadcasts it to runtime subscribers.
+    pub async fn publish_durable(&self, event: SemanticEvent) -> Result<()> {
+        let mut connection = self.db_pool.get().await?;
+        mmat_db::event::append_event(&mut connection, &event)
+            .await
+            .map_err(|error| Error::Runtime(format!("failed to persist event: {error}")))?;
+        if let Some(store) = self.bus.store() {
+            store
+                .insert(&event)
+                .map_err(|error| Error::Runtime(format!("failed to store event: {error}")))?;
+        }
+        self.bus.broadcast_stored(event);
+        Ok(())
+    }
+
+    /// Broadcasts an event that the caller has already made durable.
+    pub fn broadcast_persisted(&self, event: SemanticEvent) -> Result<()> {
+        if let Some(store) = self.bus.store() {
+            store
+                .insert(&event)
+                .map_err(|error| Error::Runtime(format!("failed to store event: {error}")))?;
+        }
+        self.bus.broadcast_stored(event);
+        Ok(())
+    }
+
+    /// Starts the configured assistant stream for a persisted user message.
+    pub async fn start_assistant_stream(
+        &self,
+        request: AssistantStreamRequest,
+    ) -> Result<mpsc::Receiver<AssistantStreamEvent>> {
+        let config = self.assistant_config.clone().ok_or_else(|| {
+            Error::Runtime(
+                "LLM configuration is missing; set MMAT_LLM_API_KEY and MMAT_LLM_MODEL".into(),
+            )
+        })?;
+        if config.api_key.trim().is_empty() || config.model.trim().is_empty() {
+            return Err(Error::Runtime(
+                "LLM configuration is missing; set MMAT_LLM_API_KEY and MMAT_LLM_MODEL".into(),
+            ));
+        }
+
+        let client = OpenAiClient::new(
+            OpenAiConfig::builder()
+                .api_key(config.api_key)
+                .base_url(config.base_url)
+                .timeout(config.timeout)
+                .build(),
+        )
+        .map_err(|error| Error::Runtime(format!("invalid LLM configuration: {error}")))?;
+        let llm_request = CompletionRequest::new(
+            config.model,
+            vec![
+                Message::system(format!(
+                    "You are the MMAT workbench assistant replying in project {} lane {}.",
+                    request.project_id, request.lane_id
+                )),
+                Message::user(request.user_content),
+            ],
+        );
+        let mut llm_rx = client
+            .complete_streaming(llm_request)
+            .await
+            .map_err(|error| Error::Runtime(format!("assistant stream failed: {error}")))?;
+        let (tx, rx) = mpsc::channel(128);
+        let assistant_message_id = request.assistant_message_id;
+        let streams = Arc::clone(&self.streams);
+        let stream_key = assistant_message_id.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(chunk) = llm_rx.recv().await {
+                match chunk {
+                    Ok(chunk) => {
+                        for choice in chunk.choices {
+                            if let Some(content) = choice.delta.content
+                                && tx
+                                    .send(AssistantStreamEvent::Delta { content })
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                            if let Some(finish_reason) = choice.finish_reason
+                                && tx
+                                    .send(AssistantStreamEvent::Finished { finish_reason })
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx
+                            .send(AssistantStreamEvent::Failed {
+                                message: error.to_string(),
+                            })
+                            .await;
+                        break;
+                    }
+                }
+            }
+            streams.lock().await.remove(&stream_key);
+        });
+        self.streams
+            .lock()
+            .await
+            .insert(assistant_message_id, handle);
+        Ok(rx)
+    }
+
+    /// Cancels an in-flight assistant stream by assistant message ID.
+    pub async fn cancel_assistant_stream(&self, assistant_message_id: &str) -> bool {
+        let Some(handle) = self.streams.lock().await.remove(assistant_message_id) else {
+            return false;
+        };
+        handle.abort();
+        true
+    }
+}
+
+impl WorkbenchAssistantConfig {
+    /// Builds assistant configuration from explicit values, applying runtime defaults.
+    pub fn new(
+        api_key: impl Into<String>,
+        base_url: Option<String>,
+        model: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            model: model.into(),
+            timeout,
+        }
+    }
+}
+
 fn spawn_event_persistence_task(
     mut conn: PooledConnection<'static, AsyncPgConnection>,
     tx: broadcast::Sender<()>,
@@ -421,6 +673,13 @@ async fn persist_semantic_event(
     connection: &mut mmat_db::AsyncPgConnection,
     event: &SemanticEvent,
 ) -> std::result::Result<(), mmat_db::DbError> {
+    if mmat_db::event::row_for_event_id(connection, event.event_id())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
     if let SemanticEvent::LaneCreated {
         name,
         purpose,
@@ -450,8 +709,10 @@ async fn persist_semantic_event(
             lane_created_event_with_id(event, lane.id.to_string())
         })
         .await?;
-    } else {
-        mmat_db::event::append_event(connection, event).await?;
+    } else if let Err(error) = mmat_db::event::append_event(connection, event).await
+        && !matches!(error, mmat_db::DbError::DuplicateEventId(_))
+    {
+        return Err(error);
     }
 
     Ok(())

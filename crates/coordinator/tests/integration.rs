@@ -1,11 +1,14 @@
 use std::{sync::Arc, time::Duration};
 
 use mmat_coordinator::{
-    AuthorityScope, Budget, OrganisationConfig, OrganisationRuntime, RetrievalPlanner, Role,
-    RoleContext, RoleError, RoleLifecycleState, RoleRegistry, RoleSpec, RoleType, Severity,
+    AssistantStreamEvent, AssistantStreamRequest, AuthorityScope, Budget, OrganisationConfig,
+    OrganisationRuntime, RetrievalPlanner, Role, RoleContext, RoleError, RoleLifecycleState,
+    RoleRegistry, RoleSpec, RoleType, Severity, WorkbenchAssistantConfig, WorkbenchRuntimeHandle,
 };
 use mmat_db::AsyncPgConnection;
-use mmat_event_stream::event::{ArtefactRef, EventType, RoleId, SemanticEvent, TaskContract};
+use mmat_event_stream::event::{
+    ArtefactRef, EventContext, EventType, RoleId, SemanticEvent, TaskContract,
+};
 use mmat_memory::{
     error::Result as MemoryResult,
     store::MemoryStore,
@@ -304,6 +307,10 @@ fn test_config() -> Option<OrganisationConfig> {
         shutdown_grace_period: Duration::from_secs(2),
         database_url: std::env::var("MMAT_DB_URL").ok()?,
         host_work_dir: None,
+        llm_api_key: None,
+        llm_base_url: None,
+        llm_model: None,
+        llm_timeout: Duration::from_secs(60),
     })
 }
 
@@ -311,7 +318,7 @@ async fn test_runtime(
     config: OrganisationConfig,
     registry: RoleRegistry,
 ) -> Option<OrganisationRuntime> {
-    OrganisationRuntime::new(config, registry).ok()
+    OrganisationRuntime::new(config, registry).await.ok()
 }
 
 fn now_nanos() -> u128 {
@@ -553,13 +560,13 @@ async fn test_retrieval_planner_profiles() {
         .build()
         .unwrap();
 
-    store.insert(&project_fact).unwrap();
-    store.insert(&org_lesson).unwrap();
+    store.insert(&project_fact).await.unwrap();
+    store.insert(&org_lesson).await.unwrap();
 
     let planner = RetrievalPlanner::new();
 
     let worker_profile = mmat_coordinator::default_profile_for_role_type(RoleType::Worker);
-    let worker_results = planner.retrieve(&store, &worker_profile, "");
+    let worker_results = planner.retrieve(&store, &worker_profile, "").await;
     assert!(
         worker_results.iter().any(|m| m.content == "Project fact"),
         "Worker should see project facts"
@@ -572,7 +579,7 @@ async fn test_retrieval_planner_profiles() {
     );
 
     let scholar_profile = mmat_coordinator::default_profile_for_role_type(RoleType::Scholar);
-    let scholar_results = planner.retrieve(&store, &scholar_profile, "");
+    let scholar_results = planner.retrieve(&store, &scholar_profile, "").await;
     assert!(
         scholar_results.iter().any(|m| m.content == "Project fact"),
         "Scholar should see project facts"
@@ -614,8 +621,8 @@ async fn test_retrieval_semantic_search() {
         .build()
         .unwrap();
 
-    store.insert(&project_fact).unwrap();
-    store.insert(&unrelated).unwrap();
+    store.insert(&project_fact).await.unwrap();
+    store.insert(&unrelated).await.unwrap();
 
     let planner = RetrievalPlanner::new();
     let profile = mmat_coordinator::default_profile_for_role_type(RoleType::Worker);
@@ -847,6 +854,154 @@ async fn test_token_budget_exhaustion_escalates() {
 
     shutdown_tx.send(()).unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+#[tokio::test]
+async fn workbench_runtime_publish_durable_persists_once_then_broadcasts() {
+    let Some((pool, schema)) = postgres_test_database("coord_workbench_publish").await else {
+        return;
+    };
+    let handle = WorkbenchRuntimeHandle::standalone(pool.clone(), 16, None);
+    let mut receiver = handle.subscribe(&[EventType::HumanFeedbackReceived]);
+    let event = SemanticEvent::new_human_feedback_received(RoleId::new("human"), "hello")
+        .with_context(
+            EventContext::new("org", "workspace", "project-1", "run-1").with_lane_id("lane-1"),
+        );
+    let event_id = event.event_id();
+
+    handle.publish_durable(event.clone()).await.unwrap();
+    let received = receiver.recv().await.unwrap();
+    assert_eq!(received.event_id(), event_id);
+
+    assert!(handle.publish_durable(event).await.is_err());
+    let mut conn = pool.get().await.unwrap();
+    let replayed = mmat_db::event::replay_events(&mut conn, 0, None)
+        .await
+        .unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].event_id(), event_id);
+
+    drop_postgres_schema(&pool, &schema).await;
+}
+
+#[tokio::test]
+async fn workbench_runtime_reports_missing_assistant_configuration() {
+    let Some((pool, schema)) = postgres_test_database("coord_workbench_missing_llm").await else {
+        return;
+    };
+    let handle = WorkbenchRuntimeHandle::standalone(pool.clone(), 16, None);
+
+    let result = handle
+        .start_assistant_stream(mmat_coordinator::AssistantStreamRequest {
+            project_id: "project-1".to_string(),
+            lane_id: "lane-1".to_string(),
+            assistant_message_id: "assistant-1".to_string(),
+            reply_to_message_id: "user-1".to_string(),
+            user_content: "hello".to_string(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert!(!handle.cancel_assistant_stream("assistant-1").await);
+
+    drop_postgres_schema(&pool, &schema).await;
+}
+
+#[tokio::test]
+async fn workbench_runtime_streams_assistant_deltas_and_finish() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let Some((pool, schema)) = postgres_test_database("coord_workbench_stream").await else {
+        return;
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("Authorization", "Bearer sk-test"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"data: {"id":"chunk-1","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"Hel"}}]}
+
+data: {"id":"chunk-2","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let handle = WorkbenchRuntimeHandle::standalone(
+        pool.clone(),
+        16,
+        Some(WorkbenchAssistantConfig::new(
+            "sk-test",
+            Some(server.uri()),
+            "test-model",
+            Duration::from_secs(5),
+        )),
+    );
+    let mut stream = handle
+        .start_assistant_stream(AssistantStreamRequest {
+            project_id: "project-1".to_string(),
+            lane_id: "lane-1".to_string(),
+            assistant_message_id: "assistant-1".to_string(),
+            reply_to_message_id: "user-1".to_string(),
+            user_content: "hello".to_string(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stream.recv().await.unwrap(),
+        AssistantStreamEvent::Delta {
+            content: "Hel".to_string()
+        }
+    );
+    assert_eq!(
+        stream.recv().await.unwrap(),
+        AssistantStreamEvent::Delta {
+            content: "lo".to_string()
+        }
+    );
+    assert_eq!(
+        stream.recv().await.unwrap(),
+        AssistantStreamEvent::Finished {
+            finish_reason: "stop".to_string()
+        }
+    );
+
+    drop_postgres_schema(&pool, &schema).await;
+}
+
+#[tokio::test]
+async fn workbench_runtime_boundary_allows_empty_role_registry() {
+    let Some((pool, schema)) = postgres_test_database("coord_workbench_boundary").await else {
+        return;
+    };
+    let mut config = OrganisationConfig::new(std::env::var("MMAT_DB_URL").unwrap_or_default());
+    let separator = if config.database_url.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    config.database_url = format!(
+        "{}{}options=-c%20search_path%3D{}",
+        config.database_url, separator, schema
+    );
+
+    assert!(
+        OrganisationRuntime::new(config.clone(), RoleRegistry::new())
+            .await
+            .is_err()
+    );
+    assert!(
+        OrganisationRuntime::new_workbench_boundary(config)
+            .await
+            .is_ok()
+    );
+
+    drop_postgres_schema(&pool, &schema).await;
 }
 
 fn worker_spec() -> RoleSpec {

@@ -23,7 +23,8 @@ dioxus = { workspace = true, features = [
 ] }
 dioxus-icons = { version = "0.1.0", default-features = false }
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
-mmat-db = { path = "../db", optional = true }
+mmat-coordinator = { workspace = true, optional = true }
+mmat-db = { workspace = true, optional = true }
 mmat-event-stream = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"], optional = true }
@@ -44,6 +45,7 @@ server = [
   "dep:anyhow",
   "dep:axum",
   "dep:clap",
+  "dep:mmat-coordinator",
   "dep:mmat-db",
   "dep:mmat-event-stream",
   "dep:serde_json",

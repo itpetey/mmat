@@ -406,7 +406,7 @@ async fn ops_manager_sop_memory_is_accepted_by_librarian() {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
     let mut accepted = false;
     while tokio::time::Instant::now() < deadline {
-        let sops = memory_store.query_by_type(MemoryType::SOP).unwrap();
+        let sops = memory_store.query_by_type(MemoryType::SOP).await.unwrap();
         if !sops.is_empty() {
             accepted = true;
             break;

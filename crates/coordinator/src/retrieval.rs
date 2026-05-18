@@ -71,7 +71,7 @@ impl RetrievalPlanner {
     ///
     /// Filters by scope, type, authority, and age, then optionally refines
     /// with keyword matching against the task context.
-    pub fn retrieve(
+    pub async fn retrieve(
         &self,
         memory_store: &MemoryStore,
         profile: &RetrievalProfile,
@@ -81,7 +81,7 @@ impl RetrievalPlanner {
 
         // Structured query: apply filters
         for scope in &profile.allowed_scopes {
-            if let Ok(memories) = memory_store.query_by_scope(*scope) {
+            if let Ok(memories) = memory_store.query_by_scope(*scope).await {
                 for memory in memories {
                     if profile.allowed_types.contains(&memory.memory_type)
                         && memory.authority >= profile.min_authority
@@ -105,7 +105,7 @@ impl RetrievalPlanner {
 
             if !keywords.is_empty() {
                 for scope in &profile.allowed_scopes {
-                    if let Ok(memories) = memory_store.query_by_scope(*scope) {
+                    if let Ok(memories) = memory_store.query_by_scope(*scope).await {
                         for memory in memories {
                             if profile.allowed_types.contains(&memory.memory_type)
                                 && memory.authority >= profile.min_authority
@@ -137,7 +137,7 @@ impl RetrievalPlanner {
         task_context: &str,
         qdrant: Option<&dyn VectorMemoryBackend>,
     ) -> Vec<Memory> {
-        let structured_results = self.retrieve(memory_store, profile, task_context);
+        let structured_results = self.retrieve(memory_store, profile, task_context).await;
 
         // Semantic search: if Qdrant is available and task_context is non-empty
         if let Some(backend) = qdrant
@@ -151,7 +151,7 @@ impl RetrievalPlanner {
                     .await
             {
                 for (id, _score) in similar_ids {
-                    if let Ok(Some(memory)) = memory_store.get_by_id(id)
+                    if let Ok(Some(memory)) = memory_store.get_by_id(id).await
                         && profile.allowed_scopes.contains(&memory.scope)
                         && profile.allowed_types.contains(&memory.memory_type)
                         && memory.authority >= profile.min_authority

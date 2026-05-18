@@ -188,7 +188,7 @@ async fn integration_attention_to_librarian_accepts_and_indexes_memory() {
     };
 
     let memory_id = MemoryId(memory_id.0);
-    assert!(store.get_by_id(memory_id).unwrap().is_some());
+    assert!(store.get_by_id(memory_id).await.unwrap().is_some());
     let similar = store
         .search_similar(vec![0.0; 64], 10, qdrant.as_ref())
         .await
@@ -220,7 +220,7 @@ async fn integration_contradiction_higher_authority() {
         .build()
         .unwrap();
 
-    let old_memory = store.insert(&old_memory).unwrap();
+    let old_memory = store.insert(&old_memory).await.unwrap();
 
     let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_secs(3600));
     let mut accepted_rx = bus.subscribe(&[EventType::MemoryAccepted]);
@@ -246,11 +246,11 @@ async fn integration_contradiction_higher_authority() {
         .expect("timeout waiting for MemoryAccepted")
         .expect("channel closed");
 
-    let old = store.get_by_id(old_memory.id).unwrap().unwrap();
+    let old = store.get_by_id(old_memory.id).await.unwrap().unwrap();
     assert!(old.superseded_by.is_some());
     assert_eq!(qdrant.deleted.lock().as_slice(), &[old_memory.id]);
 
-    let chain = store.get_supersession_chain(old_memory.id).unwrap();
+    let chain = store.get_supersession_chain(old_memory.id).await.unwrap();
     assert_eq!(chain.len(), 2);
     assert_eq!(chain[0].id, old_memory.id);
     assert_eq!(chain[1].supersedes, Some(old_memory.id));
@@ -277,7 +277,7 @@ async fn integration_decay_scan_supersedes_stale() {
         .build()
         .unwrap();
 
-    let stale_memory = store.insert(&stale_memory).unwrap();
+    let stale_memory = store.insert(&stale_memory).await.unwrap();
     let librarian = Librarian::new(store.clone(), qdrant.clone(), Duration::from_millis(25));
     let mut superseded_rx = bus.subscribe(&[EventType::MemorySuperseded]);
     let handle = tokio::spawn({
@@ -291,7 +291,7 @@ async fn integration_decay_scan_supersedes_stale() {
         .expect("channel closed");
     assert_eq!(superseded.variant_name(), "MemorySuperseded");
 
-    let decayed = store.query_decayed().unwrap();
+    let decayed = store.query_decayed().await.unwrap();
     assert!(decayed.is_empty());
     assert_eq!(qdrant.deleted.lock().as_slice(), &[stale_memory.id]);
     handle.abort();
@@ -335,6 +335,7 @@ async fn integration_grounding_gate_rejects_ungrounded_llm() {
     assert!(
         store
             .query_by_type(MemoryType::Decision)
+            .await
             .unwrap()
             .is_empty()
     );
@@ -357,9 +358,9 @@ async fn integration_memory_lifecycle() {
         .build()
         .unwrap();
 
-    let memory = store.insert(&memory).unwrap();
+    let memory = store.insert(&memory).await.unwrap();
 
-    let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
+    let retrieved = store.get_by_id(memory.id).await.unwrap().unwrap();
     assert_eq!(retrieved.content, memory.content);
     assert_eq!(retrieved.memory_type, MemoryType::Fact);
     assert_eq!(retrieved.scope, MemoryScope::Project);
@@ -382,10 +383,11 @@ async fn integration_near_duplicate_suppression() {
         .source_agent(RoleId::new("user"))
         .build()
         .unwrap();
-    let memory = store.insert(&memory).unwrap();
+    let memory = store.insert(&memory).await.unwrap();
     qdrant.results.lock().push((memory.id, 0.99));
     let before = store
         .get_by_id(memory.id)
+        .await
         .unwrap()
         .unwrap()
         .last_accessed_at;
@@ -418,6 +420,7 @@ async fn integration_near_duplicate_suppression() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let after = store
         .get_by_id(memory.id)
+        .await
         .unwrap()
         .unwrap()
         .last_accessed_at;
@@ -476,9 +479,9 @@ async fn integration_provenance_trace() {
         .build()
         .unwrap();
 
-    let memory = store.insert(&memory).unwrap();
+    let memory = store.insert(&memory).await.unwrap();
 
-    let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
+    let retrieved = store.get_by_id(memory.id).await.unwrap().unwrap();
     assert_eq!(retrieved.evidence_refs.len(), 1);
 
     let trace = engine.trace_memory(&retrieved, &event_store).unwrap();
@@ -523,7 +526,7 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
         return;
     };
 
-    let store = MemoryStore::new(&database_url).unwrap();
+    let store = MemoryStore::new(&database_url).await.unwrap();
 
     let old = Memory::builder()
         .memory_type(MemoryType::Fact)
@@ -535,7 +538,7 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
         .source_agent(RoleId::new("user"))
         .build()
         .unwrap();
-    let old = store.insert(&old).unwrap();
+    let old = store.insert(&old).await.unwrap();
     let new = Memory::builder()
         .memory_type(MemoryType::Fact)
         .content("The API returns 204 for health checks")
@@ -547,25 +550,41 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
         .build()
         .unwrap();
 
-    let new = store.insert(&new).unwrap();
-    store.supersede(old.id, new.id).unwrap();
+    let new = store.insert(&new).await.unwrap();
+    store.supersede(old.id, new.id).await.unwrap();
 
     assert_eq!(
-        store.get_by_id(old.id).unwrap().unwrap().superseded_by,
+        store
+            .get_by_id(old.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .superseded_by,
         Some(new.id)
     );
-    assert_eq!(store.query_by_type(MemoryType::Fact).unwrap().len(), 1);
-    assert_eq!(store.query_by_scope(MemoryScope::Project).unwrap().len(), 1);
+    assert_eq!(
+        store.query_by_type(MemoryType::Fact).await.unwrap().len(),
+        1
+    );
     assert_eq!(
         store
-            .query_by_authority(Authority::CompilerOutput, Authority::SpeculativeReasoning)
+            .query_by_scope(MemoryScope::Project)
+            .await
             .unwrap()
             .len(),
         1
     );
-    assert!(store.query_decayed().unwrap().is_empty());
+    assert_eq!(
+        store
+            .query_by_authority(Authority::CompilerOutput, Authority::SpeculativeReasoning)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store.query_decayed().await.unwrap().is_empty());
 
-    let chain = store.get_supersession_chain(old.id).unwrap();
+    let chain = store.get_supersession_chain(old.id).await.unwrap();
     assert_eq!(chain.len(), 2);
     assert_eq!(chain[0].id, old.id);
     assert_eq!(chain[1].id, new.id);

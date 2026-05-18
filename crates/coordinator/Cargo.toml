@@ -10,6 +10,7 @@ license-file.workspace = true
 async-trait.workspace = true
 mmat-db.workspace = true
 mmat-event-stream.workspace = true
+mmat-llm.workspace = true
 mmat-memory = { path = "../memory" }
 serde.workspace = true
 thiserror.workspace = true
@@ -25,3 +26,4 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 qdrant-client.workspace = true
+wiremock.workspace = true

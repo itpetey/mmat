@@ -9,7 +9,10 @@ pub use role::{
     AuthorityScope, Budget, CapabilityStatus, CoordinatorHandle, Role, RoleContext, RoleError,
     RoleLifecycleState, RoleReadiness, RoleSpec, RoleType, Severity, ToolRegistry,
 };
-pub use runtime::{OrganisationConfig, OrganisationRuntime};
+pub use runtime::{
+    AssistantStreamEvent, AssistantStreamRequest, OrganisationConfig, OrganisationRuntime,
+    WorkbenchAssistantConfig, WorkbenchRuntimeHandle,
+};
 pub use scheduler::{BudgetState, Scheduler};
 
 pub mod contract;

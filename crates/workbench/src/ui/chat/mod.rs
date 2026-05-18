@@ -305,7 +305,45 @@ fn push_server_message(
                 kind: ChatMessageKind::Message,
             }
         }
-        ChatServerMessage::AssistantStreamUnavailable {
+        ChatServerMessage::AssistantStreamStarted {
+            lane_id,
+            message_id,
+            ..
+        } => {
+            if selected_lane_id.as_deref() != Some(lane_id.as_str()) {
+                return;
+            }
+            ChatTranscriptItem {
+                id: message_id,
+                speaker: "Assistant".to_string(),
+                content: String::new(),
+                kind: ChatMessageKind::Message,
+            }
+        }
+        ChatServerMessage::AssistantStreamDelta {
+            lane_id,
+            message_id,
+            delta,
+        } => {
+            if selected_lane_id.as_deref() != Some(lane_id.as_str()) {
+                return;
+            }
+            append_assistant_delta(messages, &message_id, &delta);
+            return;
+        }
+        ChatServerMessage::AssistantStreamCompleted {
+            lane_id,
+            message_id,
+            content,
+            ..
+        } => {
+            if selected_lane_id.as_deref() != Some(lane_id.as_str()) {
+                return;
+            }
+            upsert_assistant_message(messages, &message_id, content);
+            return;
+        }
+        ChatServerMessage::AssistantStreamFailed {
             lane_id,
             message_id,
             reason,
@@ -315,10 +353,10 @@ fn push_server_message(
                 return;
             }
             ChatTranscriptItem {
-                id: message_id,
+                id: format!("assistant-failed-{message_id}"),
                 speaker: "System".to_string(),
                 content: reason,
-                kind: ChatMessageKind::Log,
+                kind: ChatMessageKind::Error,
             }
         }
         ChatServerMessage::Cancelled {
@@ -353,6 +391,58 @@ fn push_server_message(
     }
 }
 
+fn append_assistant_delta(
+    mut messages: Signal<Vec<ChatTranscriptItem>>,
+    message_id: &str,
+    delta: &str,
+) {
+    let mut messages = messages.write();
+    append_assistant_delta_to_items(&mut messages, message_id, delta);
+}
+
+fn upsert_assistant_message(
+    mut messages: Signal<Vec<ChatTranscriptItem>>,
+    message_id: &str,
+    content: String,
+) {
+    let mut messages = messages.write();
+    upsert_assistant_message_in_items(&mut messages, message_id, content);
+}
+
+fn append_assistant_delta_to_items(
+    messages: &mut Vec<ChatTranscriptItem>,
+    message_id: &str,
+    delta: &str,
+) {
+    if let Some(item) = messages.iter_mut().find(|item| item.id == message_id) {
+        item.content.push_str(delta);
+    } else {
+        messages.push(ChatTranscriptItem {
+            id: message_id.to_string(),
+            speaker: "Assistant".to_string(),
+            content: delta.to_string(),
+            kind: ChatMessageKind::Message,
+        });
+    }
+}
+
+fn upsert_assistant_message_in_items(
+    messages: &mut Vec<ChatTranscriptItem>,
+    message_id: &str,
+    content: String,
+) {
+    if let Some(item) = messages.iter_mut().find(|item| item.id == message_id) {
+        item.content = content;
+    } else {
+        messages.push(ChatTranscriptItem {
+            id: message_id.to_string(),
+            speaker: "Assistant".to_string(),
+            content,
+            kind: ChatMessageKind::Message,
+        });
+    }
+}
+
 impl From<TranscriptItem> for ChatTranscriptItem {
     fn from(item: TranscriptItem) -> Self {
         Self {
@@ -365,5 +455,38 @@ impl From<TranscriptItem> for ChatTranscriptItem {
                 TranscriptItemKind::Error => ChatMessageKind::Error,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assistant_deltas_merge_into_one_row() {
+        let mut messages = Vec::new();
+        append_assistant_delta_to_items(&mut messages, "assistant-1", "Hel");
+        append_assistant_delta_to_items(&mut messages, "assistant-1", "lo");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "assistant-1");
+        assert_eq!(messages[0].speaker, "Assistant");
+        assert_eq!(messages[0].content, "Hello");
+        assert_eq!(messages[0].kind, ChatMessageKind::Message);
+    }
+
+    #[test]
+    fn assistant_completion_updates_existing_row_without_duplicate() {
+        let mut messages = vec![ChatTranscriptItem {
+            id: "assistant-1".to_string(),
+            speaker: "Assistant".to_string(),
+            content: "partial".to_string(),
+            kind: ChatMessageKind::Message,
+        }];
+
+        upsert_assistant_message_in_items(&mut messages, "assistant-1", "complete".to_string());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "complete");
     }
 }

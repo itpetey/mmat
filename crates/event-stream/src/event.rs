@@ -329,6 +329,17 @@ pub enum SemanticEvent {
         context: EventContext,
         answer: String,
     },
+    AssistantMessageProduced {
+        event_id: EventId,
+        source_agent: RoleId,
+        timestamp_ns: u64,
+        #[serde(default)]
+        context: EventContext,
+        assistant_message_id: String,
+        reply_to_message_id: String,
+        content: String,
+        finish_reason: String,
+    },
     ArtefactProduced {
         event_id: EventId,
         source_agent: RoleId,
@@ -552,6 +563,8 @@ pub enum EventType {
     HumanFeedbackRequested,
     /// Human feedback was received.
     HumanFeedbackReceived,
+    /// An assistant message was produced.
+    AssistantMessageProduced,
     /// An artefact was produced.
     ArtefactProduced,
     /// A budget usage warning was issued.
@@ -1072,6 +1085,26 @@ impl SemanticEvent {
         }
     }
 
+    /// Constructs a new [`AssistantMessageProduced`](SemanticEvent::AssistantMessageProduced) event.
+    pub fn new_assistant_message_produced(
+        source_agent: RoleId,
+        assistant_message_id: impl Into<String>,
+        reply_to_message_id: impl Into<String>,
+        content: impl Into<String>,
+        finish_reason: impl Into<String>,
+    ) -> Self {
+        Self::AssistantMessageProduced {
+            event_id: EventId::new(),
+            source_agent,
+            timestamp_ns: now_ns(),
+            context: EventContext::default(),
+            assistant_message_id: assistant_message_id.into(),
+            reply_to_message_id: reply_to_message_id.into(),
+            content: content.into(),
+            finish_reason: finish_reason.into(),
+        }
+    }
+
     /// Constructs a new [`ArtefactProduced`](SemanticEvent::ArtefactProduced) event.
     pub fn new_artefact_produced(
         source_agent: RoleId,
@@ -1438,6 +1471,7 @@ impl SemanticEvent {
             Self::EscalationRequested { event_id, .. } => *event_id,
             Self::HumanFeedbackRequested { event_id, .. } => *event_id,
             Self::HumanFeedbackReceived { event_id, .. } => *event_id,
+            Self::AssistantMessageProduced { event_id, .. } => *event_id,
             Self::ArtefactProduced { event_id, .. } => *event_id,
             Self::BudgetWarning { event_id, .. } => *event_id,
             Self::EscalationAccepted { event_id, .. } => *event_id,
@@ -1480,6 +1514,7 @@ impl SemanticEvent {
             | Self::EscalationRequested { source_agent, .. }
             | Self::HumanFeedbackRequested { source_agent, .. }
             | Self::HumanFeedbackReceived { source_agent, .. }
+            | Self::AssistantMessageProduced { source_agent, .. }
             | Self::ArtefactProduced { source_agent, .. }
             | Self::BudgetWarning { source_agent, .. }
             | Self::EscalationAccepted { source_agent, .. }
@@ -1522,6 +1557,7 @@ impl SemanticEvent {
             | Self::EscalationRequested { timestamp_ns, .. }
             | Self::HumanFeedbackRequested { timestamp_ns, .. }
             | Self::HumanFeedbackReceived { timestamp_ns, .. }
+            | Self::AssistantMessageProduced { timestamp_ns, .. }
             | Self::ArtefactProduced { timestamp_ns, .. }
             | Self::BudgetWarning { timestamp_ns, .. }
             | Self::EscalationAccepted { timestamp_ns, .. }
@@ -1564,6 +1600,7 @@ impl SemanticEvent {
             Self::EscalationRequested { .. } => "EscalationRequested",
             Self::HumanFeedbackRequested { .. } => "HumanFeedbackRequested",
             Self::HumanFeedbackReceived { .. } => "HumanFeedbackReceived",
+            Self::AssistantMessageProduced { .. } => "AssistantMessageProduced",
             Self::ArtefactProduced { .. } => "ArtefactProduced",
             Self::BudgetWarning { .. } => "BudgetWarning",
             Self::EscalationAccepted { .. } => "EscalationAccepted",
@@ -1606,6 +1643,7 @@ impl SemanticEvent {
             Self::EscalationRequested { .. } => EventType::EscalationRequested,
             Self::HumanFeedbackRequested { .. } => EventType::HumanFeedbackRequested,
             Self::HumanFeedbackReceived { .. } => EventType::HumanFeedbackReceived,
+            Self::AssistantMessageProduced { .. } => EventType::AssistantMessageProduced,
             Self::ArtefactProduced { .. } => EventType::ArtefactProduced,
             Self::BudgetWarning { .. } => EventType::BudgetWarning,
             Self::EscalationAccepted { .. } => EventType::EscalationAccepted,
@@ -1648,6 +1686,7 @@ impl SemanticEvent {
             | Self::EscalationRequested { context, .. }
             | Self::HumanFeedbackRequested { context, .. }
             | Self::HumanFeedbackReceived { context, .. }
+            | Self::AssistantMessageProduced { context, .. }
             | Self::ArtefactProduced { context, .. }
             | Self::BudgetWarning { context, .. }
             | Self::EscalationAccepted { context, .. }
@@ -1996,6 +2035,25 @@ impl SemanticEvent {
                 context,
                 answer,
             },
+            Self::AssistantMessageProduced {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                assistant_message_id,
+                reply_to_message_id,
+                content,
+                finish_reason,
+                ..
+            } => Self::AssistantMessageProduced {
+                event_id,
+                source_agent,
+                timestamp_ns,
+                context,
+                assistant_message_id,
+                reply_to_message_id,
+                content,
+                finish_reason,
+            },
             Self::ArtefactProduced {
                 event_id,
                 source_agent,
@@ -2310,6 +2368,7 @@ impl EventType {
             Self::EscalationRequested => "EscalationRequested",
             Self::HumanFeedbackRequested => "HumanFeedbackRequested",
             Self::HumanFeedbackReceived => "HumanFeedbackReceived",
+            Self::AssistantMessageProduced => "AssistantMessageProduced",
             Self::ArtefactProduced => "ArtefactProduced",
             Self::BudgetWarning => "BudgetWarning",
             Self::EscalationAccepted => "EscalationAccepted",
@@ -2406,6 +2465,7 @@ mod tests {
             EventType::EscalationRequested.name(),
             EventType::HumanFeedbackRequested.name(),
             EventType::HumanFeedbackReceived.name(),
+            EventType::AssistantMessageProduced.name(),
             EventType::ArtefactProduced.name(),
             EventType::BudgetWarning.name(),
             EventType::EscalationAccepted.name(),
@@ -2482,6 +2542,45 @@ mod tests {
                 assert_eq!(source_message_id.as_deref(), Some("message-1"));
             }
             other => panic!("expected LaneCreated, got {}", other.variant_name()),
+        }
+    }
+
+    #[test]
+    fn assistant_message_produced_round_trip_serialisation() {
+        let event = SemanticEvent::new_assistant_message_produced(
+            RoleId::new("assistant"),
+            "assistant-message-1",
+            "user-message-1",
+            "Hello from the assistant.",
+            "stop",
+        )
+        .with_context(
+            EventContext::new("org", "workspace", "project-1", "run-1").with_lane_id("lane-1"),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("AssistantMessageProduced"));
+        let back: SemanticEvent = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(event.event_id(), back.event_id());
+        assert_eq!(back.event_type(), EventType::AssistantMessageProduced);
+        assert_eq!(back.context().lane_id.as_deref(), Some("lane-1"));
+        match back {
+            SemanticEvent::AssistantMessageProduced {
+                assistant_message_id,
+                reply_to_message_id,
+                content,
+                finish_reason,
+                ..
+            } => {
+                assert_eq!(assistant_message_id, "assistant-message-1");
+                assert_eq!(reply_to_message_id, "user-message-1");
+                assert_eq!(content, "Hello from the assistant.");
+                assert_eq!(finish_reason, "stop");
+            }
+            other => panic!(
+                "expected AssistantMessageProduced, got {}",
+                other.variant_name()
+            ),
         }
     }
 }

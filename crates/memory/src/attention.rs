@@ -441,7 +441,7 @@ impl AttentionEngine {
 
     /// Updates the `last_accessed_at` timestamp of a memory, marking it as recently rehearsed.
     pub async fn rehearse(&self, memory_id: MemoryId, store: &MemoryStore) -> Result<()> {
-        store.update_last_accessed(memory_id)
+        store.update_last_accessed(memory_id).await
     }
 }
 
@@ -590,9 +590,10 @@ mod tests {
             .source_agent(RoleId::new("user"))
             .build()
             .unwrap();
-        let memory = store.insert(&memory).unwrap();
+        let memory = store.insert(&memory).await.unwrap();
         let before = store
             .get_by_id(memory.id)
+            .await
             .unwrap()
             .unwrap()
             .last_accessed_at;
@@ -622,6 +623,7 @@ mod tests {
 
         let after = store
             .get_by_id(memory.id)
+            .await
             .unwrap()
             .unwrap()
             .last_accessed_at;

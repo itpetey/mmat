@@ -307,7 +307,7 @@ impl Librarian {
         match contradiction_result {
             ContradictionResult::HigherAuthorityNew { existing_id }
             | ContradictionResult::EqualAuthorityNew { existing_id } => {
-                self.store.supersede(existing_id, memory.id)?;
+                self.store.supersede(existing_id, memory.id).await?;
                 if let Err(e) = self.qdrant.delete(existing_id).await {
                     tracing::warn!("Failed to delete superseded memory vector: {}", e);
                 }
@@ -469,7 +469,7 @@ impl Librarian {
         content: &str,
         authority: Authority,
     ) -> Result<ContradictionResult> {
-        let existing = self.store.query_by_type(*memory_type)?;
+        let existing = self.store.query_by_type(*memory_type).await?;
         let same_scope: Vec<_> = existing
             .into_iter()
             .filter(|m| &m.scope == scope && m.superseded_by.is_none())
@@ -506,13 +506,14 @@ impl Librarian {
     ) -> Result<()> {
         if self
             .store
-            .get_by_id(old_id)?
+            .get_by_id(old_id)
+            .await?
             .is_some_and(|memory| memory.superseded_by == Some(new_id))
         {
             return Ok(());
         }
 
-        self.store.supersede(old_id, new_id)?;
+        self.store.supersede(old_id, new_id).await?;
         if let Err(e) = self.qdrant.delete(old_id).await {
             tracing::warn!("Failed to delete superseded memory vector: {}", e);
         }
@@ -530,7 +531,7 @@ impl Librarian {
             return Ok(());
         };
         let memory_id = MemoryId(related_event_id.0);
-        let Some(memory) = self.store.get_by_id(memory_id)? else {
+        let Some(memory) = self.store.get_by_id(memory_id).await? else {
             return Ok(());
         };
         if memory.superseded_by.is_some() {
@@ -563,8 +564,8 @@ impl Librarian {
             .source_agent(RoleId::new("librarian-001"))
             .build()?;
 
-        let marker = self.store.insert(&marker)?;
-        self.store.supersede(memory.id, marker.id)?;
+        let marker = self.store.insert(&marker).await?;
+        self.store.supersede(memory.id, marker.id).await?;
         if let Err(e) = self.qdrant.delete(memory.id).await {
             tracing::warn!("Failed to delete audit-flagged memory vector: {}", e);
         }
@@ -586,7 +587,7 @@ impl Librarian {
     }
 
     async fn run_decay_scan(&self, bus: &EventBus) -> Result<()> {
-        let decayed = self.store.query_decayed()?;
+        let decayed = self.store.query_decayed().await?;
 
         for memory in decayed {
             let marker = Memory::builder()
@@ -599,8 +600,8 @@ impl Librarian {
                 .source_agent(RoleId::new("librarian"))
                 .build()?;
 
-            let marker = self.store.insert(&marker)?;
-            self.store.supersede(memory.id, marker.id)?;
+            let marker = self.store.insert(&marker).await?;
+            self.store.supersede(memory.id, marker.id).await?;
             if let Err(e) = self.qdrant.delete(memory.id).await {
                 tracing::warn!("Failed to delete decayed memory vector: {}", e);
             }
@@ -891,7 +892,7 @@ mod tests {
             .await
             .unwrap();
 
-        let stored = store.query_by_type(MemoryType::Fact).unwrap();
+        let stored = store.query_by_type(MemoryType::Fact).await.unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].authority, Authority::SpeculativeReasoning);
 
@@ -925,7 +926,7 @@ mod tests {
             .source_agent(RoleId::new("llm"))
             .build()
             .unwrap();
-        let old_memory = store.insert(&old_memory).unwrap();
+        let old_memory = store.insert(&old_memory).await.unwrap();
 
         let qdrant = Arc::new(FakeVectorBackend {
             fail_upsert: true,
@@ -950,9 +951,12 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        let old = store.get_by_id(old_memory.id).unwrap().unwrap();
+        let old = store.get_by_id(old_memory.id).await.unwrap().unwrap();
         assert!(old.superseded_by.is_none());
-        assert_eq!(store.query_by_type(MemoryType::Fact).unwrap().len(), 1);
+        assert_eq!(
+            store.query_by_type(MemoryType::Fact).await.unwrap().len(),
+            1
+        );
 
         crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }
@@ -974,7 +978,7 @@ mod tests {
             .source_agent(RoleId::new("llm"))
             .build()
             .unwrap();
-        let old_memory = store.insert(&old_memory).unwrap();
+        let old_memory = store.insert(&old_memory).await.unwrap();
 
         let qdrant = Arc::new(FakeVectorBackend::default());
         qdrant.results.lock().push((old_memory.id, 0.99));
@@ -997,9 +1001,9 @@ mod tests {
             .await
             .unwrap();
 
-        let old = store.get_by_id(old_memory.id).unwrap().unwrap();
+        let old = store.get_by_id(old_memory.id).await.unwrap().unwrap();
         assert!(old.superseded_by.is_some());
-        let chain = store.get_supersession_chain(old_memory.id).unwrap();
+        let chain = store.get_supersession_chain(old_memory.id).await.unwrap();
         assert_eq!(chain.len(), 2);
 
         crate::store::tests::drop_postgres_schema(&pool, &schema).await;
@@ -1026,14 +1030,17 @@ mod tests {
             .source_agent(RoleId::new("user"))
             .build()
             .unwrap();
-        let stale = store.insert(&stale).unwrap();
+        let stale = store.insert(&stale).await.unwrap();
 
         librarian.run_decay_scan(&bus).await.unwrap();
-        assert!(store.query_decayed().unwrap().is_empty());
+        assert!(store.query_decayed().await.unwrap().is_empty());
         assert_eq!(qdrant.deleted.lock().as_slice(), &[stale.id]);
 
         librarian.run_decay_scan(&bus).await.unwrap();
-        assert_eq!(store.query_by_type(MemoryType::Fact).unwrap().len(), 1);
+        assert_eq!(
+            store.query_by_type(MemoryType::Fact).await.unwrap().len(),
+            1
+        );
 
         crate::store::tests::drop_postgres_schema(&pool, &schema).await;
     }

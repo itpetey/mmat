@@ -863,6 +863,7 @@ impl Auditor {
         let Some(memory) = ctx
             .memory_store
             .get_by_id(memory_id)
+            .await
             .map_err(|e| RoleError::Internal(format!("Memory store query failed: {e}")))?
         else {
             return Ok(());
@@ -990,6 +991,7 @@ impl Auditor {
             SemanticEvent::EscalationRequested { source_agent, .. } => source_agent.clone(),
             SemanticEvent::HumanFeedbackRequested { source_agent, .. } => source_agent.clone(),
             SemanticEvent::HumanFeedbackReceived { source_agent, .. } => source_agent.clone(),
+            SemanticEvent::AssistantMessageProduced { source_agent, .. } => source_agent.clone(),
             SemanticEvent::ArtefactProduced { source_agent, .. } => source_agent.clone(),
             SemanticEvent::BudgetWarning { source_agent, .. } => source_agent.clone(),
             SemanticEvent::EscalationAccepted { source_agent, .. } => source_agent.clone(),

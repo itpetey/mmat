@@ -1,9 +1,4 @@
-# semantic-event-types Specification
-
-## Purpose
-Define the serializable semantic event variants and common event metadata used across runtime, workbench, and persistence boundaries.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Event types are defined as a single serializable enum
 The system SHALL define a `SemanticEvent` enum with one variant per cognitive event type. Every variant MUST include a unique `EventId`, a `source_agent` field identifying the originating role, a `timestamp_ns` in nanoseconds since epoch, and common `EventContext` metadata. `EventContext` MUST include organisation, workspace, project, run, optional task, optional primary lane, causation, and correlation identifiers. All variants MUST implement `Clone`, `Debug`, `Serialize`, and `Deserialize`.
@@ -51,20 +46,3 @@ The variants SHALL include at minimum:
 - **AND** the event context MUST include the same primary lane as the user message
 - **AND** the event MUST include the assistant message ID and the user message ID it replies to
 - **AND** the event MUST include the completed assistant content
-
-### Requirement: Event bus distributes events to all subscribers
-The system SHALL provide an `EventBus` backed by `tokio::broadcast` that allows multiple concurrent subscribers to receive published events. Publishing MUST be non-blocking for producers. Subscribers that fall behind the buffer capacity MUST receive a `Lagging` error rather than blocking the producer.
-
-#### Scenario: Multiple subscribers receive the same event
-- **WHEN** a `TaskAssigned` event is published to the bus
-- **THEN** all active subscribers with matching subscriptions MUST receive a clone of that event
-- **AND** the publish call MUST return immediately without waiting for subscriber processing
-
-#### Scenario: Subscriber filters by event variant
-- **WHEN** a subscriber registers interest only in `TaskAssigned` and `TaskCompleted` variants
-- **THEN** it MUST NOT receive events of other variants published to the bus
-
-#### Scenario: Lagging subscriber is notified
-- **WHEN** a subscriber is slower than the broadcast channel buffer capacity
-- **THEN** its next `recv()` call MUST return a `RecvError::Lagged(n)` indicating how many events were dropped
-- **AND** the subscriber MAY recover by replaying events from the event store

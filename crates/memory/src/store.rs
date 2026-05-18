@@ -29,16 +29,6 @@ impl PgMemoryStore {
         Self { pool }
     }
 
-    fn block_on<F, T>(&self, future: F) -> Result<T>
-    where
-        F: std::future::Future<Output = Result<T>> + Send,
-        T: Send,
-    {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| crate::error::Error::Runtime(e.to_string()))?;
-        tokio::task::block_in_place(|| rt.block_on(future))
-    }
-
     fn memory_to_new_memory(&self, memory: &Memory) -> Result<NewMemory> {
         Ok(NewMemory {
             memory_type: memory.memory_type.discriminant_str().to_string(),
@@ -75,173 +65,164 @@ impl PgMemoryStore {
         .map_err(|e| crate::error::Error::Store(e.to_string()))
     }
 
-    fn insert(&self, memory: &Memory) -> Result<Memory> {
+    async fn insert(&self, memory: &Memory) -> Result<Memory> {
         let new_memory = self.memory_to_new_memory(memory)?;
         let pool = self.pool.clone();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            let row = mmat_db::memory::insert_memory(&mut conn, &new_memory)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            Self::db_memory_to_domain(row)
-        })
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        let row = mmat_db::memory::insert_memory(&mut conn, &new_memory)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        Self::db_memory_to_domain(row)
     }
 
-    fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
+    async fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
         let pool = self.pool.clone();
         let id_uuid = id.0;
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            let row = mmat_db::memory::get_memory_by_id(&mut conn, id_uuid)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            match row {
-                Some(r) => Ok(Some(Self::db_memory_to_domain(r)?)),
-                None => Ok(None),
-            }
-        })
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        let row = mmat_db::memory::get_memory_by_id(&mut conn, id_uuid)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        match row {
+            Some(r) => Ok(Some(Self::db_memory_to_domain(r)?)),
+            None => Ok(None),
+        }
     }
 
-    fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
+    async fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
         let pool = self.pool.clone();
         let type_str = memory_type.discriminant_str().to_string();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            let rows = mmat_db::memory::query_memories_not_superseded_by_type(&mut conn, &type_str)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            rows.into_iter().map(Self::db_memory_to_domain).collect()
-        })
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        let rows = mmat_db::memory::query_memories_not_superseded_by_type(&mut conn, &type_str)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        rows.into_iter().map(Self::db_memory_to_domain).collect()
     }
 
-    fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
+    async fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
         let pool = self.pool.clone();
         let scope_str = scope.discriminant_str().to_string();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            let rows =
-                mmat_db::memory::query_memories_not_superseded_by_scope(&mut conn, &scope_str)
-                    .await
-                    .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            rows.into_iter().map(Self::db_memory_to_domain).collect()
-        })
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        let rows = mmat_db::memory::query_memories_not_superseded_by_scope(&mut conn, &scope_str)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        rows.into_iter().map(Self::db_memory_to_domain).collect()
     }
 
-    fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
+    async fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
         let pool = self.pool.clone();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            let rows = mmat_db::memory::query_memories_not_superseded(&mut conn)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            let mut memories = Vec::new();
-            for row in rows {
-                let memory = Self::db_memory_to_domain(row)?;
-                if memory.authority >= min && memory.authority <= max {
-                    memories.push(memory);
-                }
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        let rows = mmat_db::memory::query_memories_not_superseded(&mut conn)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        let mut memories = Vec::new();
+        for row in rows {
+            let memory = Self::db_memory_to_domain(row)?;
+            if memory.authority >= min && memory.authority <= max {
+                memories.push(memory);
             }
-            Ok(memories)
-        })
+        }
+        Ok(memories)
     }
 
-    fn query_decayed(&self) -> Result<Vec<Memory>> {
+    async fn query_decayed(&self) -> Result<Vec<Memory>> {
         let pool = self.pool.clone();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            let rows = mmat_db::memory::query_memories_not_superseded(&mut conn)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            let mut memories = Vec::new();
-            for row in rows {
-                let memory = Self::db_memory_to_domain(row)?;
-                if memory.decay_policy.is_decayed(memory.created_at) {
-                    memories.push(memory);
-                }
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        let rows = mmat_db::memory::query_memories_not_superseded(&mut conn)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        let mut memories = Vec::new();
+        for row in rows {
+            let memory = Self::db_memory_to_domain(row)?;
+            if memory.decay_policy.is_decayed(memory.created_at) {
+                memories.push(memory);
             }
-            Ok(memories)
-        })
+        }
+        Ok(memories)
     }
 
-    fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
+    async fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
         let pool = self.pool.clone();
         let old_uuid = old_id.0;
         let new_uuid = new_id.0;
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
 
-            let old_exists = mmat_db::memory::memory_exists(&mut conn, old_uuid)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            let new_exists = mmat_db::memory::memory_exists(&mut conn, new_uuid)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        let old_exists = mmat_db::memory::memory_exists(&mut conn, old_uuid)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        let new_exists = mmat_db::memory::memory_exists(&mut conn, new_uuid)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
 
-            if !old_exists {
-                return Err(crate::error::Error::Store(format!(
-                    "cannot supersede missing memory {}",
-                    old_id
-                )));
-            }
-            if !new_exists {
-                return Err(crate::error::Error::Store(format!(
-                    "cannot supersede with missing memory {}",
-                    new_id
-                )));
-            }
+        if !old_exists {
+            return Err(crate::error::Error::Store(format!(
+                "cannot supersede missing memory {}",
+                old_id
+            )));
+        }
+        if !new_exists {
+            return Err(crate::error::Error::Store(format!(
+                "cannot supersede with missing memory {}",
+                new_id
+            )));
+        }
 
-            mmat_db::begin_transaction(&mut conn)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            if let Err(e) =
-                mmat_db::memory::update_memory_superseded_by(&mut conn, old_uuid, Some(new_uuid))
-                    .await
-            {
-                let _ = mmat_db::rollback_transaction(&mut conn).await;
-                return Err(crate::error::Error::Database(mmat_db::DbError::Diesel(e)));
-            }
-            if let Err(e) =
-                mmat_db::memory::update_memory_supersedes(&mut conn, new_uuid, Some(old_uuid)).await
-            {
-                let _ = mmat_db::rollback_transaction(&mut conn).await;
-                return Err(crate::error::Error::Database(mmat_db::DbError::Diesel(e)));
-            }
-            mmat_db::commit_transaction(&mut conn)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            Ok(())
-        })
+        mmat_db::begin_transaction(&mut conn)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        if let Err(e) =
+            mmat_db::memory::update_memory_superseded_by(&mut conn, old_uuid, Some(new_uuid)).await
+        {
+            let _ = mmat_db::rollback_transaction(&mut conn).await;
+            return Err(crate::error::Error::Database(mmat_db::DbError::Diesel(e)));
+        }
+        if let Err(e) =
+            mmat_db::memory::update_memory_supersedes(&mut conn, new_uuid, Some(old_uuid)).await
+        {
+            let _ = mmat_db::rollback_transaction(&mut conn).await;
+            return Err(crate::error::Error::Database(mmat_db::DbError::Diesel(e)));
+        }
+        mmat_db::commit_transaction(&mut conn)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        Ok(())
     }
 
-    fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
+    async fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
         let mut forward = Vec::new();
-        let mut current = self.get_by_id(id)?;
+        let mut current = self.get_by_id(id).await?;
 
         while let Some(memory) = current {
             forward.push(memory.clone());
             if let Some(superseded_by) = memory.superseded_by {
-                current = self.get_by_id(superseded_by)?;
+                current = self.get_by_id(superseded_by).await?;
             } else {
                 break;
             }
@@ -251,11 +232,11 @@ impl PgMemoryStore {
         if let Some(first) = forward.first()
             && let Some(supersedes) = first.supersedes
         {
-            let mut current = self.get_by_id(supersedes)?;
+            let mut current = self.get_by_id(supersedes).await?;
             while let Some(memory) = current {
                 backward.push(memory.clone());
                 if let Some(s) = memory.supersedes {
-                    current = self.get_by_id(s)?;
+                    current = self.get_by_id(s).await?;
                 } else {
                     break;
                 }
@@ -267,36 +248,34 @@ impl PgMemoryStore {
         Ok(backward)
     }
 
-    fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
+    async fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
         let pool = self.pool.clone();
         let id_uuid = id.0;
         let now = Utc::now().to_rfc3339();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            mmat_db::memory::update_memory_last_accessed(&mut conn, id_uuid, &now)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            Ok(())
-        })
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        mmat_db::memory::update_memory_last_accessed(&mut conn, id_uuid, &now)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        Ok(())
     }
 
-    fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
+    async fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
         let pool = self.pool.clone();
         let id_uuid = id.0;
         let content_owned = content.to_string();
 
-        self.block_on(async {
-            let mut conn = pool.get().await.map_err(|e| {
-                crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string()))
-            })?;
-            mmat_db::memory::update_memory_content(&mut conn, id_uuid, &content_owned)
-                .await
-                .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
-            Ok(())
-        })
+        let mut conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Pool(e.to_string())))?;
+        mmat_db::memory::update_memory_content(&mut conn, id_uuid, &content_owned)
+            .await
+            .map_err(|e| crate::error::Error::Database(mmat_db::DbError::Diesel(e)))?;
+        Ok(())
     }
 
     async fn insert_with_embedding(
@@ -357,7 +336,7 @@ impl PgMemoryStore {
         let mut current = Vec::new();
 
         for (id, score) in similar {
-            if let Some(memory) = self.get_by_id(id)?
+            if let Some(memory) = self.get_by_id(id).await?
                 && memory.superseded_by.is_none()
             {
                 current.push((id, score));
@@ -377,10 +356,8 @@ impl PgMemoryStore {
 }
 
 impl MemoryStore {
-    pub fn new(database_url: &str) -> Result<Self> {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| crate::error::Error::Runtime(e.to_string()))?;
-        let pg = tokio::task::block_in_place(|| rt.block_on(PgMemoryStore::connect(database_url)))?;
+    pub async fn new(database_url: &str) -> Result<Self> {
+        let pg = PgMemoryStore::connect(database_url).await?;
         Ok(Self { inner: pg })
     }
 
@@ -395,44 +372,44 @@ impl MemoryStore {
         }
     }
 
-    pub fn insert(&self, memory: &Memory) -> Result<Memory> {
-        self.inner.insert(memory)
+    pub async fn insert(&self, memory: &Memory) -> Result<Memory> {
+        self.inner.insert(memory).await
     }
 
-    pub fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
-        self.inner.get_by_id(id)
+    pub async fn get_by_id(&self, id: MemoryId) -> Result<Option<Memory>> {
+        self.inner.get_by_id(id).await
     }
 
-    pub fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
-        self.inner.query_by_type(memory_type)
+    pub async fn query_by_type(&self, memory_type: MemoryType) -> Result<Vec<Memory>> {
+        self.inner.query_by_type(memory_type).await
     }
 
-    pub fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
-        self.inner.query_by_scope(scope)
+    pub async fn query_by_scope(&self, scope: MemoryScope) -> Result<Vec<Memory>> {
+        self.inner.query_by_scope(scope).await
     }
 
-    pub fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
-        self.inner.query_by_authority(min, max)
+    pub async fn query_by_authority(&self, min: Authority, max: Authority) -> Result<Vec<Memory>> {
+        self.inner.query_by_authority(min, max).await
     }
 
-    pub fn query_decayed(&self) -> Result<Vec<Memory>> {
-        self.inner.query_decayed()
+    pub async fn query_decayed(&self) -> Result<Vec<Memory>> {
+        self.inner.query_decayed().await
     }
 
-    pub fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
-        self.inner.supersede(old_id, new_id)
+    pub async fn supersede(&self, old_id: MemoryId, new_id: MemoryId) -> Result<()> {
+        self.inner.supersede(old_id, new_id).await
     }
 
-    pub fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
-        self.inner.get_supersession_chain(id)
+    pub async fn get_supersession_chain(&self, id: MemoryId) -> Result<Vec<Memory>> {
+        self.inner.get_supersession_chain(id).await
     }
 
-    pub fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
-        self.inner.update_last_accessed(id)
+    pub async fn update_last_accessed(&self, id: MemoryId) -> Result<()> {
+        self.inner.update_last_accessed(id).await
     }
 
-    pub fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
-        self.inner.update_content(id, content)
+    pub async fn update_content(&self, id: MemoryId, content: &str) -> Result<()> {
+        self.inner.update_content(id, content).await
     }
 
     pub async fn insert_with_embedding(
@@ -602,20 +579,21 @@ pub(crate) mod tests {
         {
             let store = MemoryStore::new_with_pool(pool.clone());
             let memory = test_memory();
-            let memory = store.insert(&memory).unwrap();
+            let memory = store.insert(&memory).await.unwrap();
 
-            let retrieved = store.get_by_id(memory.id).unwrap().unwrap();
+            let retrieved = store.get_by_id(memory.id).await.unwrap().unwrap();
             assert_eq!(retrieved.id, memory.id);
             assert_eq!(retrieved.content, memory.content);
 
-            let facts = store.query_by_type(MemoryType::Fact).unwrap();
+            let facts = store.query_by_type(MemoryType::Fact).await.unwrap();
             assert_eq!(facts.len(), 1);
 
-            let scoped = store.query_by_scope(MemoryScope::Project).unwrap();
+            let scoped = store.query_by_scope(MemoryScope::Project).await.unwrap();
             assert_eq!(scoped.len(), 1);
 
             let authority_results = store
                 .query_by_authority(Authority::CompilerOutput, Authority::SpeculativeReasoning)
+                .await
                 .unwrap();
             assert!(!authority_results.is_empty());
         }
@@ -652,14 +630,14 @@ pub(crate) mod tests {
                 .build()
                 .unwrap();
 
-            let a = store.insert(&a).unwrap();
-            let b = store.insert(&b).unwrap();
-            let c = store.insert(&c).unwrap();
+            let a = store.insert(&a).await.unwrap();
+            let b = store.insert(&b).await.unwrap();
+            let c = store.insert(&c).await.unwrap();
 
-            store.supersede(a.id, b.id).unwrap();
-            store.supersede(b.id, c.id).unwrap();
+            store.supersede(a.id, b.id).await.unwrap();
+            store.supersede(b.id, c.id).await.unwrap();
 
-            let chain = store.get_supersession_chain(a.id).unwrap();
+            let chain = store.get_supersession_chain(a.id).await.unwrap();
             assert_eq!(chain.len(), 3);
             assert_eq!(chain[0].content, "A");
             assert_eq!(chain[1].content, "B");
@@ -678,13 +656,13 @@ pub(crate) mod tests {
                 .build()
                 .unwrap();
 
-            let memory = store.insert(&memory).unwrap();
+            let memory = store.insert(&memory).await.unwrap();
 
             let bad_id = MemoryId(Uuid::nil());
-            let err = store.supersede(memory.id, bad_id).unwrap_err();
+            let err = store.supersede(memory.id, bad_id).await.unwrap_err();
             assert!(err.to_string().contains("missing memory"));
 
-            let stored = store.get_by_id(memory.id).unwrap().unwrap();
+            let stored = store.get_by_id(memory.id).await.unwrap().unwrap();
             assert!(stored.superseded_by.is_none());
         }
 
@@ -701,8 +679,8 @@ pub(crate) mod tests {
                 .build()
                 .unwrap();
 
-            store.insert(&stale).unwrap();
-            let decayed = store.query_decayed().unwrap();
+            store.insert(&stale).await.unwrap();
+            let decayed = store.query_decayed().await.unwrap();
             assert_eq!(decayed.len(), 1);
             assert_eq!(decayed[0].content, "Stale");
         }
