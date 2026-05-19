@@ -7,15 +7,6 @@ use crate::{
     schema,
 };
 
-pub async fn load_projects(connection: &mut AsyncPgConnection) -> QueryResult<Vec<Project>> {
-    use crate::schema::projects::dsl::{label, projects};
-
-    projects
-        .order(label.asc())
-        .load::<Project>(connection)
-        .await
-}
-
 pub async fn insert_project(
     connection: &mut AsyncPgConnection,
     project: &NewProject,
@@ -23,6 +14,15 @@ pub async fn insert_project(
     diesel::insert_into(schema::projects::table)
         .values(project)
         .get_result::<Project>(connection)
+        .await
+}
+
+pub async fn load_projects(connection: &mut AsyncPgConnection) -> QueryResult<Vec<Project>> {
+    use crate::schema::projects::dsl::{label, projects};
+
+    projects
+        .order(label.asc())
+        .load::<Project>(connection)
         .await
 }
 

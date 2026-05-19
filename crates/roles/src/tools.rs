@@ -145,12 +145,6 @@ impl Tool<RoleToolRuntime, RoleToolError> for CreateLaneTool {
     }
 }
 
-fn parse_event_id(raw: &str) -> Result<EventId, RoleToolError> {
-    uuid::Uuid::parse_str(raw)
-        .map(EventId::from)
-        .map_err(|error| RoleToolError::Error(format!("invalid source_event_id: {error}")))
-}
-
 fn default_lane_colour(name: &str) -> String {
     let colours = [
         "#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#8b5cf6", "#06b6d4", "#f43f5e", "#10b981",
@@ -159,6 +153,12 @@ fn default_lane_colour(name: &str) -> String {
         .bytes()
         .fold(0usize, |acc, b| acc.wrapping_add(b as usize));
     colours[index % colours.len()].to_string()
+}
+
+fn parse_event_id(raw: &str) -> Result<EventId, RoleToolError> {
+    uuid::Uuid::parse_str(raw)
+        .map(EventId::from)
+        .map_err(|error| RoleToolError::Error(format!("invalid source_event_id: {error}")))
 }
 
 #[cfg(test)]

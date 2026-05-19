@@ -1,18 +1,17 @@
+#[cfg(feature = "server")]
+use std::sync::OnceLock;
+
 use dioxus::{
     fullstack::{WebSocketOptions, Websocket},
     prelude::*,
 };
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "server")]
-use std::sync::OnceLock;
-
+pub const SYSTEM_LANE_ID: &str = "__system__";
 #[cfg(feature = "server")]
 static WORKBENCH_RUNTIME: OnceLock<mmat_coordinator::WorkbenchRuntimeHandle> = OnceLock::new();
 #[cfg(feature = "server")]
 static WORKBENCH_RUNTIME_OWNER: OnceLock<mmat_coordinator::OrganisationRuntime> = OnceLock::new();
-
-pub const SYSTEM_LANE_ID: &str = "__system__";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkbenchLane {
@@ -29,6 +28,14 @@ pub struct LaneProjection {
     pub system: WorkbenchLane,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptItemKind {
+    Message,
+    Log,
+    Error,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptItem {
     pub id: String,
@@ -36,14 +43,6 @@ pub struct TranscriptItem {
     pub speaker: String,
     pub content: String,
     pub kind: TranscriptItemKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TranscriptItemKind {
-    Message,
-    Log,
-    Error,
 }
 
 /// Messages accepted from the browser chat client over the workbench WebSocket.
@@ -115,36 +114,70 @@ pub enum ChatServerMessage {
     Error { message: String },
 }
 
+#[cfg(feature = "server")]
+struct UserMessageContext {
+    runtime: mmat_coordinator::WorkbenchRuntimeHandle,
+    out_tx: tokio::sync::mpsc::Sender<ChatServerMessage>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    local_messages: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    cancelled_streams: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+#[cfg(feature = "server")]
+struct SocketShutdown {
+    tx: tokio::sync::watch::Sender<bool>,
+}
+
+#[cfg(feature = "server")]
+impl SocketShutdown {
+    fn new(tx: tokio::sync::watch::Sender<bool>) -> Self {
+        Self { tx }
+    }
+}
+
+#[cfg(feature = "server")]
+impl Drop for SocketShutdown {
+    fn drop(&mut self) {
+        if self.tx.send(true).is_err() {
+            // All stream tasks have already stopped.
+        }
+    }
+}
+
+#[server]
+pub async fn archive_lane(project_id: String, lane_id: String) -> ServerFnResult<WorkbenchLane> {
+    if lane_id == SYSTEM_LANE_ID {
+        return Err(ServerFnError::new("The System lane cannot be archived."));
+    }
+
+    let mut connection = super::db()
+        .await?
+        .get()
+        .await
+        .map_err(super::db_connection_error)?;
+    let lane = validate_lane(&mut connection, &project_id, &lane_id, false).await?;
+    let event = lane_archived_event(&lane_id, &project_id);
+    let lane = mmat_db::lane::archive_lane_with_event(
+        &mut connection,
+        &lane.id.to_string(),
+        mmat_db::now_timestamp_string(),
+        event.clone(),
+    )
+    .await
+    .map_err(|error| ServerFnError::new(format!("could not archive lane: {error}")))?;
+    runtime_handle()
+        .await?
+        .broadcast_persisted(event)
+        .map_err(|error| ServerFnError::new(format!("could not publish lane event: {error}")))?;
+    Ok(lane_from_row(lane))
+}
+
 /// Upgrade the chat API request into a typed WebSocket connection.
 #[get("/api/chat")]
 pub async fn connect_chat(
     options: WebSocketOptions,
 ) -> ServerFnResult<Websocket<ChatClientMessage, ChatServerMessage>> {
     Ok(options.on_upgrade(handle_chat_socket))
-}
-
-#[server]
-pub async fn load_lanes(project_id: String) -> ServerFnResult<LaneProjection> {
-    let mut connection = super::db()
-        .await?
-        .get()
-        .await
-        .map_err(super::db_connection_error)?;
-    ensure_project_exists(&mut connection, &project_id).await?;
-    let active = mmat_db::lane::load_lanes_by_status(&mut connection, &project_id, "active")
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not load active lanes: {error}")))?
-        .into_iter()
-        .map(lane_from_row)
-        .collect();
-    let archived = mmat_db::lane::load_lanes_by_status(&mut connection, &project_id, "archived")
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not load archived lanes: {error}")))?
-        .into_iter()
-        .map(lane_from_row)
-        .collect();
-
-    Ok(lane_projection_from_rows(active, archived))
 }
 
 #[server]
@@ -189,31 +222,27 @@ pub async fn create_lane(project_id: String, title: String) -> ServerFnResult<Wo
 }
 
 #[server]
-pub async fn archive_lane(project_id: String, lane_id: String) -> ServerFnResult<WorkbenchLane> {
-    if lane_id == SYSTEM_LANE_ID {
-        return Err(ServerFnError::new("The System lane cannot be archived."));
-    }
-
+pub async fn load_lanes(project_id: String) -> ServerFnResult<LaneProjection> {
     let mut connection = super::db()
         .await?
         .get()
         .await
         .map_err(super::db_connection_error)?;
-    let lane = validate_lane(&mut connection, &project_id, &lane_id, false).await?;
-    let event = lane_archived_event(&lane_id, &project_id);
-    let lane = mmat_db::lane::archive_lane_with_event(
-        &mut connection,
-        &lane.id.to_string(),
-        mmat_db::now_timestamp_string(),
-        event.clone(),
-    )
-    .await
-    .map_err(|error| ServerFnError::new(format!("could not archive lane: {error}")))?;
-    runtime_handle()
-        .await?
-        .broadcast_persisted(event)
-        .map_err(|error| ServerFnError::new(format!("could not publish lane event: {error}")))?;
-    Ok(lane_from_row(lane))
+    ensure_project_exists(&mut connection, &project_id).await?;
+    let active = mmat_db::lane::load_lanes_by_status(&mut connection, &project_id, "active")
+        .await
+        .map_err(|error| ServerFnError::new(format!("could not load active lanes: {error}")))?
+        .into_iter()
+        .map(lane_from_row)
+        .collect();
+    let archived = mmat_db::lane::load_lanes_by_status(&mut connection, &project_id, "archived")
+        .await
+        .map_err(|error| ServerFnError::new(format!("could not load archived lanes: {error}")))?
+        .into_iter()
+        .map(lane_from_row)
+        .collect();
+
+    Ok(lane_projection_from_rows(active, archived))
 }
 
 #[server]
@@ -237,6 +266,75 @@ pub async fn load_transcript(
         .filter(|event| transcript_matches_lane(event, lane_id.as_deref()))
         .filter_map(transcript_item_from_event)
         .collect())
+}
+
+#[cfg(feature = "server")]
+fn chat_server_message_from_event(
+    event: &mmat_event_stream::event::SemanticEvent,
+) -> Option<ChatServerMessage> {
+    match event {
+        mmat_event_stream::event::SemanticEvent::HumanFeedbackReceived {
+            event_id,
+            timestamp_ns,
+            context,
+            answer,
+            ..
+        } => Some(ChatServerMessage::UserMessageAccepted {
+            lane_id: context.lane_id.clone()?,
+            client_message_id: None,
+            message_id: event_id.to_string(),
+            content: answer.clone(),
+            timestamp_ms: timestamp_ns / 1_000_000,
+        }),
+        mmat_event_stream::event::SemanticEvent::AssistantMessageProduced {
+            context,
+            assistant_message_id,
+            reply_to_message_id,
+            content,
+            finish_reason,
+            ..
+        } => Some(ChatServerMessage::AssistantStreamCompleted {
+            lane_id: context.lane_id.clone()?,
+            message_id: assistant_message_id.clone(),
+            reply_to_message_id: reply_to_message_id.clone(),
+            content: content.clone(),
+            finish_reason: finish_reason.clone(),
+        }),
+        mmat_event_stream::event::SemanticEvent::LaneCreated { context, .. }
+        | mmat_event_stream::event::SemanticEvent::LaneArchived { context, .. } => {
+            Some(ChatServerMessage::ProjectionChanged {
+                project_id: context.project_id.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "server")]
+fn consume_cancelled_stream(
+    cancelled_streams: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    assistant_message_id: &str,
+) -> bool {
+    cancelled_streams
+        .lock()
+        .map(|mut cancelled_streams| cancelled_streams.remove(assistant_message_id))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "server")]
+async fn ensure_project_exists(
+    connection: &mut mmat_db::AsyncPgConnection,
+    project_id: &str,
+) -> ServerFnResult<()> {
+    let exists = mmat_db::project::project_exists(connection, project_id)
+        .await
+        .map_err(|error| ServerFnError::new(format!("could not validate project: {error}")))?;
+
+    if exists {
+        Ok(())
+    } else {
+        Err(ServerFnError::new("Project does not exist."))
+    }
 }
 
 #[cfg(feature = "server")]
@@ -355,15 +453,6 @@ async fn handle_chat_socket(
             }
         }
     }
-}
-
-#[cfg(feature = "server")]
-struct UserMessageContext {
-    runtime: mmat_coordinator::WorkbenchRuntimeHandle,
-    out_tx: tokio::sync::mpsc::Sender<ChatServerMessage>,
-    shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    local_messages: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    cancelled_streams: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 #[cfg(feature = "server")]
@@ -646,45 +735,6 @@ async fn handle_user_message(
 }
 
 #[cfg(feature = "server")]
-async fn send_chat(
-    out_tx: &tokio::sync::mpsc::Sender<ChatServerMessage>,
-    message: ChatServerMessage,
-) -> bool {
-    out_tx.send(message).await.is_ok()
-}
-
-#[cfg(feature = "server")]
-struct SocketShutdown {
-    tx: tokio::sync::watch::Sender<bool>,
-}
-
-#[cfg(feature = "server")]
-impl SocketShutdown {
-    fn new(tx: tokio::sync::watch::Sender<bool>) -> Self {
-        Self { tx }
-    }
-}
-
-#[cfg(feature = "server")]
-impl Drop for SocketShutdown {
-    fn drop(&mut self) {
-        if self.tx.send(true).is_err() {
-            // All stream tasks have already stopped.
-        }
-    }
-}
-
-#[cfg(feature = "server")]
-fn suppress_local_message(
-    local_messages: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    message_id: String,
-) {
-    if let Ok(mut local_messages) = local_messages.lock() {
-        local_messages.insert(message_id);
-    }
-}
-
-#[cfg(feature = "server")]
 fn is_suppressed_local_message(
     local_messages: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     message: &ChatServerMessage,
@@ -699,36 +749,15 @@ fn is_suppressed_local_message(
 }
 
 #[cfg(feature = "server")]
-fn mark_cancelled_stream(
-    cancelled_streams: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    assistant_message_id: String,
-) {
-    if let Ok(mut cancelled_streams) = cancelled_streams.lock() {
-        cancelled_streams.insert(assistant_message_id);
-    }
-}
+fn lane_archived_event(lane_id: &str, project_id: &str) -> mmat_event_stream::event::SemanticEvent {
+    use mmat_event_stream::event::{EventContext, RoleId, SemanticEvent};
 
-#[cfg(feature = "server")]
-fn consume_cancelled_stream(
-    cancelled_streams: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    assistant_message_id: &str,
-) -> bool {
-    cancelled_streams
-        .lock()
-        .map(|mut cancelled_streams| cancelled_streams.remove(assistant_message_id))
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "server")]
-fn server_message_id(message: &ChatServerMessage) -> Option<&str> {
-    match message {
-        ChatServerMessage::UserMessageAccepted { message_id, .. }
-        | ChatServerMessage::AssistantStreamStarted { message_id, .. }
-        | ChatServerMessage::AssistantStreamDelta { message_id, .. }
-        | ChatServerMessage::AssistantStreamCompleted { message_id, .. }
-        | ChatServerMessage::AssistantStreamFailed { message_id, .. } => Some(message_id),
-        _ => None,
-    }
+    SemanticEvent::new_lane_archived(RoleId::new("human"), lane_id).with_context(EventContext::new(
+        "default-organisation",
+        "default-workspace",
+        project_id,
+        "default-run",
+    ))
 }
 
 #[cfg(feature = "server")]
@@ -760,6 +789,57 @@ fn lane_created_event(
 }
 
 #[cfg(feature = "server")]
+fn lane_from_row(lane: mmat_db::models::Lane) -> WorkbenchLane {
+    WorkbenchLane {
+        id: lane.id.to_string(),
+        title: lane.title,
+        status: lane.status,
+        system: false,
+    }
+}
+
+#[cfg(feature = "server")]
+fn lane_projection_from_rows(
+    active: Vec<WorkbenchLane>,
+    archived: Vec<WorkbenchLane>,
+) -> LaneProjection {
+    LaneProjection {
+        active,
+        archived,
+        system: system_lane(),
+    }
+}
+
+#[cfg(feature = "server")]
+fn mark_cancelled_stream(
+    cancelled_streams: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    assistant_message_id: String,
+) {
+    if let Ok(mut cancelled_streams) = cancelled_streams.lock() {
+        cancelled_streams.insert(assistant_message_id);
+    }
+}
+
+#[cfg(feature = "server")]
+fn next_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{id}")
+}
+
+#[cfg(feature = "server")]
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "server")]
 async fn runtime_handle() -> ServerFnResult<&'static mmat_coordinator::WorkbenchRuntimeHandle> {
     if let Some(runtime) = WORKBENCH_RUNTIME.get() {
         return Ok(runtime);
@@ -788,118 +868,33 @@ async fn runtime_handle() -> ServerFnResult<&'static mmat_coordinator::Workbench
 }
 
 #[cfg(feature = "server")]
-fn lane_archived_event(lane_id: &str, project_id: &str) -> mmat_event_stream::event::SemanticEvent {
-    use mmat_event_stream::event::{EventContext, RoleId, SemanticEvent};
-
-    SemanticEvent::new_lane_archived(RoleId::new("human"), lane_id).with_context(EventContext::new(
-        "default-organisation",
-        "default-workspace",
-        project_id,
-        "default-run",
-    ))
+async fn send_chat(
+    out_tx: &tokio::sync::mpsc::Sender<ChatServerMessage>,
+    message: ChatServerMessage,
+) -> bool {
+    out_tx.send(message).await.is_ok()
 }
 
 #[cfg(feature = "server")]
-async fn validate_lane(
-    connection: &mut mmat_db::AsyncPgConnection,
-    project_id: &str,
-    lane_id: &str,
-    require_active: bool,
-) -> ServerFnResult<mmat_db::models::Lane> {
-    let lane = mmat_db::lane::get_lane(connection, lane_id)
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not load lane: {error}")))?
-        .ok_or_else(|| ServerFnError::new("Lane does not exist."))?;
-
-    if lane.project_id != project_id {
-        return Err(ServerFnError::new(
-            "Lane does not belong to the selected project.",
-        ));
-    }
-    if require_active && lane.status != "active" {
-        return Err(ServerFnError::new(
-            "Cannot send messages to an archived lane.",
-        ));
-    }
-
-    Ok(lane)
-}
-
-#[cfg(feature = "server")]
-async fn ensure_project_exists(
-    connection: &mut mmat_db::AsyncPgConnection,
-    project_id: &str,
-) -> ServerFnResult<()> {
-    let exists = mmat_db::project::project_exists(connection, project_id)
-        .await
-        .map_err(|error| ServerFnError::new(format!("could not validate project: {error}")))?;
-
-    if exists {
-        Ok(())
-    } else {
-        Err(ServerFnError::new("Project does not exist."))
-    }
-}
-
-#[cfg(feature = "server")]
-fn chat_server_message_from_event(
-    event: &mmat_event_stream::event::SemanticEvent,
-) -> Option<ChatServerMessage> {
-    match event {
-        mmat_event_stream::event::SemanticEvent::HumanFeedbackReceived {
-            event_id,
-            timestamp_ns,
-            context,
-            answer,
-            ..
-        } => Some(ChatServerMessage::UserMessageAccepted {
-            lane_id: context.lane_id.clone()?,
-            client_message_id: None,
-            message_id: event_id.to_string(),
-            content: answer.clone(),
-            timestamp_ms: timestamp_ns / 1_000_000,
-        }),
-        mmat_event_stream::event::SemanticEvent::AssistantMessageProduced {
-            context,
-            assistant_message_id,
-            reply_to_message_id,
-            content,
-            finish_reason,
-            ..
-        } => Some(ChatServerMessage::AssistantStreamCompleted {
-            lane_id: context.lane_id.clone()?,
-            message_id: assistant_message_id.clone(),
-            reply_to_message_id: reply_to_message_id.clone(),
-            content: content.clone(),
-            finish_reason: finish_reason.clone(),
-        }),
-        mmat_event_stream::event::SemanticEvent::LaneCreated { context, .. }
-        | mmat_event_stream::event::SemanticEvent::LaneArchived { context, .. } => {
-            Some(ChatServerMessage::ProjectionChanged {
-                project_id: context.project_id.clone(),
-            })
-        }
+fn server_message_id(message: &ChatServerMessage) -> Option<&str> {
+    match message {
+        ChatServerMessage::UserMessageAccepted { message_id, .. }
+        | ChatServerMessage::AssistantStreamStarted { message_id, .. }
+        | ChatServerMessage::AssistantStreamDelta { message_id, .. }
+        | ChatServerMessage::AssistantStreamCompleted { message_id, .. }
+        | ChatServerMessage::AssistantStreamFailed { message_id, .. } => Some(message_id),
         _ => None,
     }
 }
 
 #[cfg(feature = "server")]
-fn next_id(prefix: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{id}")
-}
-
-#[cfg(feature = "server")]
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
+fn suppress_local_message(
+    local_messages: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    message_id: String,
+) {
+    if let Ok(mut local_messages) = local_messages.lock() {
+        local_messages.insert(message_id);
+    }
 }
 
 #[cfg(feature = "server")]
@@ -909,40 +904,6 @@ fn system_lane() -> WorkbenchLane {
         title: "System".to_string(),
         status: "system".to_string(),
         system: true,
-    }
-}
-
-#[cfg(feature = "server")]
-fn lane_from_row(lane: mmat_db::models::Lane) -> WorkbenchLane {
-    WorkbenchLane {
-        id: lane.id.to_string(),
-        title: lane.title,
-        status: lane.status,
-        system: false,
-    }
-}
-
-#[cfg(feature = "server")]
-fn lane_projection_from_rows(
-    active: Vec<WorkbenchLane>,
-    archived: Vec<WorkbenchLane>,
-) -> LaneProjection {
-    LaneProjection {
-        active,
-        archived,
-        system: system_lane(),
-    }
-}
-
-#[cfg(feature = "server")]
-fn transcript_matches_lane(
-    event: &mmat_event_stream::event::SemanticEvent,
-    lane_id: Option<&str>,
-) -> bool {
-    match lane_id {
-        Some(SYSTEM_LANE_ID) => event.context().lane_id.is_none(),
-        Some(id) => event.context().lane_id.as_deref() == Some(id),
-        None => false,
     }
 }
 
@@ -993,6 +954,44 @@ fn transcript_item_from_event(
             kind: TranscriptItemKind::Log,
         }),
     }
+}
+
+#[cfg(feature = "server")]
+fn transcript_matches_lane(
+    event: &mmat_event_stream::event::SemanticEvent,
+    lane_id: Option<&str>,
+) -> bool {
+    match lane_id {
+        Some(SYSTEM_LANE_ID) => event.context().lane_id.is_none(),
+        Some(id) => event.context().lane_id.as_deref() == Some(id),
+        None => false,
+    }
+}
+
+#[cfg(feature = "server")]
+async fn validate_lane(
+    connection: &mut mmat_db::AsyncPgConnection,
+    project_id: &str,
+    lane_id: &str,
+    require_active: bool,
+) -> ServerFnResult<mmat_db::models::Lane> {
+    let lane = mmat_db::lane::get_lane(connection, lane_id)
+        .await
+        .map_err(|error| ServerFnError::new(format!("could not load lane: {error}")))?
+        .ok_or_else(|| ServerFnError::new("Lane does not exist."))?;
+
+    if lane.project_id != project_id {
+        return Err(ServerFnError::new(
+            "Lane does not belong to the selected project.",
+        ));
+    }
+    if require_active && lane.status != "active" {
+        return Err(ServerFnError::new(
+            "Cannot send messages to an archived lane.",
+        ));
+    }
+
+    Ok(lane)
 }
 
 #[cfg(all(test, feature = "server"))]

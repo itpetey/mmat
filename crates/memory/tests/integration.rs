@@ -70,33 +70,10 @@ impl VectorMemoryBackend for FakeVectorBackend {
     }
 }
 
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-}
-
-async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String, String)> {
-    let base_url = std::env::var("MMAT_DB_URL").ok()?;
-    let schema = format!("{}_{}", prefix, now_nanos());
-    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
-    let mut conn = admin_pool.get().await.ok()?;
-    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
-        .await
-        .ok()?;
-    let separator = if base_url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
-    let pool = mmat_db::new_pool(&database_url).await.ok()?;
-    let migrate_pool = pool.clone();
-    let mut migrator_conn = migrate_pool.get().await.ok()?;
-    mmat_db::execute_sql(
-        &mut migrator_conn,
-        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
-    )
-    .await
-    .ok()?;
-    Some((pool, schema, database_url))
+async fn create_test_store(prefix: &str) -> Option<(Arc<MemoryStore>, PgPool, String)> {
+    let (pool, schema, _url) = postgres_test_database(prefix).await?;
+    let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
+    Some((store, pool, schema))
 }
 
 async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
@@ -107,12 +84,6 @@ async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
         )
         .await;
     }
-}
-
-async fn create_test_store(prefix: &str) -> Option<(Arc<MemoryStore>, PgPool, String)> {
-    let (pool, schema, _url) = postgres_test_database(prefix).await?;
-    let store = Arc::new(MemoryStore::new_with_pool(pool.clone()));
-    Some((store, pool, schema))
 }
 
 #[tokio::test]
@@ -489,6 +460,13 @@ async fn integration_provenance_trace() {
     drop_postgres_schema(&pool, &schema).await;
 }
 
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_artefact_store_round_trip_and_transactional_event() {
     let Some((pool, schema, database_url)) = postgres_test_database("artefact_store").await else {
@@ -590,4 +568,26 @@ async fn postgres_memory_store_crud_queries_and_supersession() {
     assert_eq!(chain[1].id, new.id);
 
     drop_postgres_schema(&pool, &schema).await;
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+    let mut conn = admin_pool.get().await.ok()?;
+    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let pool = mmat_db::new_pool(&database_url).await.ok()?;
+    let migrate_pool = pool.clone();
+    let mut migrator_conn = migrate_pool.get().await.ok()?;
+    mmat_db::execute_sql(
+        &mut migrator_conn,
+        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+    )
+    .await
+    .ok()?;
+    Some((pool, schema, database_url))
 }

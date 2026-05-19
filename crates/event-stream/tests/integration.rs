@@ -6,33 +6,6 @@ use mmat_event_stream::{
     event_store::EventStore,
 };
 
-#[tokio::test]
-async fn multiple_subscribers_with_filters() {
-    let store = Arc::new(EventStore::empty());
-    let bus = EventBus::new(16).with_store(store);
-
-    let mut rx_a = bus.subscribe(&[EventType::TaskAssigned]);
-    let mut rx_b = bus.subscribe(&[EventType::TaskCompleted]);
-
-    let assigned = SemanticEvent::new_task_assigned(
-        RoleId::new("coordinator"),
-        "task-1",
-        RoleId::new("worker"),
-        mmat_event_stream::event::TaskContract {
-            contract_id: "c1".into(),
-            description: "do thing".into(),
-        },
-        vec![],
-    );
-    bus.publish(assigned).unwrap();
-
-    let a_received = rx_a.recv().await.unwrap();
-    assert_eq!(a_received.variant_name(), "TaskAssigned");
-
-    let b_result = tokio::time::timeout(std::time::Duration::from_millis(50), rx_b.recv()).await;
-    assert!(b_result.is_err());
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn event_store_round_trip_and_concurrent_writes() {
     let store = Arc::new(EventStore::empty());
@@ -93,6 +66,33 @@ async fn event_store_round_trip_and_concurrent_writes() {
     }
 
     assert_eq!(store.replay(0, None).unwrap().len(), 10);
+}
+
+#[tokio::test]
+async fn multiple_subscribers_with_filters() {
+    let store = Arc::new(EventStore::empty());
+    let bus = EventBus::new(16).with_store(store);
+
+    let mut rx_a = bus.subscribe(&[EventType::TaskAssigned]);
+    let mut rx_b = bus.subscribe(&[EventType::TaskCompleted]);
+
+    let assigned = SemanticEvent::new_task_assigned(
+        RoleId::new("coordinator"),
+        "task-1",
+        RoleId::new("worker"),
+        mmat_event_stream::event::TaskContract {
+            contract_id: "c1".into(),
+            description: "do thing".into(),
+        },
+        vec![],
+    );
+    bus.publish(assigned).unwrap();
+
+    let a_received = rx_a.recv().await.unwrap();
+    assert_eq!(a_received.variant_name(), "TaskAssigned");
+
+    let b_result = tokio::time::timeout(std::time::Duration::from_millis(50), rx_b.recv()).await;
+    assert!(b_result.is_err());
 }
 
 #[tokio::test]

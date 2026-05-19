@@ -9,6 +9,10 @@ pub enum EventStoreError {
     Runtime(String),
 }
 
+pub struct EventStore {
+    events: Mutex<Vec<SemanticEvent>>,
+}
+
 impl fmt::Display for EventStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -18,10 +22,6 @@ impl fmt::Display for EventStoreError {
 }
 
 impl std::error::Error for EventStoreError {}
-
-pub struct EventStore {
-    events: Mutex<Vec<SemanticEvent>>,
-}
 
 impl EventStore {
     pub fn empty() -> Self {

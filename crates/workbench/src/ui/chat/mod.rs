@@ -8,6 +8,13 @@ use crate::api::chat::{
 #[css_module("/src/ui/chat/style.css")]
 struct ChatStyles;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatMessageKind {
+    Message,
+    Log,
+    Error,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ChatTranscriptItem {
     id: String,
@@ -16,11 +23,19 @@ struct ChatTranscriptItem {
     kind: ChatMessageKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChatMessageKind {
-    Message,
-    Log,
-    Error,
+impl From<TranscriptItem> for ChatTranscriptItem {
+    fn from(item: TranscriptItem) -> Self {
+        Self {
+            id: item.id,
+            speaker: item.speaker,
+            content: item.content,
+            kind: match item.kind {
+                TranscriptItemKind::Message => ChatMessageKind::Message,
+                TranscriptItemKind::Log => ChatMessageKind::Log,
+                TranscriptItemKind::Error => ChatMessageKind::Error,
+            },
+        }
+    }
 }
 
 #[component]
@@ -102,27 +117,6 @@ pub(crate) fn ChatWorkbench(
 }
 
 #[component]
-fn ConversationContainer(messages: Vec<ChatTranscriptItem>) -> Element {
-    rsx! {
-        div {
-            class: ChatStyles::dx_chat_conversation,
-            role: "log",
-            aria_label: "Conversation",
-            aria_live: "polite",
-
-            if messages.is_empty() {
-                div { class: ChatStyles::dx_chat_empty,
-                    "This lane is blank. Start a conversation or switch lanes from the sidebar."
-                }
-            }
-            for message in messages {
-                ChatRow { key: "{message.id}", message }
-            }
-        }
-    }
-}
-
-#[component]
 fn ChatRow(message: ChatTranscriptItem) -> Element {
     let speaker = message.speaker.to_uppercase();
     let speaker_class = match message.speaker.as_str() {
@@ -150,6 +144,53 @@ fn ChatRow(message: ChatTranscriptItem) -> Element {
                 p { "{message.content}" }
             }
         }
+    }
+}
+
+#[component]
+fn ConversationContainer(messages: Vec<ChatTranscriptItem>) -> Element {
+    rsx! {
+        div {
+            class: ChatStyles::dx_chat_conversation,
+            role: "log",
+            aria_label: "Conversation",
+            aria_live: "polite",
+
+            if messages.is_empty() {
+                div { class: ChatStyles::dx_chat_empty,
+                    "This lane is blank. Start a conversation or switch lanes from the sidebar."
+                }
+            }
+            for message in messages {
+                ChatRow { key: "{message.id}", message }
+            }
+        }
+    }
+}
+
+fn append_assistant_delta(
+    mut messages: Signal<Vec<ChatTranscriptItem>>,
+    message_id: &str,
+    delta: &str,
+) {
+    let mut messages = messages.write();
+    append_assistant_delta_to_items(&mut messages, message_id, delta);
+}
+
+fn append_assistant_delta_to_items(
+    messages: &mut Vec<ChatTranscriptItem>,
+    message_id: &str,
+    delta: &str,
+) {
+    if let Some(item) = messages.iter_mut().find(|item| item.id == message_id) {
+        item.content.push_str(delta);
+    } else {
+        messages.push(ChatTranscriptItem {
+            id: message_id.to_string(),
+            speaker: "Assistant".to_string(),
+            content: delta.to_string(),
+            kind: ChatMessageKind::Message,
+        });
     }
 }
 
@@ -204,75 +245,6 @@ fn chat_composer(
             }
         }
     }
-}
-
-fn submit_chat_message(
-    selected_project_id: Option<String>,
-    selected_lane_id: Option<String>,
-    selected_lane_status: Option<String>,
-    mut draft: Signal<String>,
-    mut next_client_message_id: Signal<u64>,
-    mut messages: Signal<Vec<ChatTranscriptItem>>,
-    websocket: dioxus::fullstack::UseWebsocket<ChatClientMessage, ChatServerMessage>,
-) {
-    let content = draft().trim().to_string();
-    if content.is_empty() {
-        return;
-    }
-
-    let Some(lane_id) = selected_lane_id else {
-        messages.write().push(ChatTranscriptItem {
-            id: "missing-lane-error".to_string(),
-            speaker: "System".to_string(),
-            content: "Create or select a lane before sending a message.".to_string(),
-            kind: ChatMessageKind::Error,
-        });
-        return;
-    };
-
-    if selected_lane_status.as_deref() != Some("active") || lane_id == SYSTEM_LANE_ID {
-        messages.write().push(ChatTranscriptItem {
-            id: "read-only-lane-error".to_string(),
-            speaker: "System".to_string(),
-            content: "Select an active lane before sending a message.".to_string(),
-            kind: ChatMessageKind::Error,
-        });
-        return;
-    }
-
-    let Some(project_id) = selected_project_id else {
-        messages.write().push(ChatTranscriptItem {
-            id: "missing-project-error".to_string(),
-            speaker: "System".to_string(),
-            content: "Select a project before sending a message.".to_string(),
-            kind: ChatMessageKind::Error,
-        });
-        return;
-    };
-
-    let id = next_client_message_id() + 1;
-    next_client_message_id.set(id);
-    draft.set(String::new());
-
-    spawn(async move {
-        let result = websocket
-            .send(ChatClientMessage::SendMessage {
-                project_id,
-                lane_id: Some(lane_id),
-                client_message_id: Some(format!("client-message-{id}")),
-                content,
-            })
-            .await;
-
-        if let Err(error) = result {
-            messages.write().push(ChatTranscriptItem {
-                id: format!("send-error-{id}"),
-                speaker: "System".to_string(),
-                content: format!("Could not send message: {error}"),
-                kind: ChatMessageKind::Error,
-            });
-        }
-    });
 }
 
 fn push_server_message(
@@ -391,13 +363,73 @@ fn push_server_message(
     }
 }
 
-fn append_assistant_delta(
+fn submit_chat_message(
+    selected_project_id: Option<String>,
+    selected_lane_id: Option<String>,
+    selected_lane_status: Option<String>,
+    mut draft: Signal<String>,
+    mut next_client_message_id: Signal<u64>,
     mut messages: Signal<Vec<ChatTranscriptItem>>,
-    message_id: &str,
-    delta: &str,
+    websocket: dioxus::fullstack::UseWebsocket<ChatClientMessage, ChatServerMessage>,
 ) {
-    let mut messages = messages.write();
-    append_assistant_delta_to_items(&mut messages, message_id, delta);
+    let content = draft().trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+
+    let Some(lane_id) = selected_lane_id else {
+        messages.write().push(ChatTranscriptItem {
+            id: "missing-lane-error".to_string(),
+            speaker: "System".to_string(),
+            content: "Create or select a lane before sending a message.".to_string(),
+            kind: ChatMessageKind::Error,
+        });
+        return;
+    };
+
+    if selected_lane_status.as_deref() != Some("active") || lane_id == SYSTEM_LANE_ID {
+        messages.write().push(ChatTranscriptItem {
+            id: "read-only-lane-error".to_string(),
+            speaker: "System".to_string(),
+            content: "Select an active lane before sending a message.".to_string(),
+            kind: ChatMessageKind::Error,
+        });
+        return;
+    }
+
+    let Some(project_id) = selected_project_id else {
+        messages.write().push(ChatTranscriptItem {
+            id: "missing-project-error".to_string(),
+            speaker: "System".to_string(),
+            content: "Select a project before sending a message.".to_string(),
+            kind: ChatMessageKind::Error,
+        });
+        return;
+    };
+
+    let id = next_client_message_id() + 1;
+    next_client_message_id.set(id);
+    draft.set(String::new());
+
+    spawn(async move {
+        let result = websocket
+            .send(ChatClientMessage::SendMessage {
+                project_id,
+                lane_id: Some(lane_id),
+                client_message_id: Some(format!("client-message-{id}")),
+                content,
+            })
+            .await;
+
+        if let Err(error) = result {
+            messages.write().push(ChatTranscriptItem {
+                id: format!("send-error-{id}"),
+                speaker: "System".to_string(),
+                content: format!("Could not send message: {error}"),
+                kind: ChatMessageKind::Error,
+            });
+        }
+    });
 }
 
 fn upsert_assistant_message(
@@ -407,23 +439,6 @@ fn upsert_assistant_message(
 ) {
     let mut messages = messages.write();
     upsert_assistant_message_in_items(&mut messages, message_id, content);
-}
-
-fn append_assistant_delta_to_items(
-    messages: &mut Vec<ChatTranscriptItem>,
-    message_id: &str,
-    delta: &str,
-) {
-    if let Some(item) = messages.iter_mut().find(|item| item.id == message_id) {
-        item.content.push_str(delta);
-    } else {
-        messages.push(ChatTranscriptItem {
-            id: message_id.to_string(),
-            speaker: "Assistant".to_string(),
-            content: delta.to_string(),
-            kind: ChatMessageKind::Message,
-        });
-    }
 }
 
 fn upsert_assistant_message_in_items(
@@ -440,21 +455,6 @@ fn upsert_assistant_message_in_items(
             content,
             kind: ChatMessageKind::Message,
         });
-    }
-}
-
-impl From<TranscriptItem> for ChatTranscriptItem {
-    fn from(item: TranscriptItem) -> Self {
-        Self {
-            id: item.id,
-            speaker: item.speaker,
-            content: item.content,
-            kind: match item.kind {
-                TranscriptItemKind::Message => ChatMessageKind::Message,
-                TranscriptItemKind::Log => ChatMessageKind::Log,
-                TranscriptItemKind::Error => ChatMessageKind::Error,
-            },
-        }
     }
 }
 

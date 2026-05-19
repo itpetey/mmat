@@ -96,6 +96,45 @@ pub fn App() -> Element {
 }
 
 #[component]
+fn ArchiveLaneButton(
+    lane: WorkbenchLane,
+    selected_project_id: Signal<Option<String>>,
+    mut selected_lane_id: Signal<Option<String>>,
+    mut selected_lane_status: Signal<Option<String>>,
+    mut lanes_revision: Signal<u64>,
+) -> Element {
+    let lane_id = lane.id.clone();
+    let lane_title = lane.title.clone();
+    let attributes = attributes!(button {
+        onclick: move |_| {
+            let Some(project_id) = selected_project_id() else {
+                return;
+            };
+            let lane_id = lane_id.clone();
+            spawn(async move {
+                if archive_lane_api(project_id, lane_id.clone()).await.is_ok() {
+                    if selected_lane_id().as_deref() == Some(lane_id.as_str()) {
+                        selected_lane_id.set(None);
+                        selected_lane_status.set(None);
+                    }
+                    lanes_revision.set(lanes_revision() + 1);
+                }
+            });
+        },
+    });
+
+    rsx! {
+        SidebarMenuAction {
+            show_on_hover: true,
+            class: AppStyles::dx_lane_archive_button,
+            aria_label: "Archive lane {lane_title}",
+            attributes,
+            "X"
+        }
+    }
+}
+
+#[component]
 fn ChevronIcon() -> Element {
     rsx! {
         ChevronRight {
@@ -111,6 +150,37 @@ fn DemoIcon() -> Element {
         Circle {
             class: AppStyles::dx_sidebar_icon,
             size: "24px",
+        }
+    }
+}
+
+#[component]
+fn LaneButton(
+    lane: WorkbenchLane,
+    selected: bool,
+    mut selected_lane_id: Signal<Option<String>>,
+    mut selected_lane_status: Signal<Option<String>>,
+) -> Element {
+    let mut class = AppStyles::dx_lane_button.to_string();
+    if selected {
+        class = format!("{class} {}", AppStyles::dx_lane_button_active);
+    }
+    if lane.id == SYSTEM_LANE_ID {
+        class = format!("{class} italic");
+    }
+    let attributes = attributes!(button {
+        onclick: move |_| {
+            selected_lane_id.set(Some(lane.id.clone()));
+            selected_lane_status.set(Some(lane.status.clone()));
+        },
+    });
+
+    rsx! {
+        SidebarMenuButton {
+            class,
+            attributes,
+            DemoIcon {}
+            {lane.title}
         }
     }
 }
@@ -268,76 +338,6 @@ fn LaneNavigation(
                     }
                 }
             }
-        }
-    }
-}
-
-#[component]
-fn ArchiveLaneButton(
-    lane: WorkbenchLane,
-    selected_project_id: Signal<Option<String>>,
-    mut selected_lane_id: Signal<Option<String>>,
-    mut selected_lane_status: Signal<Option<String>>,
-    mut lanes_revision: Signal<u64>,
-) -> Element {
-    let lane_id = lane.id.clone();
-    let lane_title = lane.title.clone();
-    let attributes = attributes!(button {
-        onclick: move |_| {
-            let Some(project_id) = selected_project_id() else {
-                return;
-            };
-            let lane_id = lane_id.clone();
-            spawn(async move {
-                if archive_lane_api(project_id, lane_id.clone()).await.is_ok() {
-                    if selected_lane_id().as_deref() == Some(lane_id.as_str()) {
-                        selected_lane_id.set(None);
-                        selected_lane_status.set(None);
-                    }
-                    lanes_revision.set(lanes_revision() + 1);
-                }
-            });
-        },
-    });
-
-    rsx! {
-        SidebarMenuAction {
-            show_on_hover: true,
-            class: AppStyles::dx_lane_archive_button,
-            aria_label: "Archive lane {lane_title}",
-            attributes,
-            "X"
-        }
-    }
-}
-
-#[component]
-fn LaneButton(
-    lane: WorkbenchLane,
-    selected: bool,
-    mut selected_lane_id: Signal<Option<String>>,
-    mut selected_lane_status: Signal<Option<String>>,
-) -> Element {
-    let mut class = AppStyles::dx_lane_button.to_string();
-    if selected {
-        class = format!("{class} {}", AppStyles::dx_lane_button_active);
-    }
-    if lane.id == SYSTEM_LANE_ID {
-        class = format!("{class} italic");
-    }
-    let attributes = attributes!(button {
-        onclick: move |_| {
-            selected_lane_id.set(Some(lane.id.clone()));
-            selected_lane_status.set(Some(lane.status.clone()));
-        },
-    });
-
-    rsx! {
-        SidebarMenuButton {
-            class,
-            attributes,
-            DemoIcon {}
-            {lane.title}
         }
     }
 }

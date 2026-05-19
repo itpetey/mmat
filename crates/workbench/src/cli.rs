@@ -5,8 +5,8 @@ use clap::{ArgAction, Parser};
 use serde::Deserialize;
 
 const DEFAULT_PG_DSN: &str = "postgres://mmat:mmat@localhost:5432/mmat";
-static PG_DSN: OnceLock<String> = OnceLock::new();
 static LLM_CONFIG: OnceLock<Option<mmat_coordinator::WorkbenchAssistantConfig>> = OnceLock::new();
+static PG_DSN: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -85,16 +85,6 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-// ── Config-file sections ───────────────────────────────────────────
-
-#[derive(Debug, Clone, Deserialize)]
-struct ConfigFile {
-    mmat: Option<MmatSection>,
-    postgres: Option<PostgresSection>,
-    qdrant: Option<QdrantSection>,
-    llm: Option<LlmSection>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct MmatSection {
     bind_addr: Option<String>,
@@ -121,16 +111,12 @@ struct LlmSection {
     timeout_secs: Option<u64>,
 }
 
-// ── Resolved config (hierarchical) ──────────────────────────────────
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct Config {
-    pub mmat: MmatConfig,
-    pub postgres: PostgresConfig,
-    pub qdrant: QdrantConfig,
-    pub llm: LlmConfig,
-    pub verbosity: u8,
+#[derive(Debug, Clone, Deserialize)]
+struct ConfigFile {
+    mmat: Option<MmatSection>,
+    postgres: Option<PostgresSection>,
+    qdrant: Option<QdrantSection>,
+    llm: Option<LlmSection>,
 }
 
 #[derive(Debug)]
@@ -161,7 +147,30 @@ pub struct LlmConfig {
     pub timeout_secs: u64,
 }
 
-// ── Entry point ────────────────────────────────────────────────────
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct Config {
+    pub mmat: MmatConfig,
+    pub postgres: PostgresConfig,
+    pub qdrant: QdrantConfig,
+    pub llm: LlmConfig,
+    pub verbosity: u8,
+}
+
+pub fn llm_config() -> Option<mmat_coordinator::WorkbenchAssistantConfig> {
+    LLM_CONFIG.get().cloned().flatten().or_else(|| {
+        Some(mmat_coordinator::WorkbenchAssistantConfig::new(
+            std::env::var("MMAT_LLM_API_KEY").ok()?,
+            std::env::var("MMAT_LLM_MODEL").ok()?,
+            std::time::Duration::from_secs(
+                std::env::var("MMAT_LLM_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(60),
+            ),
+        ))
+    })
+}
 
 #[allow(dead_code)]
 pub fn load_config() -> Result<Config> {
@@ -182,6 +191,14 @@ pub fn load_config() -> Result<Config> {
     )));
 
     Ok(config)
+}
+
+pub fn pg_dsn() -> String {
+    PG_DSN
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("MMAT_PG_DSN").ok())
+        .unwrap_or_else(|| DEFAULT_PG_DSN.to_string())
 }
 
 fn resolve_config(cli: Cli, cf: Option<ConfigFile>) -> Result<Config> {
@@ -258,29 +275,6 @@ fn resolve_config(cli: Cli, cf: Option<ConfigFile>) -> Result<Config> {
         qdrant,
         llm,
         verbosity: cli.verbosity,
-    })
-}
-
-pub fn pg_dsn() -> String {
-    PG_DSN
-        .get()
-        .cloned()
-        .or_else(|| std::env::var("MMAT_PG_DSN").ok())
-        .unwrap_or_else(|| DEFAULT_PG_DSN.to_string())
-}
-
-pub fn llm_config() -> Option<mmat_coordinator::WorkbenchAssistantConfig> {
-    LLM_CONFIG.get().cloned().flatten().or_else(|| {
-        Some(mmat_coordinator::WorkbenchAssistantConfig::new(
-            std::env::var("MMAT_LLM_API_KEY").ok()?,
-            std::env::var("MMAT_LLM_MODEL").ok()?,
-            std::time::Duration::from_secs(
-                std::env::var("MMAT_LLM_TIMEOUT_SECS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(60),
-            ),
-        ))
     })
 }
 

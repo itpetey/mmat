@@ -35,6 +35,8 @@ use wiremock::{
     matchers::{method, path},
 };
 
+type PgPool = mmat_db::Pool<AsyncPgConnection>;
+
 #[derive(Default)]
 struct MockLlmClient {
     calls: AtomicUsize,
@@ -97,7 +99,15 @@ impl VectorMemoryBackend for FakeVectorBackend {
     }
 }
 
-type PgPool = mmat_db::Pool<AsyncPgConnection>;
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
+}
 
 fn now_nanos() -> u128 {
     std::time::SystemTime::now()
@@ -126,16 +136,6 @@ async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
     .await
     .ok()?;
     Some((pool, schema))
-}
-
-async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
-    if let Ok(mut conn) = pool.get().await {
-        let _ = mmat_db::execute_sql(
-            &mut conn,
-            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
-        )
-        .await;
-    }
 }
 
 async fn setup_auditor_test_env(pool: PgPool) -> (EventBus, Arc<EventStore>, Arc<MemoryStore>) {

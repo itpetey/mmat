@@ -7,16 +7,6 @@ use crate::{
     schema,
 };
 
-pub async fn insert_artefact(
-    connection: &mut AsyncPgConnection,
-    artefact: &NewArtefact,
-) -> QueryResult<Artefact> {
-    diesel::insert_into(schema::artefacts::table)
-        .values(artefact)
-        .get_result::<Artefact>(connection)
-        .await
-}
-
 pub async fn get_artefact_payload(
     connection: &mut AsyncPgConnection,
     artefact_id: Uuid,
@@ -31,4 +21,14 @@ pub async fn get_artefact_payload(
         .optional()?;
 
     Ok(row.map(|v| v.to_string()))
+}
+
+pub async fn insert_artefact(
+    connection: &mut AsyncPgConnection,
+    artefact: &NewArtefact,
+) -> QueryResult<Artefact> {
+    diesel::insert_into(schema::artefacts::table)
+        .values(artefact)
+        .get_result::<Artefact>(connection)
+        .await
 }

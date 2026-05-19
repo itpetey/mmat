@@ -1,8 +1,8 @@
-pub mod chat;
-pub mod projects;
-
 #[cfg(feature = "server")]
 use std::sync::OnceLock;
+
+pub mod chat;
+pub mod projects;
 
 #[cfg(feature = "server")]
 type DbPool = mmat_db::Pool<mmat_db::AsyncPgConnection>;

@@ -10,6 +10,7 @@ pub use diesel_async::{
     AsyncPgConnection,
     pooled_connection::bb8::{Pool, PooledConnection, RunError},
 };
+pub use project::{insert_project, load_projects};
 
 pub mod artefact;
 pub mod event;
@@ -18,8 +19,6 @@ pub mod memory;
 pub mod models;
 pub mod project;
 pub mod schema;
-
-pub use project::{insert_project, load_projects};
 
 type Result<T, E = DbError> = std::result::Result<T, E>;
 
@@ -53,8 +52,21 @@ impl From<PoolError> for DbError {
     }
 }
 
+pub async fn begin_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
+    execute_sql(connection, "BEGIN").await
+}
+
+pub async fn commit_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
+    execute_sql(connection, "COMMIT").await
+}
+
 pub async fn connect(url: &str) -> Result<AsyncPgConnection> {
     Ok(connect_without_statement_cache(url).await?)
+}
+
+/// Execute a raw SQL statement (e.g. schema setup).
+pub async fn execute_sql(connection: &mut AsyncPgConnection, sql: &str) -> QueryResult<()> {
+    SimpleAsyncConnection::batch_execute(connection, sql).await
 }
 
 pub async fn new_pool(url: &str) -> Result<Pool<AsyncPgConnection>, PoolError> {
@@ -65,32 +77,19 @@ pub async fn new_pool(url: &str) -> Result<Pool<AsyncPgConnection>, PoolError> {
     Pool::builder().build(config).await
 }
 
-async fn connect_without_statement_cache(url: &str) -> diesel::ConnectionResult<AsyncPgConnection> {
-    let mut connection = AsyncPgConnection::establish(url).await?;
-    connection.set_prepared_statement_cache_size(CacheSize::Disabled);
-    Ok(connection)
-}
-
-/// Execute a raw SQL statement (e.g. schema setup).
-pub async fn execute_sql(connection: &mut AsyncPgConnection, sql: &str) -> QueryResult<()> {
-    SimpleAsyncConnection::batch_execute(connection, sql).await
-}
-
-pub async fn begin_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
-    execute_sql(connection, "BEGIN").await
-}
-
-pub async fn commit_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
-    execute_sql(connection, "COMMIT").await
+pub fn now_timestamp_string() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 pub async fn rollback_transaction(connection: &mut AsyncPgConnection) -> QueryResult<()> {
     execute_sql(connection, "ROLLBACK").await
 }
 
-pub fn now_timestamp_string() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().to_string())
-        .unwrap_or_else(|_| "0".to_string())
+async fn connect_without_statement_cache(url: &str) -> diesel::ConnectionResult<AsyncPgConnection> {
+    let mut connection = AsyncPgConnection::establish(url).await?;
+    connection.set_prepared_statement_cache_size(CacheSize::Disabled);
+    Ok(connection)
 }

@@ -23,45 +23,6 @@ use qdrant_client::qdrant::Value;
 
 type PgPool = mmat_db::Pool<AsyncPgConnection>;
 
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-}
-
-async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
-    let base_url = std::env::var("MMAT_DB_URL").ok()?;
-    let schema = format!("{}_{}", prefix, now_nanos());
-    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
-    let mut conn = admin_pool.get().await.ok()?;
-    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
-        .await
-        .ok()?;
-    let separator = if base_url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
-    let pool = mmat_db::new_pool(&database_url).await.ok()?;
-    let migrate_pool = pool.clone();
-    let mut migrator_conn = migrate_pool.get().await.ok()?;
-    mmat_db::execute_sql(
-        &mut migrator_conn,
-        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
-    )
-    .await
-    .ok()?;
-    Some((pool, schema))
-}
-
-async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
-    if let Ok(mut conn) = pool.get().await {
-        let _ = mmat_db::execute_sql(
-            &mut conn,
-            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
-        )
-        .await;
-    }
-}
-
 #[derive(Default)]
 struct FakeVectorBackend {
     upserts: Mutex<Vec<MemoryId>>,
@@ -188,6 +149,16 @@ fn coordinator_pair() -> (
     (CoordinatorHandle::new(tx), rx)
 }
 
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
+}
+
 #[tokio::test]
 async fn intent_lead_turns_initial_prompt_into_brief_and_dispatches_roles() {
     let Some((pool, schema)) = postgres_test_database("intent_brief").await else {
@@ -295,6 +266,13 @@ async fn intent_lead_turns_initial_prompt_into_brief_and_dispatches_roles() {
     assert!(dispatched_ops);
     assert!(proposed_preference);
     drop_postgres_schema(&pool, &schema).await;
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }
 
 #[tokio::test]
@@ -418,6 +396,28 @@ async fn ops_manager_sop_memory_is_accepted_by_librarian() {
     librarian_handle.abort();
     assert!(accepted, "Librarian should accept at least one SOP memory");
     drop_postgres_schema(&pool, &schema).await;
+}
+
+async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let admin_pool = mmat_db::new_pool(&base_url).await.ok()?;
+    let mut conn = admin_pool.get().await.ok()?;
+    mmat_db::execute_sql(&mut conn, &format!("CREATE SCHEMA \"{schema}\""))
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let pool = mmat_db::new_pool(&database_url).await.ok()?;
+    let migrate_pool = pool.clone();
+    let mut migrator_conn = migrate_pool.get().await.ok()?;
+    mmat_db::execute_sql(
+        &mut migrator_conn,
+        include_str!("../../db/migrations/2026-05-14-000001_init/up.sql"),
+    )
+    .await
+    .ok()?;
+    Some((pool, schema))
 }
 
 #[tokio::test]

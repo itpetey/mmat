@@ -130,6 +130,175 @@ impl OrganisationConfig {
     }
 }
 
+impl WorkbenchAssistantConfig {
+    /// Builds assistant configuration from explicit values.
+    ///
+    /// Base URL defaults to [`DEFAULT_CHAT_BASE_URL`].
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>, timeout: Duration) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url: DEFAULT_CHAT_BASE_URL.to_string(),
+            model: model.into(),
+            timeout,
+        }
+    }
+
+    /// Overrides the base URL (used in integration tests against a mock server).
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+}
+
+impl WorkbenchRuntimeHandle {
+    /// Creates a workbench integration handle from a runtime-owned event bus.
+    pub fn new(
+        bus: EventBus,
+        db_pool: Pool<AsyncPgConnection>,
+        assistant_config: Option<WorkbenchAssistantConfig>,
+    ) -> Self {
+        Self {
+            bus,
+            db_pool,
+            assistant_config,
+            streams: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Creates a standalone handle for workbench processes that own no full runtime yet.
+    pub fn standalone(
+        db_pool: Pool<AsyncPgConnection>,
+        event_bus_capacity: usize,
+        assistant_config: Option<WorkbenchAssistantConfig>,
+    ) -> Self {
+        Self::new(EventBus::new(event_bus_capacity), db_pool, assistant_config)
+    }
+
+    /// Subscribes to runtime events visible to workbench WebSocket connections.
+    pub fn subscribe(&self, filter: &[EventType]) -> EventReceiver {
+        self.bus.subscribe(filter)
+    }
+
+    /// Persists an event exactly once, then broadcasts it to runtime subscribers.
+    pub async fn publish_durable(&self, event: SemanticEvent) -> Result<()> {
+        let mut connection = self.db_pool.get().await?;
+        mmat_db::event::append_event(&mut connection, &event)
+            .await
+            .map_err(|error| Error::Runtime(format!("failed to persist event: {error}")))?;
+        if let Some(store) = self.bus.store() {
+            store
+                .insert(&event)
+                .map_err(|error| Error::Runtime(format!("failed to store event: {error}")))?;
+        }
+        self.bus.broadcast_stored(event);
+        Ok(())
+    }
+
+    /// Broadcasts an event that the caller has already made durable.
+    pub fn broadcast_persisted(&self, event: SemanticEvent) -> Result<()> {
+        if let Some(store) = self.bus.store() {
+            store
+                .insert(&event)
+                .map_err(|error| Error::Runtime(format!("failed to store event: {error}")))?;
+        }
+        self.bus.broadcast_stored(event);
+        Ok(())
+    }
+
+    /// Starts the configured assistant stream for a persisted user message.
+    pub async fn start_assistant_stream(
+        &self,
+        request: AssistantStreamRequest,
+    ) -> Result<mpsc::Receiver<AssistantStreamEvent>> {
+        let config = self.assistant_config.clone().ok_or_else(|| {
+            Error::Runtime(
+                "LLM configuration is missing; set MMAT_LLM_API_KEY and MMAT_LLM_MODEL".into(),
+            )
+        })?;
+        if config.api_key.trim().is_empty() || config.model.trim().is_empty() {
+            return Err(Error::Runtime(
+                "LLM configuration is missing; set MMAT_LLM_API_KEY and MMAT_LLM_MODEL".into(),
+            ));
+        }
+
+        let client = OpenAiClient::new(
+            OpenAiConfig::builder()
+                .api_key(config.api_key)
+                .base_url(config.base_url)
+                .timeout(config.timeout)
+                .build(),
+        )
+        .map_err(|error| Error::Runtime(format!("invalid LLM configuration: {error}")))?;
+        let llm_request = CompletionRequest::new(
+            config.model,
+            vec![
+                Message::system(format!(
+                    "You are the MMAT workbench assistant replying in project {} lane {}.",
+                    request.project_id, request.lane_id
+                )),
+                Message::user(request.user_content),
+            ],
+        );
+        let mut llm_rx = client
+            .complete_streaming(llm_request)
+            .await
+            .map_err(|error| Error::Runtime(format!("assistant stream failed: {error}")))?;
+        let (tx, rx) = mpsc::channel(128);
+        let assistant_message_id = request.assistant_message_id;
+        let streams = Arc::clone(&self.streams);
+        let stream_key = assistant_message_id.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(chunk) = llm_rx.recv().await {
+                match chunk {
+                    Ok(chunk) => {
+                        for choice in chunk.choices {
+                            if let Some(content) = choice.delta.content
+                                && tx
+                                    .send(AssistantStreamEvent::Delta { content })
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                            if let Some(finish_reason) = choice.finish_reason
+                                && tx
+                                    .send(AssistantStreamEvent::Finished { finish_reason })
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx
+                            .send(AssistantStreamEvent::Failed {
+                                message: error.to_string(),
+                            })
+                            .await;
+                        break;
+                    }
+                }
+            }
+            streams.lock().await.remove(&stream_key);
+        });
+        self.streams
+            .lock()
+            .await
+            .insert(assistant_message_id, handle);
+        Ok(rx)
+    }
+
+    /// Cancels an in-flight assistant stream by assistant message ID.
+    pub async fn cancel_assistant_stream(&self, assistant_message_id: &str) -> bool {
+        let Some(handle) = self.streams.lock().await.remove(assistant_message_id) else {
+            return false;
+        };
+        handle.abort();
+        true
+    }
+}
+
 impl OrganisationRuntime {
     /// Creates a new organisation runtime from the given configuration and registry.
     ///
@@ -446,201 +615,6 @@ impl OrganisationRuntime {
     }
 }
 
-impl WorkbenchRuntimeHandle {
-    /// Creates a workbench integration handle from a runtime-owned event bus.
-    pub fn new(
-        bus: EventBus,
-        db_pool: Pool<AsyncPgConnection>,
-        assistant_config: Option<WorkbenchAssistantConfig>,
-    ) -> Self {
-        Self {
-            bus,
-            db_pool,
-            assistant_config,
-            streams: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Creates a standalone handle for workbench processes that own no full runtime yet.
-    pub fn standalone(
-        db_pool: Pool<AsyncPgConnection>,
-        event_bus_capacity: usize,
-        assistant_config: Option<WorkbenchAssistantConfig>,
-    ) -> Self {
-        Self::new(EventBus::new(event_bus_capacity), db_pool, assistant_config)
-    }
-
-    /// Subscribes to runtime events visible to workbench WebSocket connections.
-    pub fn subscribe(&self, filter: &[EventType]) -> EventReceiver {
-        self.bus.subscribe(filter)
-    }
-
-    /// Persists an event exactly once, then broadcasts it to runtime subscribers.
-    pub async fn publish_durable(&self, event: SemanticEvent) -> Result<()> {
-        let mut connection = self.db_pool.get().await?;
-        mmat_db::event::append_event(&mut connection, &event)
-            .await
-            .map_err(|error| Error::Runtime(format!("failed to persist event: {error}")))?;
-        if let Some(store) = self.bus.store() {
-            store
-                .insert(&event)
-                .map_err(|error| Error::Runtime(format!("failed to store event: {error}")))?;
-        }
-        self.bus.broadcast_stored(event);
-        Ok(())
-    }
-
-    /// Broadcasts an event that the caller has already made durable.
-    pub fn broadcast_persisted(&self, event: SemanticEvent) -> Result<()> {
-        if let Some(store) = self.bus.store() {
-            store
-                .insert(&event)
-                .map_err(|error| Error::Runtime(format!("failed to store event: {error}")))?;
-        }
-        self.bus.broadcast_stored(event);
-        Ok(())
-    }
-
-    /// Starts the configured assistant stream for a persisted user message.
-    pub async fn start_assistant_stream(
-        &self,
-        request: AssistantStreamRequest,
-    ) -> Result<mpsc::Receiver<AssistantStreamEvent>> {
-        let config = self.assistant_config.clone().ok_or_else(|| {
-            Error::Runtime(
-                "LLM configuration is missing; set MMAT_LLM_API_KEY and MMAT_LLM_MODEL".into(),
-            )
-        })?;
-        if config.api_key.trim().is_empty() || config.model.trim().is_empty() {
-            return Err(Error::Runtime(
-                "LLM configuration is missing; set MMAT_LLM_API_KEY and MMAT_LLM_MODEL".into(),
-            ));
-        }
-
-        let client = OpenAiClient::new(
-            OpenAiConfig::builder()
-                .api_key(config.api_key)
-                .base_url(config.base_url)
-                .timeout(config.timeout)
-                .build(),
-        )
-        .map_err(|error| Error::Runtime(format!("invalid LLM configuration: {error}")))?;
-        let llm_request = CompletionRequest::new(
-            config.model,
-            vec![
-                Message::system(format!(
-                    "You are the MMAT workbench assistant replying in project {} lane {}.",
-                    request.project_id, request.lane_id
-                )),
-                Message::user(request.user_content),
-            ],
-        );
-        let mut llm_rx = client
-            .complete_streaming(llm_request)
-            .await
-            .map_err(|error| Error::Runtime(format!("assistant stream failed: {error}")))?;
-        let (tx, rx) = mpsc::channel(128);
-        let assistant_message_id = request.assistant_message_id;
-        let streams = Arc::clone(&self.streams);
-        let stream_key = assistant_message_id.clone();
-        let handle = tokio::spawn(async move {
-            while let Some(chunk) = llm_rx.recv().await {
-                match chunk {
-                    Ok(chunk) => {
-                        for choice in chunk.choices {
-                            if let Some(content) = choice.delta.content
-                                && tx
-                                    .send(AssistantStreamEvent::Delta { content })
-                                    .await
-                                    .is_err()
-                            {
-                                break;
-                            }
-                            if let Some(finish_reason) = choice.finish_reason
-                                && tx
-                                    .send(AssistantStreamEvent::Finished { finish_reason })
-                                    .await
-                                    .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let _ = tx
-                            .send(AssistantStreamEvent::Failed {
-                                message: error.to_string(),
-                            })
-                            .await;
-                        break;
-                    }
-                }
-            }
-            streams.lock().await.remove(&stream_key);
-        });
-        self.streams
-            .lock()
-            .await
-            .insert(assistant_message_id, handle);
-        Ok(rx)
-    }
-
-    /// Cancels an in-flight assistant stream by assistant message ID.
-    pub async fn cancel_assistant_stream(&self, assistant_message_id: &str) -> bool {
-        let Some(handle) = self.streams.lock().await.remove(assistant_message_id) else {
-            return false;
-        };
-        handle.abort();
-        true
-    }
-}
-
-impl WorkbenchAssistantConfig {
-    /// Builds assistant configuration from explicit values.
-    ///
-    /// Base URL defaults to [`DEFAULT_CHAT_BASE_URL`].
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>, timeout: Duration) -> Self {
-        Self {
-            api_key: api_key.into(),
-            base_url: DEFAULT_CHAT_BASE_URL.to_string(),
-            model: model.into(),
-            timeout,
-        }
-    }
-
-    /// Overrides the base URL (used in integration tests against a mock server).
-    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
-        self
-    }
-}
-
-fn spawn_event_persistence_task(
-    mut conn: PooledConnection<'static, AsyncPgConnection>,
-    tx: broadcast::Sender<()>,
-    mut receiver: EventReceiver,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    if let Err(error) = persist_semantic_event(&mut conn, event.as_ref()).await {
-                        warn!("failed to persist semantic event: {error}");
-                        let _ = tx.send(());
-                        break;
-                    }
-                }
-                Err(RecvError::Lagged(skipped)) => {
-                    warn!("event persistence subscriber lagged by {skipped} events; shutting down");
-                    let _ = tx.send(());
-                    break;
-                }
-                Err(RecvError::Closed) => break,
-            }
-        }
-    })
-}
-
 impl OrganisationRuntime {
     async fn replay_events(&mut self) -> Result<()> {
         let events = self
@@ -668,6 +642,41 @@ impl OrganisationRuntime {
             scheduler.replay_task_event(event);
         }
         Ok(())
+    }
+}
+
+fn lane_created_event_with_id(event: &SemanticEvent, generated_lane_id: String) -> SemanticEvent {
+    match event {
+        SemanticEvent::LaneCreated {
+            event_id,
+            source_agent,
+            timestamp_ns,
+            context,
+            name,
+            kind,
+            colour,
+            purpose,
+            parent_lane_id,
+            related_lane_ids,
+            source_event_id,
+            source_message_id,
+            ..
+        } => SemanticEvent::LaneCreated {
+            event_id: *event_id,
+            source_agent: source_agent.clone(),
+            timestamp_ns: *timestamp_ns,
+            context: context.clone(),
+            lane_id: generated_lane_id,
+            name: name.clone(),
+            kind: kind.clone(),
+            colour: colour.clone(),
+            purpose: purpose.clone(),
+            parent_lane_id: parent_lane_id.clone(),
+            related_lane_ids: related_lane_ids.clone(),
+            source_event_id: *source_event_id,
+            source_message_id: source_message_id.clone(),
+        },
+        _ => event.clone(),
     }
 }
 
@@ -720,37 +729,28 @@ async fn persist_semantic_event(
     Ok(())
 }
 
-fn lane_created_event_with_id(event: &SemanticEvent, generated_lane_id: String) -> SemanticEvent {
-    match event {
-        SemanticEvent::LaneCreated {
-            event_id,
-            source_agent,
-            timestamp_ns,
-            context,
-            name,
-            kind,
-            colour,
-            purpose,
-            parent_lane_id,
-            related_lane_ids,
-            source_event_id,
-            source_message_id,
-            ..
-        } => SemanticEvent::LaneCreated {
-            event_id: *event_id,
-            source_agent: source_agent.clone(),
-            timestamp_ns: *timestamp_ns,
-            context: context.clone(),
-            lane_id: generated_lane_id,
-            name: name.clone(),
-            kind: kind.clone(),
-            colour: colour.clone(),
-            purpose: purpose.clone(),
-            parent_lane_id: parent_lane_id.clone(),
-            related_lane_ids: related_lane_ids.clone(),
-            source_event_id: *source_event_id,
-            source_message_id: source_message_id.clone(),
-        },
-        _ => event.clone(),
-    }
+fn spawn_event_persistence_task(
+    mut conn: PooledConnection<'static, AsyncPgConnection>,
+    tx: broadcast::Sender<()>,
+    mut receiver: EventReceiver,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if let Err(error) = persist_semantic_event(&mut conn, event.as_ref()).await {
+                        warn!("failed to persist semantic event: {error}");
+                        let _ = tx.send(());
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(skipped)) => {
+                    warn!("event persistence subscriber lagged by {skipped} events; shutting down");
+                    let _ = tx.send(());
+                    break;
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    })
 }

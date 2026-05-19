@@ -300,24 +300,14 @@ impl VectorMemoryBackend for FakeVectorBackend {
     }
 }
 
-fn test_config() -> Option<OrganisationConfig> {
-    Some(OrganisationConfig {
-        event_bus_capacity: 128,
-        heartbeat_interval: Duration::from_secs(30),
-        shutdown_grace_period: Duration::from_secs(2),
-        database_url: std::env::var("MMAT_DB_URL").ok()?,
-        host_work_dir: None,
-        llm_api_key: None,
-        llm_model: None,
-        llm_timeout: Duration::from_secs(60),
-    })
-}
-
-async fn test_runtime(
-    config: OrganisationConfig,
-    registry: RoleRegistry,
-) -> Option<OrganisationRuntime> {
-    OrganisationRuntime::new(config, registry).await.ok()
+async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
+    if let Ok(mut conn) = pool.get().await {
+        let _ = mmat_db::execute_sql(
+            &mut conn,
+            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+        )
+        .await;
+    }
 }
 
 fn now_nanos() -> u128 {
@@ -349,14 +339,17 @@ async fn postgres_test_database(prefix: &str) -> Option<(PgPool, String)> {
     Some((pool, schema))
 }
 
-async fn drop_postgres_schema(pool: &PgPool, schema: &str) {
-    if let Ok(mut conn) = pool.get().await {
-        let _ = mmat_db::execute_sql(
-            &mut conn,
-            &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
-        )
-        .await;
-    }
+fn test_config() -> Option<OrganisationConfig> {
+    Some(OrganisationConfig {
+        event_bus_capacity: 128,
+        heartbeat_interval: Duration::from_secs(30),
+        shutdown_grace_period: Duration::from_secs(2),
+        database_url: std::env::var("MMAT_DB_URL").ok()?,
+        host_work_dir: None,
+        llm_api_key: None,
+        llm_model: None,
+        llm_timeout: Duration::from_secs(60),
+    })
 }
 
 #[tokio::test]
@@ -722,6 +715,13 @@ async fn test_retry_exhaustion_escalates() {
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
 
+async fn test_runtime(
+    config: OrganisationConfig,
+    registry: RoleRegistry,
+) -> Option<OrganisationRuntime> {
+    OrganisationRuntime::new(config, registry).await.ok()
+}
+
 #[tokio::test]
 async fn test_time_budget_enforcement() {
     let Some(config) = test_config() else {
@@ -856,6 +856,36 @@ async fn test_token_budget_exhaustion_escalates() {
 }
 
 #[tokio::test]
+async fn workbench_runtime_boundary_allows_empty_role_registry() {
+    let Some((pool, schema)) = postgres_test_database("coord_workbench_boundary").await else {
+        return;
+    };
+    let mut config = OrganisationConfig::new(std::env::var("MMAT_DB_URL").unwrap_or_default());
+    let separator = if config.database_url.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    config.database_url = format!(
+        "{}{}options=-c%20search_path%3D{}",
+        config.database_url, separator, schema
+    );
+
+    assert!(
+        OrganisationRuntime::new(config.clone(), RoleRegistry::new())
+            .await
+            .is_err()
+    );
+    assert!(
+        OrganisationRuntime::new_workbench_boundary(config)
+            .await
+            .is_ok()
+    );
+
+    drop_postgres_schema(&pool, &schema).await;
+}
+
+#[tokio::test]
 async fn workbench_runtime_publish_durable_persists_once_then_broadcasts() {
     let Some((pool, schema)) = postgres_test_database("coord_workbench_publish").await else {
         return;
@@ -966,36 +996,6 @@ data: [DONE]
         AssistantStreamEvent::Finished {
             finish_reason: "stop".to_string()
         }
-    );
-
-    drop_postgres_schema(&pool, &schema).await;
-}
-
-#[tokio::test]
-async fn workbench_runtime_boundary_allows_empty_role_registry() {
-    let Some((pool, schema)) = postgres_test_database("coord_workbench_boundary").await else {
-        return;
-    };
-    let mut config = OrganisationConfig::new(std::env::var("MMAT_DB_URL").unwrap_or_default());
-    let separator = if config.database_url.contains('?') {
-        '&'
-    } else {
-        '?'
-    };
-    config.database_url = format!(
-        "{}{}options=-c%20search_path%3D{}",
-        config.database_url, separator, schema
-    );
-
-    assert!(
-        OrganisationRuntime::new(config.clone(), RoleRegistry::new())
-            .await
-            .is_err()
-    );
-    assert!(
-        OrganisationRuntime::new_workbench_boundary(config)
-            .await
-            .is_ok()
     );
 
     drop_postgres_schema(&pool, &schema).await;

@@ -11,15 +11,15 @@ use crate::{
     message::{CompletionRequest, CompletionResponse, CompletionStreamChunk},
 };
 
+/// Default base URL for OpenAI-compatible chat completions.
+pub const DEFAULT_CHAT_BASE_URL: &str = "https://api.openai.com/v1";
+
 /// A client capable of sending chat completions to an LLM provider.
 #[async_trait::async_trait]
 pub trait LlmClient: Send + Sync {
     /// Send a completion request and return the full response.
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
 }
-
-/// Default base URL for OpenAI-compatible chat completions.
-pub const DEFAULT_CHAT_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Configuration for connecting to an OpenAI-compatible API.
 #[derive(Clone, Debug)]

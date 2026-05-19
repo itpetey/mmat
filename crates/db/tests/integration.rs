@@ -2,18 +2,37 @@ use diesel_async::{AsyncConnection, SimpleAsyncConnection};
 use mmat_db::AsyncPgConnection;
 use mmat_event_stream::event::{EventContext, RoleId, SemanticEvent, TaskContract};
 
-async fn test_database(prefix: &str) -> Option<(AsyncPgConnection, String)> {
-    let base_url = std::env::var("MMAT_DB_URL").ok()?;
-    let schema = format!("{}_{}", prefix, now_nanos());
-    let mut admin = AsyncPgConnection::establish(&base_url).await.ok()?;
-    admin
-        .batch_execute(&format!("CREATE SCHEMA \"{schema}\""))
+#[tokio::test]
+async fn assistant_message_event_replays_from_database() {
+    let Some((mut connection, schema)) = test_database("db_assistant_message").await else {
+        return;
+    };
+    run_migration(&mut connection).await;
+
+    let event = SemanticEvent::new_assistant_message_produced(
+        RoleId::new("assistant"),
+        "assistant-message-1",
+        "user-message-1",
+        "Persisted reply",
+        "stop",
+    )
+    .with_context(
+        EventContext::new("org", "workspace", "project-1", "run-1").with_lane_id("lane-1"),
+    );
+
+    mmat_db::event::append_event(&mut connection, &event)
         .await
-        .ok()?;
-    let separator = if base_url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
-    let connection = AsyncPgConnection::establish(&database_url).await.ok()?;
-    Some((connection, schema))
+        .unwrap();
+
+    let replayed = mmat_db::event::replay_events(&mut connection, 0, None)
+        .await
+        .unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].event_id(), event.event_id());
+    assert_eq!(replayed[0].event_type().name(), "AssistantMessageProduced");
+    assert_eq!(replayed[0].context().lane_id.as_deref(), Some("lane-1"));
+
+    drop_schema(&schema).await;
 }
 
 async fn drop_schema(schema: &str) {
@@ -26,20 +45,6 @@ async fn drop_schema(schema: &str) {
     let _ = connection
         .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
         .await;
-}
-
-async fn run_migration(connection: &mut mmat_db::AsyncPgConnection) {
-    connection
-        .batch_execute(include_str!("../migrations/2026-05-14-000001_init/up.sql"))
-        .await
-        .unwrap();
-}
-
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
 }
 
 #[tokio::test]
@@ -121,39 +126,6 @@ async fn event_crud_replay_and_variant_queries() {
             .await
             .is_err()
     );
-
-    drop_schema(&schema).await;
-}
-
-#[tokio::test]
-async fn assistant_message_event_replays_from_database() {
-    let Some((mut connection, schema)) = test_database("db_assistant_message").await else {
-        return;
-    };
-    run_migration(&mut connection).await;
-
-    let event = SemanticEvent::new_assistant_message_produced(
-        RoleId::new("assistant"),
-        "assistant-message-1",
-        "user-message-1",
-        "Persisted reply",
-        "stop",
-    )
-    .with_context(
-        EventContext::new("org", "workspace", "project-1", "run-1").with_lane_id("lane-1"),
-    );
-
-    mmat_db::event::append_event(&mut connection, &event)
-        .await
-        .unwrap();
-
-    let replayed = mmat_db::event::replay_events(&mut connection, 0, None)
-        .await
-        .unwrap();
-    assert_eq!(replayed.len(), 1);
-    assert_eq!(replayed[0].event_id(), event.event_id());
-    assert_eq!(replayed[0].event_type().name(), "AssistantMessageProduced");
-    assert_eq!(replayed[0].context().lane_id.as_deref(), Some("lane-1"));
 
     drop_schema(&schema).await;
 }
@@ -258,4 +230,32 @@ async fn lane_crud_archive_and_event_persistence() {
     );
 
     drop_schema(&schema).await;
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+async fn run_migration(connection: &mut mmat_db::AsyncPgConnection) {
+    connection
+        .batch_execute(include_str!("../migrations/2026-05-14-000001_init/up.sql"))
+        .await
+        .unwrap();
+}
+
+async fn test_database(prefix: &str) -> Option<(AsyncPgConnection, String)> {
+    let base_url = std::env::var("MMAT_DB_URL").ok()?;
+    let schema = format!("{}_{}", prefix, now_nanos());
+    let mut admin = AsyncPgConnection::establish(&base_url).await.ok()?;
+    admin
+        .batch_execute(&format!("CREATE SCHEMA \"{schema}\""))
+        .await
+        .ok()?;
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-c%20search_path%3D{schema}");
+    let connection = AsyncPgConnection::establish(&database_url).await.ok()?;
+    Some((connection, schema))
 }
